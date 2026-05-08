@@ -1,0 +1,15 @@
+name: rm3100
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pyserial
+  - pytest
+  - pip:
+      - PySide6
+      - pyqtgraph
+      - platformio
