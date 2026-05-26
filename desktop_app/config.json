@@ -1,1 +1,1 @@
-{"port": "MOCK_SENSOR", "rate": "92", "history": "2000", "fft_window": "256"}
+{"port": "MOCK_SENSOR", "rate": "92", "history": "10000", "fft_window": "1024"}
