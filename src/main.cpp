@@ -35,20 +35,23 @@ void setup() {
     Serial.begin(115200);
     while (!Serial) delay(10);
     
+    
     serialCLI.begin();
 
     loadSettings();
 
     Serial.println("Initializing Magnetometer...");
-
-    SPI.begin();
+    SPI.begin(18, 19, 23, 5); // Explicitly define SCK=18, MISO=19, MOSI=23, CS=5 for VSPI
     
     if (!sensor->begin()) {
         Serial.print("Failed to find ");
         Serial.print(sensor->getSensorName());
         Serial.println("! Check wiring.");
-        while (1) delay(10);
+        while (1) {delay(1000);
+            Serial.println("Failed to find sensor! Check wiring.");
+        }
     }
+    
 
     Serial.print("Sensor Found: ");
     Serial.println(sensor->getSensorName());
@@ -64,9 +67,25 @@ void setup() {
 
     Serial.println("timestamp_us,x,y,z");
     serialCLI.printHelp();
+    
+  pinMode(2, OUTPUT);  // change state of the LED by setting the pin to the HIGH voltage level
 }
 
 void loop() {
+    // Non-blocking LED blink and "Running" message every 1 second
+    static unsigned long lastBlinkTime = 0;
+    static bool ledState = false;
+    unsigned long currentMillis = millis();
+    
+    if (currentMillis - lastBlinkTime >= 1000) {
+        lastBlinkTime = currentMillis;
+        ledState = !ledState;
+        digitalWrite(2, ledState ? HIGH : LOW);
+        //if (ledState) {
+        //    Serial.println("Running");
+        //}
+    }
+
     // CLI Parsing
     serialCLI.update();
 
