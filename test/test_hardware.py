@@ -13,7 +13,7 @@ def find_esp32_port():
     return None
 
 PORT = find_esp32_port()
-BAUD = 115200
+BAUD = 921600
 
 @pytest.fixture(scope="module")
 def ser():

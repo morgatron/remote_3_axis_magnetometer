@@ -1,19 +1,36 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <Preferences.h>
+// Define the sensor type to use
+// Define the sensor type to use
+#define SENSOR_TYPE_RM3100   0
+#define SENSOR_TYPE_FLC100   1
+
+// CHANGE THIS LINE TO SWITCH SENSORS:
+#define SENSOR_TYPE          SENSOR_TYPE_RM3100
+
+#if (SENSOR_TYPE == SENSOR_TYPE_RM3100)
 #include "RM3100.h"
+#define CS_PIN 5
+#define DRDY_PIN 4
+RM3100 magnetometer(CS_PIN, DRDY_PIN);
+const uint8_t DEFAULT_RATE = 0x96; // RM3100 default rate: 0x96 (~37 Hz)
+#else
+#include "FLC100_ADS131.h"
+#define CS_PIN 5
+#define DRDY_PIN 4
+#define RESET_PIN -1
+FLC100_ADS131 magnetometer(CS_PIN, DRDY_PIN, RESET_PIN);
+const uint8_t DEFAULT_RATE = 0x06; // ADS131E08 default rate (1kSPS)
+#endif
+
 #include "CLI.h"
 
-// Pin Definitions
-#define RM3100_CS_PIN   5
-#define RM3100_DRDY_PIN 4
-
 Preferences prefs;
-RM3100 rm_sensor(RM3100_CS_PIN, RM3100_DRDY_PIN);
-Magnetometer* sensor = &rm_sensor;
+Magnetometer* sensor = &magnetometer;
 
 bool streaming = true;
-uint8_t current_rate = 0x92;
+uint8_t current_rate = DEFAULT_RATE;
 
 void saveSettings() {
     prefs.begin("mcu_v0", false);
@@ -25,14 +42,14 @@ void saveSettings() {
 void loadSettings() {
     prefs.begin("mcu_v0", true);
     streaming = prefs.getBool("streaming", true);
-    current_rate = prefs.getUChar("rate", 0x92);
+    current_rate = prefs.getUChar("rate", DEFAULT_RATE);
     prefs.end();
 }
 
 CLI serialCLI(sensor, streaming, current_rate, saveSettings);
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(921600);
     while (!Serial) delay(10);
     
     
@@ -58,9 +75,12 @@ void setup() {
     Serial.println(sensor->getStatusString());
 
     // Sensor specific setup
-    if (sensor->getSensorName() == "RM3100") {
-        static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
-    }
+#if (SENSOR_TYPE == SENSOR_TYPE_RM3100)
+    static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
+#elif (SENSOR_TYPE == SENSOR_TYPE_FLC100)
+    // Set calibration: VREF = 2.4V (standard for 3.3V systems), Sensitivity = 20.0 uV/nT, Gain = 1
+    static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
+#endif
     
     // Resume continuous mode with saved rate
     sensor->setContinuousMode(true, current_rate);

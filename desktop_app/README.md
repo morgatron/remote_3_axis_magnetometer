@@ -33,3 +33,22 @@ This application provides a real-time visualization and spectral analysis tool f
 - **Spectral Analysis**: Power Spectral Density (PSD) calculation using Welch's method from `scipy.signal`.
 - **Simulator Mode**: Built-in mock data generator for testing visualization and PSD without a physical sensor.
 - **MCU Control**: Directly send CLI commands to the microcontroller.
+- **Binary Data Acquisition**: Stream large acquisitions directly to disk in a structured binary format. The app creates a temporary binary file to log data in real-time, then compiles it into a standard NumPy (`.npy`) format upon completion (or auto-stop timeout).
+
+## Loading Saved Data
+To load the compiled `.npy` acquisition data in a Python script:
+```python
+import numpy as np
+
+# Load structured array
+data = np.load("acquisition.npy")
+
+# Access variables
+timestamps = data['timestamp_us']
+x = data['x']
+y = data['y']
+z = data['z']
+
+print(f"Loaded {len(data)} samples.")
+print(f"X mean: {np.mean(x):.2f}, Y mean: {np.mean(y):.2f}, Z mean: {np.mean(z):.2f}")
+```

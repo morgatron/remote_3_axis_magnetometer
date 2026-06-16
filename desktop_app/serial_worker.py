@@ -10,7 +10,7 @@ class SerialWorker(QThread):
     status_message = Signal(str)
     connection_status = Signal(bool)
 
-    def __init__(self, port, baudrate=115200):
+    def __init__(self, port, baudrate=921600):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
@@ -105,6 +105,10 @@ class SerialWorker(QThread):
                 self.status_message.emit("MCU: Streaming disabled.")
             elif cmd_up.startswith("RATE "):
                 self.status_message.emit(f"MCU: Rate set to {cmd[5:]}")
+            elif cmd_up == "STATUS":
+                self.status_message.emit("MCU: Sensor: RM3100")
+                self.status_message.emit("MCU: Streaming: ON" if self.streaming else "MCU: Streaming: OFF")
+                self.status_message.emit("MCU: Rate Code: 0x92")
             return
 
         if self.serial_port and self.serial_port.is_open:

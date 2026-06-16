@@ -39,20 +39,59 @@ String RM3100::getStatusString() {
 }
 
 void RM3100::setCycleCount(uint16_t x, uint16_t y, uint16_t z) {
+    // Read CMM register to check if continuous measurement mode is active
+    uint8_t cmm = readReg(RM3100_REG_CMM);
+    bool cmmActive = (cmm & 0x01) != 0;
+
+    if (cmmActive) {
+        // Temporarily stop continuous mode before modifying cycle counts to avoid ASIC lockup
+        writeReg(RM3100_REG_CMM, 0x00);
+        delayMicroseconds(20);
+    }
+
     writeReg(RM3100_REG_CCX, (x >> 8) & 0xFF);
     writeReg(RM3100_REG_CCX + 1, x & 0xFF);
     writeReg(RM3100_REG_CCY, (y >> 8) & 0xFF);
     writeReg(RM3100_REG_CCY + 1, y & 0xFF);
     writeReg(RM3100_REG_CCZ, (z >> 8) & 0xFF);
     writeReg(RM3100_REG_CCZ + 1, z & 0xFF);
+    delayMicroseconds(20);
+
+    if (cmmActive) {
+        // Restore continuous mode settings
+        writeReg(RM3100_REG_CMM, cmm);
+    }
 }
 
 void RM3100::setContinuousMode(bool enable, uint8_t rate) {
+    // Stop continuous mode first to prevent the ASIC state machine from locking up
+    writeReg(RM3100_REG_CMM, 0x00);
+    delayMicroseconds(20);
+
     if (enable) {
+        // Automatically adjust cycle count based on the requested rate
+        // to prevent the hardware cycle count duration from overriding/capping the rate.
+        uint16_t cc = 200; // Default: ~147 Hz limit
+        if (rate == 0x92) {        // 600 Hz
+            cc = 30; // Max rate ~890 Hz
+        } else if (rate == 0x93) { // 300 Hz
+            cc = 50; // Max rate ~534 Hz
+        } else if (rate == 0x94) { // 150 Hz
+            cc = 100; // Max rate ~284 Hz
+        }
+        
+        // Write the dynamically scaled cycle counts
+        writeReg(RM3100_REG_CCX, (cc >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCX + 1, cc & 0xFF);
+        writeReg(RM3100_REG_CCY, (cc >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCY + 1, cc & 0xFF);
+        writeReg(RM3100_REG_CCZ, (cc >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCZ + 1, cc & 0xFF);
+        delayMicroseconds(20);
+
         writeReg(RM3100_REG_TMRC, rate);
+        delayMicroseconds(20);
         writeReg(RM3100_REG_CMM, 0x79); // Alarm off, X,Y,Z enabled, Continuous on
-    } else {
-        writeReg(RM3100_REG_CMM, 0x00);
     }
 }
 
