@@ -2,7 +2,7 @@
 
 FLC100_ADS131::FLC100_ADS131(int csPin, int drdyPin, int resetPin)
     : _csPin(csPin), _drdyPin(drdyPin), _resetPin(resetPin), _spi(NULL),
-      _spiSettings(4000000, MSBFIRST, SPI_MODE1) {}
+      _spiSettings(1000000, MSBFIRST, SPI_MODE1) {}
 
 bool FLC100_ADS131::begin() {
     return begin(SPI);

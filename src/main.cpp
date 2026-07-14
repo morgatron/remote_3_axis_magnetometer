@@ -68,6 +68,7 @@ void setup() {
     
     // Start generating external clock for the ADS131E08 (since CLKSEL is tied low)
     startClockGenerator();
+    delay(200); // Give the ADS131E08 time to complete its internal POR with the new clock
     
     serialCLI.begin();
 
