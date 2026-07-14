@@ -48,10 +48,26 @@ void loadSettings() {
 
 CLI serialCLI(sensor, streaming, current_rate, saveSettings);
 
+#define CLK_GEN_PIN 27
+
+void startClockGenerator() {
+    pinMode(CLK_GEN_PIN, OUTPUT);
+#if defined(ESP_ARDUINO_VERSION) && (ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0))
+    ledcAttach(CLK_GEN_PIN, 2048000, 1);
+    ledcWrite(CLK_GEN_PIN, 1);
+#else
+    ledcSetup(0, 2048000, 1); // Channel 0, 2.048 MHz, 1-bit resolution
+    ledcAttachPin(CLK_GEN_PIN, 0);
+    ledcWrite(0, 1);
+#endif
+}
+
 void setup() {
     Serial.begin(921600);
     while (!Serial) delay(10);
     
+    // Start generating external clock for the ADS131E08 (since CLKSEL is tied low)
+    startClockGenerator();
     
     serialCLI.begin();
 
