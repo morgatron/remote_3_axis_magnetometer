@@ -50,6 +50,7 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     // 0xE0 enables VREF = 4.0V (requires AVDD >= 4.3V)
     // 0xC0 enables VREF = 2.4V (standard for 3.3V systems)
     writeRegister(ADS131_REG_CONFIG3, _vref > 3.0f ? 0xE0 : 0xC0);
+    delay(150); // Wait for the internal reference to charge the VREFP capacitor
 
     // Configure Channel Settings
     // Bits [6:4] configure Programmable Gain Amplifier (PGA)
