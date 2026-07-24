@@ -29,8 +29,7 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     delay(150); // Wait for reset to execute and registers to clear
 
     // Stop continuous read mode to allow writing to registers
-    sendCommand(ADS131_CMD_SDATAC);
-    delayMicroseconds(10);
+    stopContinuous();
 
     // Verify SPI communication by reading the Device ID register
     uint8_t id = readRegister(ADS131_REG_ID);
@@ -143,22 +142,74 @@ void FLC100_ADS131::setContinuousMode(bool enable, uint8_t rate_code) {
 }
 
 String FLC100_ADS131::getStatusString() {
-    sendCommand(ADS131_CMD_SDATAC);
-    delayMicroseconds(10);
+    stopContinuous();
 
-    uint8_t id = readRegister(ADS131_REG_ID);
-    uint8_t conf1 = readRegister(ADS131_REG_CONFIG1);
-    uint8_t conf3 = readRegister(ADS131_REG_CONFIG3);
+    String s = "";
+    s += "Device ID: 0x" + String(readRegister(ADS131_REG_ID), HEX) + "\r\n";
+    s += "CONFIG1: 0x" + String(readRegister(ADS131_REG_CONFIG1), HEX) + "\r\n";
+    s += "CONFIG2: 0x" + String(readRegister(ADS131_REG_CONFIG2), HEX) + "\r\n";
+    s += "CONFIG3: 0x" + String(readRegister(ADS131_REG_CONFIG3), HEX) + "\r\n";
+    s += "CH1SET:  0x" + String(readRegister(ADS131_REG_CH1SET), HEX) + "\r\n";
+    s += "CH2SET:  0x" + String(readRegister(ADS131_REG_CH2SET), HEX) + "\r\n";
+    s += "CH3SET:  0x" + String(readRegister(ADS131_REG_CH3SET), HEX) + "\r\n";
+    s += "CH4SET:  0x" + String(readRegister(ADS131_REG_CH4SET), HEX) + "\r\n";
+    s += "CH5SET:  0x" + String(readRegister(ADS131_REG_CH5SET), HEX) + "\r\n";
+    s += "VREF:    " + String(_vref, 2) + "V\r\n";
+    s += "Gain:    " + String(_gain) + "\r\n";
 
     sendCommand(ADS131_CMD_RDATAC);
     delayMicroseconds(10);
 
-    String s = "Device ID: 0x" + String(id, HEX);
-    s += " | CONFIG1: 0x" + String(conf1, HEX);
-    s += " | CONFIG3: 0x" + String(conf3, HEX);
-    s += " | VREF: " + String(_vref, 2) + "V";
-    s += " | Gain: " + String(_gain);
+    // Wait for DRDY to go low to capture a fresh, synchronized sample (up to 10ms timeout)
+    uint32_t startWait = millis();
+    while (digitalRead(_drdyPin) == HIGH && (millis() - startWait) < 10) {
+        delayMicroseconds(10);
+    }
+
+    // Read one sample to capture the raw SPI bytes
+    _spi->beginTransaction(_spiSettings);
+    digitalWrite(_csPin, LOW);
+    uint8_t buffer[12];
+    for (int i = 0; i < 12; i++) {
+        buffer[i] = _spi->transfer(0x00);
+    }
+    digitalWrite(_csPin, HIGH);
+    _spi->endTransaction();
+
+    s += "Raw SPI Bytes: ";
+    for (int i = 0; i < 12; i++) {
+        char buf[8];
+        sprintf(buf, "%02X ", buffer[i]);
+        s += buf;
+    }
+    s += "\r\n";
+
     return s;
+}
+
+void FLC100_ADS131::setTestSignal(bool enable) {
+    if (!_spi) return;
+    
+    stopContinuous();
+
+    if (enable) {
+        // CONFIG2: Enable internal test source (0xF0 enables internal, 1Hz square wave)
+        writeRegister(ADS131_REG_CONFIG2, 0xF0);
+        // Set MUX on channels 1-3 to internal test signal (0x05)
+        writeRegister(ADS131_REG_CH1SET, 0x05);
+        writeRegister(ADS131_REG_CH2SET, 0x05);
+        writeRegister(ADS131_REG_CH3SET, 0x05);
+    } else {
+        // CONFIG2: Disable internal test source (0xE0)
+        writeRegister(ADS131_REG_CONFIG2, 0xE0);
+        // Set MUX on channels 1-3 back to normal inputs (0x00)
+        writeRegister(ADS131_REG_CH1SET, 0x00);
+        writeRegister(ADS131_REG_CH2SET, 0x00);
+        writeRegister(ADS131_REG_CH3SET, 0x00);
+    }
+
+    sendCommand(ADS131_CMD_RDATAC);
+    delayMicroseconds(10);
 }
 
 void FLC100_ADS131::setCalibration(float vref_v, float sensitivity_uv_nt, uint8_t gain) {
@@ -167,8 +218,7 @@ void FLC100_ADS131::setCalibration(float vref_v, float sensitivity_uv_nt, uint8_
     _gain = gain;
 
     if (_spi) {
-        sendCommand(ADS131_CMD_SDATAC);
-        delayMicroseconds(10);
+        stopContinuous();
 
         writeRegister(ADS131_REG_CONFIG3, _vref > 3.0f ? 0xE0 : 0xC0);
 
@@ -214,4 +264,15 @@ uint8_t FLC100_ADS131::readRegister(uint8_t reg) {
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
     return val;
+}
+
+void FLC100_ADS131::stopContinuous() {
+    // Wait for DRDY to go low to synchronize with conversion cycles
+    uint32_t startWait = millis();
+    while (digitalRead(_drdyPin) == HIGH && (millis() - startWait) < 10) {
+        delayMicroseconds(10);
+    }
+    // Immediately send SDATAC to stop continuous read
+    sendCommand(ADS131_CMD_SDATAC);
+    delayMicroseconds(100); // Give the device time to register the SDATAC command
 }

@@ -60,6 +60,7 @@ public:
     void setCalibration(float vref_v, float sensitivity_uv_nt, uint8_t gain = 1);
     uint8_t readRegister(uint8_t reg);
     void writeRegister(uint8_t reg, uint8_t val);
+    void setTestSignal(bool enable);
 
 private:
     int _csPin;
@@ -73,6 +74,7 @@ private:
     uint8_t _gain = 1;              // PGA Gain: 1, 2, 4, 8, 12 etc (default 1)
 
     void sendCommand(uint8_t cmd);
+    void stopContinuous();
 };
 
 #endif

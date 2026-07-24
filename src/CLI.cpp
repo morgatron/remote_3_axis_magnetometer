@@ -1,5 +1,6 @@
 #include "CLI.h"
 #include "RM3100.h"
+#include "FLC100_ADS131.h"
 
 CLI::CLI(Magnetometer* sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)())
     : _sensor(sensor), _streaming(streaming), _current_rate(current_rate), _saveCallback(saveCallback) {}
@@ -68,6 +69,18 @@ void CLI::handleCommand(String cmd) {
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
         Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
         Serial.println(_sensor->getStatusString());
+    } else if (cmd == "TEST ON") {
+        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
+            static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(true);
+            Serial.println("Internal test signal enabled (1Hz square wave).");
+        } else {
+            Serial.println("TEST command only supported for FLC100-ADS131E08.");
+        }
+    } else if (cmd == "TEST OFF") {
+        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
+            static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(false);
+            Serial.println("Internal test signal disabled. Normal inputs active.");
+        }
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");
         Serial.println(cmd);

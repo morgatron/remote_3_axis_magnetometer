@@ -53,12 +53,12 @@ CLI serialCLI(sensor, streaming, current_rate, saveSettings);
 void startClockGenerator() {
     pinMode(CLK_GEN_PIN, OUTPUT);
 #if defined(ESP_ARDUINO_VERSION) && (ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0))
-    ledcAttach(CLK_GEN_PIN, 2048000, 1);
-    ledcWrite(CLK_GEN_PIN, 1);
+    ledcAttach(CLK_GEN_PIN, 2048000, 4); // 4-bit resolution
+    ledcWrite(CLK_GEN_PIN, 8);           // 50% duty (8 of 16)
 #else
-    ledcSetup(0, 2048000, 1); // Channel 0, 2.048 MHz, 1-bit resolution
+    ledcSetup(0, 2048000, 4);            // Channel 0, 2.048 MHz, 4-bit resolution
     ledcAttachPin(CLK_GEN_PIN, 0);
-    ledcWrite(0, 1);
+    ledcWrite(0, 8);                     // 50% duty (8 of 16)
 #endif
 }
 
@@ -131,12 +131,50 @@ void loop() {
         int32_t x, y, z;
         sensor->readXYZ(x, y, z);
         
-        Serial.print(micros());
+#if (SENSOR_TYPE == SENSOR_TYPE_FLC100)
+        // Downsample the high-speed ADC data to exactly 10 Hz using a software moving average.
+        // This increases resolution, filters noise, and prevents serial buffer flood.
+        uint16_t decimationFactor = 100; // Default for 1 kSPS (0x06)
+        if (current_rate == 0x05) decimationFactor = 200;      // 2 kSPS
+        else if (current_rate == 0x04) decimationFactor = 400; // 4 kSPS
+        else if (current_rate == 0x03) decimationFactor = 800; // 8 kSPS
+        else if (current_rate == 0x02) decimationFactor = 1600; // 16 kSPS
+
+        static int32_t sumX = 0, sumY = 0, sumZ = 0;
+        static uint16_t sampleCounter = 0;
+
+        sumX += x;
+        sumY += y;
+        sumZ += z;
+        sampleCounter++;
+
+        if (sampleCounter >= decimationFactor) {
+            int32_t avgX = sumX / decimationFactor;
+            int32_t avgY = sumY / decimationFactor;
+            int32_t avgZ = sumZ / decimationFactor;
+
+            sumX = 0;
+            sumY = 0;
+            sumZ = 0;
+            sampleCounter = 0;
+
+            Serial.print(esp_timer_get_time());
+            Serial.print(",");
+            Serial.print(avgX);
+            Serial.print(",");
+            Serial.print(avgY);
+            Serial.print(",");
+            Serial.println(avgZ);
+        }
+#else
+        // For RM3100, stream raw values directly (hardware controls low rates: 9 Hz to 600 Hz)
+        Serial.print(esp_timer_get_time());
         Serial.print(",");
         Serial.print(x);
         Serial.print(",");
         Serial.print(y);
         Serial.print(",");
         Serial.println(z);
+#endif
     }
 }

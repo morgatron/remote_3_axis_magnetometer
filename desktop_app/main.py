@@ -245,6 +245,11 @@ class MainWindow(QMainWindow):
         self.stop_rec_btn.setEnabled(False)
         self.stop_rec_btn.clicked.connect(self.stop_recording)
         sidebar_layout.addWidget(self.stop_rec_btn)
+
+        self.recover_rec_btn = QPushButton("Recover Interrupted (.tmp)...")
+        self.recover_rec_btn.setToolTip("Recover data from an interrupted or crashed recording session (.tmp file)")
+        self.recover_rec_btn.clicked.connect(self.recover_tmp_file_dialog)
+        sidebar_layout.addWidget(self.recover_rec_btn)
         
         sidebar_layout.addSpacing(10)
         
@@ -431,7 +436,9 @@ class MainWindow(QMainWindow):
     def handle_data(self, ts, x, y, z):
         if self.is_recording and self.log_file:
             try:
-                self.log_file.write(struct.pack('<Qiii', int(ts), x, y, z))
+                # Store timestamp in seconds as 64-bit IEEE float (<d)
+                ts_sec = float(ts) / 1000000.0
+                self.log_file.write(struct.pack('<diii', ts_sec, x, y, z))
                 self.recorded_samples += 1
                 if self.recorded_samples % 10 == 0:
                     self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
@@ -615,6 +622,25 @@ class MainWindow(QMainWindow):
 
         # Use a temporary file for raw binary streaming
         self.temp_filepath = filepath + ".tmp"
+
+        # Check if an interrupted temp file already exists
+        if os.path.exists(self.temp_filepath):
+            reply = QMessageBox.question(
+                self,
+                "Interrupted Recording Found",
+                f"An interrupted temporary recording was found:\n{self.temp_filepath}\n\nWould you like to recover it to a .npy file before starting?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                rec_path = self.temp_filepath.rsplit('.tmp', 1)[0] + "_recovered.npy"
+                n_samples, err = self.convert_tmp_to_npy(self.temp_filepath, rec_path)
+                if err is None:
+                    QMessageBox.information(self, "Recovery Successful", f"Recovered {n_samples:,} samples to:\n{rec_path}")
+                else:
+                    QMessageBox.warning(self, "Recovery Warning", f"Could not recover file: {err}")
+            elif reply == QMessageBox.Cancel:
+                return
         try:
             self.log_file = open(self.temp_filepath, "wb")
         except Exception as e:
@@ -666,10 +692,10 @@ class MainWindow(QMainWindow):
         save_success = False
         try:
             if os.path.exists(self.temp_filepath):
-                # Read structured binary data from temp file
+                # Read structured binary data from temp file (time in seconds as float64)
                 data = np.fromfile(
                     self.temp_filepath,
-                    dtype=[('timestamp_us', '<u8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4')]
+                    dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4')]
                 )
                 # Save as standard NumPy .npy file
                 np.save(filepath, data)
@@ -712,6 +738,55 @@ class MainWindow(QMainWindow):
 
         if remaining <= 0:
             self.stop_recording()
+
+    def convert_tmp_to_npy(self, tmp_filepath, npy_filepath):
+        """Converts an interrupted raw binary .tmp file into a structured .npy dataset."""
+        try:
+            data = np.fromfile(
+                tmp_filepath,
+                dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4')]
+            )
+            np.save(npy_filepath, data)
+            return len(data), None
+        except Exception as e:
+            return 0, str(e)
+
+    def recover_tmp_file_dialog(self):
+        """Allows the user to manually select and recover any interrupted .tmp binary file into a .npy dataset."""
+        default_tmp = self.file_path_input.text().strip() + ".tmp"
+        initial_dir = default_tmp if os.path.exists(default_tmp) else ""
+        tmp_filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Interrupted Recording (.tmp)",
+            initial_dir,
+            "Temporary Binary Files (*.tmp);;All Files (*)"
+        )
+        if not tmp_filepath:
+            return
+
+        default_out = tmp_filepath.rsplit('.tmp', 1)[0]
+        if not default_out.endswith('.npy'):
+            default_out += '.npy'
+
+        npy_filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Recovered NumPy File",
+            default_out,
+            "NumPy Binary Files (*.npy);;All Files (*)"
+        )
+        if not npy_filepath:
+            return
+
+        n_samples, err = self.convert_tmp_to_npy(tmp_filepath, npy_filepath)
+        if err is None:
+            QMessageBox.information(
+                self,
+                "Recovery Successful",
+                f"Successfully recovered {n_samples:,} samples to:\n{npy_filepath}"
+            )
+            self.status_bar.showMessage(f"Recovered {n_samples} samples -> {os.path.basename(npy_filepath)}")
+        else:
+            QMessageBox.critical(self, "Recovery Error", f"Failed to recover file:\n{err}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
