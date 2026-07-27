@@ -58,6 +58,7 @@ public:
 
     // Configuration / Calibration
     void setCalibration(float vref_v, float sensitivity_uv_nt, uint8_t gain = 1);
+    void setExternalReference(bool external);
     uint8_t readRegister(uint8_t reg);
     void writeRegister(uint8_t reg, uint8_t val);
     void setTestSignal(bool enable);
@@ -69,9 +70,10 @@ private:
     SPIClass *_spi;
     SPISettings _spiSettings;
 
-    float _vref = 2.4f;             // Default VREF = 2.4V (highly stable internal ref)
+    float _vref = 2.4f;             // Default VREF = 2.4V
     float _sensitivity = 20.0f;     // FLC-100 sensitivity: 20 uV / nT (0.02 mV/nT)
     uint8_t _gain = 1;              // PGA Gain: 1, 2, 4, 8, 12 etc (default 1)
+    bool _useExternalRef = true;    // True when external VREF reference IC is present on PCB
 
     void sendCommand(uint8_t cmd);
     void stopContinuous();

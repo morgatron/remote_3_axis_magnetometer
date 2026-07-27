@@ -83,8 +83,8 @@ class MainWindow(QMainWindow):
 
         ctrl_layout.addWidget(QLabel("Rate:"))
         self.rate_combo = QComboBox()
-        self.rate_combo.setFixedWidth(130)
-        self.populate_rates_for_sensor("RM3100")
+        self.rate_combo.setFixedWidth(160)
+        self.populate_rates_for_sensor("FLC100-ADS131E08")
         self.rate_combo.currentIndexChanged.connect(self.set_mcu_rate)
         ctrl_layout.addWidget(self.rate_combo)
 
@@ -108,6 +108,14 @@ class MainWindow(QMainWindow):
         self.auto_psd_cb = QCheckBox("Auto-Update PSD")
         self.auto_psd_cb.setChecked(True)
         ctrl_layout.addWidget(self.auto_psd_cb)
+
+        ctrl_layout.addSpacing(20)
+        ctrl_layout.addWidget(QLabel("Live Filter:"))
+        self.filter_combo = QComboBox()
+        for val in ["Off (Raw)", "Low-Pass 50Hz", "Low-Pass 10Hz"]:
+            self.filter_combo.addItem(val)
+        self.filter_combo.setCurrentText("Off (Raw)")
+        ctrl_layout.addWidget(self.filter_combo)
 
         main_layout.addLayout(ctrl_layout)
 
@@ -453,8 +461,8 @@ class MainWindow(QMainWindow):
         
         self.ptr = (self.ptr + 1) % self.max_samples
 
-        # Throttle UI updates to ~30Hz
-        if self.ptr % 2 == 0:
+        # Throttle UI updates to keep rendering fast and smooth at up to 1000 Hz
+        if self.ptr % 25 == 0:
             # Reconstruct continuous data from ring buffer
             data_t = np.concatenate((self.time_buffer[self.ptr:], self.time_buffer[:self.ptr]))
             data_x = np.concatenate((self.x_buffer[self.ptr:], self.x_buffer[:self.ptr]))
@@ -465,9 +473,27 @@ class MainWindow(QMainWindow):
             if np.any(valid_mask):
                 t_valid = data_t[valid_mask]
                 t_plot = (t_valid - t_valid[0]) / 1000000.0 # us to s
-                self.curve_x.setData(t_plot, data_x[valid_mask])
-                self.curve_y.setData(t_plot, data_y[valid_mask])
-                self.curve_z.setData(t_plot, data_z[valid_mask])
+                x_val = data_x[valid_mask].astype(float)
+                y_val = data_y[valid_mask].astype(float)
+                z_val = data_z[valid_mask].astype(float)
+
+                filt_mode = self.filter_combo.currentText()
+                if "50Hz" in filt_mode:
+                    w = 20 # ~50 Hz smoothing window at 1 kS/s
+                    if len(x_val) >= w:
+                        x_val = np.convolve(x_val, np.ones(w)/w, mode='same')
+                        y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
+                        z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
+                elif "10Hz" in filt_mode:
+                    w = 100 # ~10 Hz smoothing window at 1 kS/s
+                    if len(x_val) >= w:
+                        x_val = np.convolve(x_val, np.ones(w)/w, mode='same')
+                        y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
+                        z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
+
+                self.curve_x.setData(t_plot, x_val)
+                self.curve_y.setData(t_plot, y_val)
+                self.curve_z.setData(t_plot, z_val)
 
                 # Calculate and update channel means
                 self.mean_x_label.setText(f"X: {np.mean(data_x[valid_mask]):.2f}")
@@ -538,11 +564,12 @@ class MainWindow(QMainWindow):
         
         if sensor_name == "FLC100-ADS131E08":
             rates = [
-                ("1 kSPS (06)", 0x06),
-                ("2 kSPS (05)", 0x05),
-                ("4 kSPS (04)", 0x04),
-                ("8 kSPS (03)", 0x03),
-                ("16 kSPS (02)", 0x02)
+                ("10 Hz (0A)", 0x0A),
+                ("50 Hz (32)", 0x32),
+                ("100 Hz (64)", 0x64),
+                ("250 Hz (FA)", 0xFA),
+                ("500 Hz (05)", 0x05),
+                ("1000 Hz / 1 kS/s (06)", 0x06)
             ]
         else: # Default (RM3100)
             rates = [

@@ -35,6 +35,8 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     uint8_t id = readRegister(ADS131_REG_ID);
     if (id == 0x00 || id == 0xFF) {
         // SPI communication failed (no response)
+        Serial.print("[ADS131E08] SPI ID Read Failed. Received ID Byte: 0x");
+        Serial.println(id, HEX);
         return false;
     }
 
@@ -45,11 +47,17 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     // CONFIG2: 0xE0 = Default internal test source controls
     writeRegister(ADS131_REG_CONFIG2, 0xE0);
 
-    // CONFIG3: Enable internal reference buffer
-    // 0xE0 enables VREF = 4.0V (requires AVDD >= 4.3V)
-    // 0xC0 enables VREF = 2.4V (standard for 3.3V systems)
-    writeRegister(ADS131_REG_CONFIG3, _vref > 3.0f ? 0xE0 : 0xC0);
-    delay(150); // Wait for the internal reference to charge the VREFP capacitor
+    // CONFIG3: Configure reference buffer and single-supply mode
+    // Bit 7 (PD_REFBUF): 0 = Power-down internal reference buffer (MUST be 0 when external reference IC drives VREFP pin)
+    //                    1 = Enable internal reference buffer
+    uint8_t config3 = 0x45; // External VREF mode (PD_REFBUF = 0, SINGLE_SUPPLY = 1, Bit 0 = 1)
+    if (!_useExternalRef) {
+        config3 = (_vref > 3.0f) ? 0xE5 : 0xC5;
+    }
+    writeRegister(ADS131_REG_CONFIG3, config3);
+    if (!_useExternalRef) {
+        delay(150); // Wait for the internal reference to charge the VREFP capacitor
+    }
 
     // Configure Channel Settings
     // Bits [6:4] configure Programmable Gain Amplifier (PGA)
@@ -90,10 +98,10 @@ void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
 
-    // Read the first 12 bytes: 3 bytes Status + 3 channels * 3 bytes data
-    // Terminate transaction early by pulling CS HIGH (standard ADS131 optimization)
-    uint8_t buffer[12];
-    for (int i = 0; i < 12; i++) {
+    // Read full 27 bytes: 3 bytes Status Header + 8 channels * 3 bytes
+    // Reading all 27 bytes ensures SPI shift register alignment never shifts
+    uint8_t buffer[27];
+    for (int i = 0; i < 27; i++) {
         buffer[i] = _spi->transfer(0x00);
     }
 
@@ -123,13 +131,13 @@ void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
 }
 
 void FLC100_ADS131::setContinuousMode(bool enable, uint8_t rate_code) {
-    sendCommand(ADS131_CMD_SDATAC);
-    delayMicroseconds(10);
+    stopContinuous();
 
     if (enable) {
-        // rate_code bits [2:0] map directly to DR[2:0] configuration bits
-        uint8_t config1Val = 0x90 | (rate_code & 0x07);
-        writeRegister(ADS131_REG_CONFIG1, config1Val);
+        // ALWAYS keep ADS131E08 hardware rate locked at 1 kSPS (0x96)
+        // 0x96 = 1 kSPS (24-bit resolution, DR[2:0] = 110)
+        // Software decimation handles 10 Hz to 1000 Hz target streaming rates
+        writeRegister(ADS131_REG_CONFIG1, 0x96);
 
         sendCommand(ADS131_CMD_START);
         delayMicroseconds(10);
@@ -169,8 +177,8 @@ String FLC100_ADS131::getStatusString() {
     // Read one sample to capture the raw SPI bytes
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
-    uint8_t buffer[12];
-    for (int i = 0; i < 12; i++) {
+    uint8_t buffer[27];
+    for (int i = 0; i < 27; i++) {
         buffer[i] = _spi->transfer(0x00);
     }
     digitalWrite(_csPin, HIGH);
@@ -183,6 +191,17 @@ String FLC100_ADS131::getStatusString() {
         s += buf;
     }
     s += "\r\n";
+
+    int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
+    if (rawX & 0x800000) rawX |= 0xFF000000;
+    int32_t rawY = (int32_t)((buffer[6] << 16) | (buffer[7] << 8) | buffer[8]);
+    if (rawY & 0x800000) rawY |= 0xFF000000;
+    int32_t rawZ = (int32_t)((buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
+    if (rawZ & 0x800000) rawZ |= 0xFF000000;
+
+    s += "CH1 Raw Count: " + String(rawX) + "\r\n";
+    s += "CH2 Raw Count: " + String(rawY) + "\r\n";
+    s += "CH3 Raw Count: " + String(rawZ) + "\r\n";
 
     return s;
 }
@@ -220,7 +239,8 @@ void FLC100_ADS131::setCalibration(float vref_v, float sensitivity_uv_nt, uint8_
     if (_spi) {
         stopContinuous();
 
-        writeRegister(ADS131_REG_CONFIG3, _vref > 3.0f ? 0xE0 : 0xC0);
+        uint8_t config3 = _useExternalRef ? 0x45 : ((_vref > 3.0f) ? 0xE5 : 0xC5);
+        writeRegister(ADS131_REG_CONFIG3, config3);
 
         uint8_t chSetting = 0x00;
         if (_gain == 2) chSetting = 0x10;
@@ -275,4 +295,10 @@ void FLC100_ADS131::stopContinuous() {
     // Immediately send SDATAC to stop continuous read
     sendCommand(ADS131_CMD_SDATAC);
     delayMicroseconds(100); // Give the device time to register the SDATAC command
+}
+
+void FLC100_ADS131::setExternalReference(bool external) {
+    _useExternalRef = external;
+    uint8_t config3 = external ? 0x45 : ((_vref > 3.0f) ? 0xE5 : 0xC5);
+    writeRegister(ADS131_REG_CONFIG3, config3);
 }

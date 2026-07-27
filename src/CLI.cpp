@@ -81,6 +81,21 @@ void CLI::handleCommand(String cmd) {
             static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(false);
             Serial.println("Internal test signal disabled. Normal inputs active.");
         }
+    } else if (cmd.startsWith("GAIN ")) {
+        uint8_t gain = (uint8_t)cmd.substring(5).toInt();
+        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
+            static_cast<FLC100_ADS131*>(_sensor)->setCalibration(2.4f, 20.0f, gain);
+            Serial.print("PGA Gain set to ");
+            Serial.println(gain);
+        }
+    } else if (cmd.startsWith("VREF ")) {
+        float vref = cmd.substring(5).toFloat();
+        if (vref > 0.0f && _sensor->getSensorName() == "FLC100-ADS131E08") {
+            static_cast<FLC100_ADS131*>(_sensor)->setCalibration(vref, 20.0f, 1);
+            Serial.print("VREF set to ");
+            Serial.print(vref);
+            Serial.println(" V");
+        }
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");
         Serial.println(cmd);
