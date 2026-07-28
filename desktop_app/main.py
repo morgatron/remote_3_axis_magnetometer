@@ -10,7 +10,8 @@ from scipy import signal
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QComboBox, QLabel, 
                              QTabWidget, QStatusBar, QLineEdit, QCheckBox, QFrame,
-                             QFileDialog, QSpinBox, QMessageBox, QGroupBox, QStackedWidget)
+                             QFileDialog, QSpinBox, QMessageBox, QGroupBox, QStackedWidget,
+                             QDialog, QFormLayout)
 from PySide6.QtCore import Slot, Qt, QTimer
 import pyqtgraph as pg
 import serial.tools.list_ports
@@ -70,6 +71,11 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_ports)
         conn_layout.addWidget(refresh_btn)
+        
+        provision_btn = QPushButton("Provision Node...")
+        provision_btn.setToolTip("Configure WiFi, streaming output mode, and target server IP for remote node deployment")
+        provision_btn.clicked.connect(self.open_provision_dialog)
+        conn_layout.addWidget(provision_btn)
         
         conn_layout.addStretch()
         main_layout.addLayout(conn_layout)
@@ -604,6 +610,88 @@ class MainWindow(QMainWindow):
             self.serial_thread.send_command(cmd)
         else:
             self.status_bar.showMessage("Not connected!")
+
+    def open_provision_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Provision Remote Node (ESP32 NVS Setup)")
+        dialog.setFixedWidth(420)
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        # Output Mode
+        mode_combo = QComboBox()
+        mode_combo.addItem("SERIAL (USB Testing Mode)", "SERIAL")
+        mode_combo.addItem("WIFI (Remote UDP Burst Mode)", "WIFI")
+        mode_combo.addItem("BOTH (Simultaneous USB & WiFi)", "BOTH")
+        form.addRow("Output Mode:", mode_combo)
+
+        # WiFi SSID
+        ssid_input = QLineEdit()
+        ssid_input.setPlaceholderText("Network SSID")
+        if hasattr(self, 'wifi_ssid'):
+            ssid_input.setText(self.wifi_ssid)
+        form.addRow("WiFi SSID:", ssid_input)
+
+        # WiFi Password
+        pass_input = QLineEdit()
+        pass_input.setEchoMode(QLineEdit.Password)
+        pass_input.setPlaceholderText("Network Password")
+        form.addRow("WiFi Password:", pass_input)
+
+        # Target IP
+        local_ip = "255.255.255.255"
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            pass
+
+        target_input = QLineEdit(local_ip)
+        target_input.setPlaceholderText("e.g. 192.168.1.100")
+        form.addRow("Target Server IP:", target_input)
+
+        layout.addLayout(form)
+
+        btn_box = QHBoxLayout()
+        apply_btn = QPushButton("Apply & Save to ESP32 NVS")
+        apply_btn.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px;")
+
+        def apply_provisioning():
+            mode_val = mode_combo.currentData()
+            ssid_val = ssid_input.text().strip()
+            pass_val = pass_input.text().strip()
+            target_val = target_input.text().strip()
+
+            if mode_val in ["WIFI", "BOTH"] and not ssid_val:
+                QMessageBox.warning(dialog, "Missing WiFi SSID", "Please enter a valid WiFi SSID for WiFi mode.")
+                return
+
+            self.send_mcu_command(f"MODE {mode_val}")
+            if ssid_val and pass_val:
+                self.send_mcu_command(f"WIFI {ssid_val} {pass_val}")
+            if target_val:
+                self.send_mcu_command(f"TARGET {target_val}")
+
+            QMessageBox.information(
+                dialog,
+                "Provisioning Saved",
+                f"Node provisioned successfully!\n\n- Output Mode: {mode_val}\n- Target IP: {target_val}\n\nParameters saved to ESP32 NVS Flash."
+            )
+            dialog.accept()
+
+        apply_btn.clicked.connect(apply_provisioning)
+        btn_box.addWidget(apply_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_box.addWidget(cancel_btn)
+
+        layout.addLayout(btn_box)
+        dialog.exec()
 
     def set_mcu_rate(self):
         if not hasattr(self, 'rate_combo'):
