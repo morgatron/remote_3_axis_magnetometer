@@ -52,6 +52,7 @@ public:
     bool begin(SPIClass &spi);
     bool dataReady() override;
     void readXYZ(int32_t &x, int32_t &y, int32_t &z) override;
+    void readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) override;
     void setContinuousMode(bool enable, uint8_t rate_code = 0x06) override; // Default rate_code: 0x06 (1kSPS)
     String getStatusString() override;
     String getSensorName() override { return "FLC100-ADS131E08"; }

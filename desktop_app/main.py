@@ -3,7 +3,9 @@ import json
 import os
 import time
 import struct
+from datetime import datetime
 import numpy as np
+import h5py
 from scipy import signal
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QComboBox, QLabel, 
@@ -13,6 +15,7 @@ from PySide6.QtCore import Slot, Qt, QTimer
 import pyqtgraph as pg
 import serial.tools.list_ports
 from serial_worker import SerialWorker
+from udp_worker import UdpWorker
 
 CONFIG_FILE = "config.json"
 
@@ -193,8 +196,8 @@ class MainWindow(QMainWindow):
         # File selector section
         sidebar_layout.addWidget(QLabel("Output File:"))
         file_layout = QHBoxLayout()
-        self.file_path_input = QLineEdit("acquisition.npy")
-        self.file_path_input.setToolTip("Path to the output NumPy Binary (.npy) file")
+        self.file_path_input = QLineEdit("acquisition.h5")
+        self.file_path_input.setToolTip("Path to the output HDF5 (.h5) dataset file")
         file_layout.addWidget(self.file_path_input)
         
         browse_btn = QPushButton("...")
@@ -424,7 +427,11 @@ class MainWindow(QMainWindow):
                 return
             
             self.save_config()
-            self.serial_thread = SerialWorker(port)
+            if port.startswith("WIFI_UDP"):
+                self.serial_thread = UdpWorker(listen_port=9876)
+            else:
+                self.serial_thread = SerialWorker(port)
+                
             self.serial_thread.data_received.connect(self.handle_data)
             self.serial_thread.status_message.connect(self.handle_status_message)
             self.serial_thread.connection_status.connect(self.handle_connection_status)
@@ -440,13 +447,13 @@ class MainWindow(QMainWindow):
             # Request MCU status after a 1.5 second delay (allows ESP32 auto-reset bootloader to pass)
             QTimer.singleShot(1500, lambda: self.send_mcu_command("STATUS"))
 
-    @Slot(float, int, int, int)
-    def handle_data(self, ts, x, y, z):
+    @Slot(object, object, object, object, object)
+    def handle_data(self, ts, x, y, z, status=0xC00000):
         if self.is_recording and self.log_file:
             try:
-                # Store timestamp in seconds as 64-bit IEEE float (<d)
+                # Store timestamp in seconds as 64-bit IEEE float (<d), x, y, z as int32 (<i), status as uint32 (<I)
                 ts_sec = float(ts) / 1000000.0
-                self.log_file.write(struct.pack('<diii', ts_sec, x, y, z))
+                self.log_file.write(struct.pack('<diiiI', ts_sec, x, y, z, status))
                 self.recorded_samples += 1
                 if self.recorded_samples % 10 == 0:
                     self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
@@ -621,7 +628,7 @@ class MainWindow(QMainWindow):
             self,
             "Select Output File",
             self.file_path_input.text(),
-            "NumPy Binary Files (*.npy);;All Files (*)"
+            "HDF5 Scientific Files (*.h5 *.hdf5);;NumPy Binary Files (*.npy);;All Files (*)"
         )
         if filename:
             self.file_path_input.setText(filename)
@@ -677,6 +684,8 @@ class MainWindow(QMainWindow):
         self.is_recording = True
         self.recorded_samples = 0
         self.record_start_time = time.time()
+        self.record_start_iso = datetime.now().astimezone().isoformat()
+        self.record_start_unix = self.record_start_time
 
         # Update UI state
         self.start_rec_btn.setEnabled(False)
@@ -714,21 +723,38 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_bar.showMessage(f"Error closing temp file: {str(e)}")
 
-        # Convert raw binary to structured .npy format
+        # Convert raw binary to output format (.h5 / .hdf5 or .npy)
         filepath = self.file_path_input.text().strip()
         save_success = False
         try:
             if os.path.exists(self.temp_filepath):
-                # Read structured binary data from temp file (time in seconds as float64)
+                # Read structured binary data from temp file
                 data = np.fromfile(
                     self.temp_filepath,
-                    dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4')]
+                    dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
                 )
-                # Save as standard NumPy .npy file
-                np.save(filepath, data)
+                start_iso = getattr(self, 'record_start_iso', datetime.now().astimezone().isoformat())
+                start_unix = getattr(self, 'record_start_unix', time.time())
+
+                if filepath.lower().endswith(('.h5', '.hdf5')):
+                    self.write_h5_dataset(filepath, data, start_iso, start_unix)
+                else:
+                    np.save(filepath, data)
+                    # Write sidecar JSON for .npy format
+                    sidecar_path = filepath.rsplit('.', 1)[0] + ".json"
+                    meta = {
+                        "start_time_iso": start_iso,
+                        "start_time_unix": start_unix,
+                        "sensor_type": getattr(self, 'detected_sensor', 'FLC100-ADS131E08'),
+                        "sample_count": len(data),
+                        "sample_rate_hz": 1000
+                    }
+                    with open(sidecar_path, 'w') as sf:
+                        json.dump(meta, sf, indent=2)
+
                 save_success = True
         except Exception as e:
-            self.status_bar.showMessage(f"Error compiling .npy file: {str(e)}")
+            self.status_bar.showMessage(f"Error saving dataset file: {str(e)}")
         finally:
             # Clean up temp file
             if hasattr(self, 'temp_filepath') and os.path.exists(self.temp_filepath):
@@ -751,7 +777,29 @@ class MainWindow(QMainWindow):
         # Make sure the final count is written
         self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
         if save_success:
-            self.status_bar.showMessage(f"NumPy Binary saved: {os.path.basename(filepath)} ({self.recorded_samples} samples)")
+            self.status_bar.showMessage(f"Dataset saved: {os.path.basename(filepath)} ({self.recorded_samples} samples)")
+
+    def write_h5_dataset(self, filepath, data, start_iso, start_unix):
+        """Writes structured data and metadata attributes to an HDF5 file."""
+        sensor_name = getattr(self, 'detected_sensor', 'FLC100-ADS131E08')
+        with h5py.File(filepath, 'w') as f:
+            # Metadata attributes
+            f.attrs['start_time_iso'] = start_iso
+            f.attrs['start_time_unix'] = start_unix
+            f.attrs['sensor_type'] = sensor_name
+            f.attrs['sample_rate_hz'] = 1000
+            f.attrs['sample_count'] = len(data)
+            f.attrs['vref_v'] = 2.4
+
+            # 1D Datasets with Gzip compression
+            f.create_dataset('time_s', data=data['time_s'], compression='gzip')
+            f.create_dataset('x', data=data['x'], compression='gzip')
+            f.create_dataset('y', data=data['y'], compression='gzip')
+            f.create_dataset('z', data=data['z'], compression='gzip')
+            f.create_dataset('status', data=data['status'], compression='gzip')
+
+            # Structured compound dataset
+            f.create_dataset('data', data=data, compression='gzip')
 
     def update_recording_timer(self):
         if not hasattr(self, 'is_recording') or not self.is_recording:
@@ -766,20 +814,23 @@ class MainWindow(QMainWindow):
         if remaining <= 0:
             self.stop_recording()
 
-    def convert_tmp_to_npy(self, tmp_filepath, npy_filepath):
-        """Converts an interrupted raw binary .tmp file into a structured .npy dataset."""
+    def convert_tmp_to_h5(self, tmp_filepath, h5_filepath):
+        """Converts an interrupted raw binary .tmp file into a structured HDF5 dataset."""
         try:
             data = np.fromfile(
                 tmp_filepath,
-                dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4')]
+                dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
             )
-            np.save(npy_filepath, data)
+            # Estimate start time from file creation time
+            mtime = os.path.getmtime(tmp_filepath)
+            start_iso = datetime.fromtimestamp(mtime).astimezone().isoformat()
+            self.write_h5_dataset(h5_filepath, data, start_iso, mtime)
             return len(data), None
         except Exception as e:
             return 0, str(e)
 
     def recover_tmp_file_dialog(self):
-        """Allows the user to manually select and recover any interrupted .tmp binary file into a .npy dataset."""
+        """Allows the user to manually select and recover any interrupted .tmp binary file into an HDF5 dataset."""
         default_tmp = self.file_path_input.text().strip() + ".tmp"
         initial_dir = default_tmp if os.path.exists(default_tmp) else ""
         tmp_filepath, _ = QFileDialog.getOpenFileName(
@@ -792,28 +843,34 @@ class MainWindow(QMainWindow):
             return
 
         default_out = tmp_filepath.rsplit('.tmp', 1)[0]
-        if not default_out.endswith('.npy'):
-            default_out += '.npy'
+        if not default_out.endswith('.h5') and not default_out.endswith('.hdf5'):
+            default_out += '.h5'
 
-        npy_filepath, _ = QFileDialog.getSaveFileName(
+        h5_filepath, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Recovered NumPy File",
+            "Save Recovered HDF5 File",
             default_out,
-            "NumPy Binary Files (*.npy);;All Files (*)"
+            "HDF5 Scientific Files (*.h5 *.hdf5);;All Files (*)"
         )
-        if not npy_filepath:
+        if not h5_filepath:
             return
 
-        n_samples, err = self.convert_tmp_to_npy(tmp_filepath, npy_filepath)
+        n_samples, err = self.convert_tmp_to_h5(tmp_filepath, h5_filepath)
         if err is None:
             QMessageBox.information(
                 self,
                 "Recovery Successful",
-                f"Successfully recovered {n_samples:,} samples to:\n{npy_filepath}"
+                f"Successfully recovered {n_samples:,} samples to:\n{h5_filepath}"
             )
-            self.status_bar.showMessage(f"Recovered {n_samples} samples -> {os.path.basename(npy_filepath)}")
+            self.status_bar.showMessage(f"Recovered {n_samples} samples -> {os.path.basename(h5_filepath)}")
         else:
             QMessageBox.critical(self, "Recovery Error", f"Failed to recover file:\n{err}")
+
+    def closeEvent(self, event):
+        if self.serial_thread and self.serial_thread.isRunning():
+            self.serial_thread.stop()
+            self.serial_thread.wait(1000)
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -6,7 +6,7 @@ import serial.tools.list_ports
 from PySide6.QtCore import QThread, Signal
 
 class SerialWorker(QThread):
-    data_received = Signal(float, int, int, int)  # timestamp, x, y, z
+    data_received = Signal(object, object, object, object, object)  # timestamp, x, y, z, status
     status_message = Signal(str)
     connection_status = Signal(bool)
 
@@ -73,20 +73,26 @@ class SerialWorker(QThread):
                 # Z: Static + Noise
                 z = int(20000 + random.gauss(0, 200))
 
-                self.data_received.emit(ts_us, x, y, z)
+                self.data_received.emit(ts_us, x, y, z, 0xC00000)
 
             time.sleep(sample_period)
 
     def parse_line(self, line):
-        # Expected format: timestamp_us,x,y,z
+        # Expected format: timestamp_us,x,y,z[,status_hex]
         try:
             parts = line.split(',')
-            if len(parts) == 4:
+            if len(parts) >= 4:
                 ts = float(parts[0]) # Raw microseconds
                 x = int(parts[1])
                 y = int(parts[2])
                 z = int(parts[3])
-                self.data_received.emit(ts, x, y, z)
+                status = 0xC00000
+                if len(parts) >= 5:
+                    try:
+                        status = int(parts[4], 16)
+                    except ValueError:
+                        status = 0xC00000
+                self.data_received.emit(ts, x, y, z, status)
         except (ValueError, IndexError):
             # Not a data line, might be a status message or help text
             self.status_message.emit(f"MCU: {line}")

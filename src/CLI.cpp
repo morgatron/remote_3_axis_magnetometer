@@ -1,6 +1,7 @@
 #include "CLI.h"
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
+#include <WiFi.h>
 
 CLI::CLI(Magnetometer* sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)())
     : _sensor(sensor), _streaming(streaming), _current_rate(current_rate), _saveCallback(saveCallback) {}
@@ -96,6 +97,65 @@ void CLI::handleCommand(String cmd) {
             Serial.print(vref);
             Serial.println(" V");
         }
+    } else if (cmd.startsWith("WIFI ")) {
+        String sub = cmd.substring(5);
+        sub.trim();
+        if (sub == "OFF") {
+            extern bool wifiConnected;
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            wifiConnected = false;
+            Serial.println("WiFi Disabled.");
+        } else if (sub == "STATUS") {
+            extern bool wifiConnected;
+            Serial.print("WiFi Connected: "); Serial.println(wifiConnected ? "YES" : "NO");
+            if (wifiConnected) {
+                Serial.print("IP Address: "); Serial.println(WiFi.localIP());
+                Serial.print("RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+            }
+        } else {
+            int spaceIdx = sub.indexOf(' ');
+            if (spaceIdx > 0) {
+                extern String wifiSSID, wifiPass;
+                extern void connectWiFi();
+                wifiSSID = sub.substring(0, spaceIdx);
+                wifiPass = sub.substring(spaceIdx + 1);
+                wifiSSID.trim();
+                wifiPass.trim();
+                connectWiFi();
+                _saveCallback();
+            } else {
+                Serial.println("Usage: WIFI <ssid> <password>");
+            }
+        }
+    } else if (cmd.startsWith("TARGET ")) {
+        String ipStr = cmd.substring(7);
+        ipStr.trim();
+        extern IPAddress targetIP;
+        if (targetIP.fromString(ipStr)) {
+            Serial.print("Target IP set to "); Serial.println(targetIP);
+            _saveCallback();
+        } else {
+            Serial.println("Invalid IP address format. Example: TARGET 192.168.1.100");
+        }
+    } else if (cmd.startsWith("MODE ")) {
+        String modeStr = cmd.substring(5);
+        modeStr.trim();
+        modeStr.toUpperCase();
+        extern uint8_t outputMode;
+        if (modeStr == "SERIAL") {
+            outputMode = 0;
+            Serial.println("Output Mode set to SERIAL.");
+        } else if (modeStr == "WIFI") {
+            outputMode = 1;
+            Serial.println("Output Mode set to WIFI.");
+        } else if (modeStr == "BOTH") {
+            outputMode = 2;
+            Serial.println("Output Mode set to BOTH (Serial & WiFi).");
+        } else {
+            Serial.println("Usage: MODE <SERIAL|WIFI|BOTH>");
+        }
+        _saveCallback();
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");
         Serial.println(cmd);

@@ -31,6 +31,18 @@ public:
     virtual void readXYZ(int32_t &x, int32_t &y, int32_t &z) = 0;
 
     /**
+     * @brief Read raw X, Y, Z magnetic field values along with the 24-bit status header.
+     * @param x Reference to store X-axis value.
+     * @param y Reference to store Y-axis value.
+     * @param z Reference to store Z-axis value.
+     * @param status Reference to store 24-bit raw status header.
+     */
+    virtual void readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) {
+        readXYZ(x, y, z);
+        status = 0xC00000;
+    }
+
+    /**
      * @brief Enable or disable continuous measurement mode.
      * @param enable True to enable, false to disable.
      * @param rate_code Implementation-specific rate code.

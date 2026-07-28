@@ -31,12 +31,13 @@ public:
      */
     void printHelp();
 
-private:
     /**
      * @brief Parse and execute a command string
      * @param cmd The raw command string
      */
     void handleCommand(String cmd);
+
+private:
     
     Magnetometer* _sensor;
     bool& _streaming;

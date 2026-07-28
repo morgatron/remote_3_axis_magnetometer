@@ -2,7 +2,7 @@
 
 FLC100_ADS131::FLC100_ADS131(int csPin, int drdyPin, int resetPin)
     : _csPin(csPin), _drdyPin(drdyPin), _resetPin(resetPin), _spi(NULL),
-      _spiSettings(1000000, MSBFIRST, SPI_MODE1) {}
+      _spiSettings(2000000, MSBFIRST, SPI_MODE1) {}
 
 bool FLC100_ADS131::begin() {
     return begin(SPI);
@@ -31,12 +31,9 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     // Stop continuous read mode to allow writing to registers
     stopContinuous();
 
-    // Verify SPI communication by reading the Device ID register
+    // Read Device ID register
     uint8_t id = readRegister(ADS131_REG_ID);
-    if (id == 0x00 || id == 0xFF) {
-        // SPI communication failed (no response)
-        Serial.print("[ADS131E08] SPI ID Read Failed. Received ID Byte: 0x");
-        Serial.println(id, HEX);
+    if ((id & 0x0F) != 0x02) { // ADS131E08 ID upper nibble varies, lower nibble MUST be 0x02
         return false;
     }
 
@@ -46,6 +43,9 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
 
     // CONFIG2: 0xE0 = Default internal test source controls
     writeRegister(ADS131_REG_CONFIG2, 0xE0);
+
+    // FAULT: Disable fault comparators and lead-off current sources (0x00)
+    writeRegister(0x04, 0x00);
 
     // CONFIG3: Configure reference buffer and single-supply mode
     // Bit 7 (PD_REFBUF): 0 = Power-down internal reference buffer (MUST be 0 when external reference IC drives VREFP pin)
@@ -61,12 +61,13 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
 
     // Configure Channel Settings
     // Bits [6:4] configure Programmable Gain Amplifier (PGA)
-    // 0x00 = Gain 1, 0x10 = Gain 2, 0x20 = Gain 4, 0x30 = Gain 8, 0x40 = Gain 12
-    uint8_t chSetting = 0x00;
-    if (_gain == 2) chSetting = 0x10;
-    else if (_gain == 4) chSetting = 0x20;
-    else if (_gain == 8) chSetting = 0x30;
-    else if (_gain == 12) chSetting = 0x40;
+    // 0x10 = Gain 1 (001), 0x20 = Gain 2 (010), 0x30 = Gain 4 (011), 0x40 = Gain 8 (100), 0x50 = Gain 12 (101)
+    // Note: 0x00 (000) is RESERVED by TI and must NOT be used!
+    uint8_t chSetting = 0x10; // Default Gain 1
+    if (_gain == 2) chSetting = 0x20;
+    else if (_gain == 4) chSetting = 0x30;
+    else if (_gain == 8) chSetting = 0x40;
+    else if (_gain == 12) chSetting = 0x50;
 
     writeRegister(ADS131_REG_CH1SET, chSetting);
     writeRegister(ADS131_REG_CH2SET, chSetting);
@@ -78,35 +79,63 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
         writeRegister(reg, 0x81);
     }
 
-    // Start conversion
-    sendCommand(ADS131_CMD_START);
-    delayMicroseconds(10);
-
-    // Enter read data continuous (RDATAC) mode
-    sendCommand(ADS131_CMD_RDATAC);
-    delayMicroseconds(10);
-
     return true;
 }
 
+extern volatile bool drdyInterruptFlag;
+
 bool FLC100_ADS131::dataReady() {
-    // DRDY pin transitions LOW when conversion data is available
-    return digitalRead(_drdyPin) == LOW;
+    // Check hardware interrupt flag set on /DRDY falling edge
+    if (drdyInterruptFlag) {
+        drdyInterruptFlag = false;
+        return true;
+    }
+    return false;
 }
 
 void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
-    _spi->beginTransaction(_spiSettings);
+    uint32_t dummyStatus;
+    readXYZ(x, y, z, dummyStatus);
+}
+
+void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) {
+    uint8_t buffer[27];
+
+    // Wrap SPI transfer in critical section to prevent background ESP32 interrupts mid-frame
+    noInterrupts();
+    _spi->beginTransaction(_spiSettings); // 4 MHz SPI frequency
     digitalWrite(_csPin, LOW);
 
-    // Read full 27 bytes: 3 bytes Status Header + 8 channels * 3 bytes
-    // Reading all 27 bytes ensures SPI shift register alignment never shifts
-    uint8_t buffer[27];
     for (int i = 0; i < 27; i++) {
         buffer[i] = _spi->transfer(0x00);
     }
 
     digitalWrite(_csPin, HIGH);
+    delayMicroseconds(2); // Guarantee TI t_CSH High-time (>1 us) for SPI shift register reset
     _spi->endTransaction();
+    interrupts();
+
+    status = ((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | (uint32_t)buffer[2];
+
+    extern volatile uint32_t lastDrdyIntervalUs;
+    extern volatile uint32_t drdyAnomalyCount;
+
+    // Check for status byte header corruption (Status MUST be 0xC00000)
+    bool isValidHeader = (buffer[0] == 0xC0 && buffer[1] == 0x00 && buffer[2] == 0x00);
+
+    if (!isValidHeader) {
+        char diag[160];
+        snprintf(diag, sizeof(diag), "[SPI BUS CORRUPTION] Status=%02X %02X %02X | RawBytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                 buffer[0], buffer[1], buffer[2],
+                 buffer[3], buffer[4], buffer[5],
+                 buffer[6], buffer[7], buffer[8],
+                 buffer[9], buffer[10], buffer[11]);
+        Serial.println(diag);
+    } else if (lastDrdyIntervalUs > 1500) {
+        char diag[100];
+        snprintf(diag, sizeof(diag), "[CPU TIMING LATENCY] dt=%lu us (Valid C00000 Header)", (unsigned long)lastDrdyIntervalUs);
+        Serial.println(diag);
+    }
 
     // Channel 1: X-Axis
     int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
@@ -121,10 +150,9 @@ void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
     if (rawZ & 0x800000) rawZ |= 0xFF000000;
 
     // Convert raw ADC counts to physical magnetic field values in nanoTesla (nT)
-    // Formula: Field (nT) = raw_code * ScaleFactor
-    // ScaleFactor = VREF * 10^6 / (Gain * 2^23 * Sensitivity_uV_nT)
     double scale = ((double)_vref * 1000000.0) / ((double)_gain * 8388608.0 * (double)_sensitivity);
 
+    // 100% pure raw output without any filtering, clamping, or sample holding
     x = (int32_t)(rawX * scale);
     y = (int32_t)(rawY * scale);
     z = (int32_t)(rawZ * scale);
@@ -221,10 +249,10 @@ void FLC100_ADS131::setTestSignal(bool enable) {
     } else {
         // CONFIG2: Disable internal test source (0xE0)
         writeRegister(ADS131_REG_CONFIG2, 0xE0);
-        // Set MUX on channels 1-3 back to normal inputs (0x00)
-        writeRegister(ADS131_REG_CH1SET, 0x00);
-        writeRegister(ADS131_REG_CH2SET, 0x00);
-        writeRegister(ADS131_REG_CH3SET, 0x00);
+        // Set MUX on channels 1-3 back to normal inputs with Gain 1 (0x10)
+        writeRegister(ADS131_REG_CH1SET, 0x10);
+        writeRegister(ADS131_REG_CH2SET, 0x10);
+        writeRegister(ADS131_REG_CH3SET, 0x10);
     }
 
     sendCommand(ADS131_CMD_RDATAC);
@@ -242,11 +270,11 @@ void FLC100_ADS131::setCalibration(float vref_v, float sensitivity_uv_nt, uint8_
         uint8_t config3 = _useExternalRef ? 0x45 : ((_vref > 3.0f) ? 0xE5 : 0xC5);
         writeRegister(ADS131_REG_CONFIG3, config3);
 
-        uint8_t chSetting = 0x00;
-        if (_gain == 2) chSetting = 0x10;
-        else if (_gain == 4) chSetting = 0x20;
-        else if (_gain == 8) chSetting = 0x30;
-        else if (_gain == 12) chSetting = 0x40;
+        uint8_t chSetting = 0x10; // Default Gain 1 (001)
+        if (_gain == 2) chSetting = 0x20;
+        else if (_gain == 4) chSetting = 0x30;
+        else if (_gain == 8) chSetting = 0x40;
+        else if (_gain == 12) chSetting = 0x50;
 
         writeRegister(ADS131_REG_CH1SET, chSetting);
         writeRegister(ADS131_REG_CH2SET, chSetting);
