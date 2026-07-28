@@ -1,1 +1,6 @@
 .pio
+*.pyc
+*.h5
+*.tmp
+*.npy
+

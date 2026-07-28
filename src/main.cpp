@@ -50,6 +50,7 @@ Magnetometer* sensor = &magnetometer;
 
 bool streaming = true;
 uint8_t current_rate = DEFAULT_RATE;
+uint16_t current_downsample = 1;
 
 // WiFi & UDP Globals
 WiFiUDP udp;
@@ -67,6 +68,7 @@ void saveSettings() {
     prefs.begin("mcu_v0", false);
     prefs.putBool("streaming", streaming);
     prefs.putUChar("rate", current_rate);
+    prefs.putUShort("downsample", current_downsample);
     prefs.putUChar("mode", outputMode);
     prefs.putString("ssid", wifiSSID);
     prefs.putString("pass", wifiPass);
@@ -106,6 +108,7 @@ void loadSettings() {
     prefs.begin("mcu_v0", true);
     streaming = prefs.getBool("streaming", true);
     current_rate = prefs.getUChar("rate", DEFAULT_RATE);
+    current_downsample = prefs.getUShort("downsample", 1);
     outputMode = prefs.getUChar("mode", MODE_SERIAL);
     wifiSSID = prefs.getString("ssid", "");
     wifiPass = prefs.getString("pass", "");
@@ -283,15 +286,7 @@ void loop() {
         sensor->readXYZ(x, y, z, status);
         
 #if (SENSOR_TYPE == SENSOR_TYPE_FLC100)
-        // Determine decimation factor for target streaming rate:
-        uint16_t decimationFactor = 1; // Default 1000 Hz (1 kS/s)
-        if (current_rate == 0x0A) decimationFactor = 100;
-        else if (current_rate == 0x32) decimationFactor = 20;
-        else if (current_rate == 0x64) decimationFactor = 10;
-        else if (current_rate == 0xFA) decimationFactor = 4;
-        else if (current_rate == 0x05) decimationFactor = 2;
-        else if (current_rate == 0x06) decimationFactor = 1;
-
+        uint16_t decimationFactor = current_downsample;
         if (decimationFactor <= 1) {
             // Direct 1 kS/s streaming without averaging
             sendOutputSample(esp_timer_get_time(), x, y, z, status);

@@ -65,6 +65,16 @@ void CLI::handleCommand(String cmd) {
         } else {
             Serial.println("CYCLE command not supported for this sensor.");
         }
+    } else if (cmd.startsWith("DOWNSAMPLE ")) {
+        uint16_t ratio = (uint16_t)cmd.substring(11).toInt();
+        if (ratio >= 1) {
+            extern uint16_t current_downsample;
+            current_downsample = ratio;
+            Serial.print("Downsample ratio set to ");
+            Serial.print(current_downsample);
+            Serial.println("x");
+            if (_saveCallback) _saveCallback();
+        }
     } else if (cmd == "STATUS") {
         Serial.print("Streaming: "); Serial.println(_streaming ? "ON" : "OFF");
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());

@@ -10,7 +10,7 @@ from scipy import signal
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QComboBox, QLabel, 
                              QTabWidget, QStatusBar, QLineEdit, QCheckBox, QFrame,
-                             QFileDialog, QSpinBox, QMessageBox)
+                             QFileDialog, QSpinBox, QMessageBox, QGroupBox, QStackedWidget)
 from PySide6.QtCore import Slot, Qt, QTimer
 import pyqtgraph as pg
 import serial.tools.list_ports
@@ -217,10 +217,60 @@ class MainWindow(QMainWindow):
         self.duration_spin.setRange(1, 86400) # 1s to 24 hours
         self.duration_spin.setValue(60)
         self.duration_spin.setSuffix(" s")
-        self.duration_spin.setEnabled(False)
-        auto_stop_layout.addWidget(self.duration_spin)
-        sidebar_layout.addLayout(auto_stop_layout)
-        
+        sidebar_layout.addSpacing(10)
+
+        # Dynamic Sensor Control Box
+        self.sensor_ctrl_box = QGroupBox("Sensor Controls")
+        sensor_box_layout = QVBoxLayout(self.sensor_ctrl_box)
+        sensor_box_layout.setContentsMargins(6, 6, 6, 6)
+
+        self.sensor_stack = QStackedWidget()
+
+        # Page 0: FLC100-ADS131 Controls
+        flc_page = QWidget()
+        flc_layout = QVBoxLayout(flc_page)
+        flc_layout.setContentsMargins(0, 0, 0, 0)
+        flc_layout.setSpacing(4)
+
+        flc_layout.addWidget(QLabel("Software Downsample:"))
+        self.downsample_combo = QComboBox()
+        for label, val in [("1x (Raw 1 kS/s)", 1), ("2x (500 Hz)", 2), ("4x (250 Hz)", 4), ("10x (100 Hz)", 10), ("20x (50 Hz)", 20), ("100x (10 Hz)", 100)]:
+            self.downsample_combo.addItem(label, val)
+        self.downsample_combo.currentIndexChanged.connect(self.set_mcu_downsample)
+        flc_layout.addWidget(self.downsample_combo)
+
+        flc_layout.addWidget(QLabel("PGA Gain:"))
+        self.gain_combo = QComboBox()
+        for gain in [1, 2, 4, 8]:
+            self.gain_combo.addItem(f"{gain}x", gain)
+        self.gain_combo.currentIndexChanged.connect(self.set_mcu_gain)
+        flc_layout.addWidget(self.gain_combo)
+
+        self.test_sig_cb = QCheckBox("1 Hz Test Signal")
+        self.test_sig_cb.stateChanged.connect(lambda state: self.send_mcu_command("TEST ON" if state else "TEST OFF"))
+        flc_layout.addWidget(self.test_sig_cb)
+
+        self.sensor_stack.addWidget(flc_page) # Index 0
+
+        # Page 1: RM3100 Controls
+        rm_page = QWidget()
+        rm_layout = QVBoxLayout(rm_page)
+        rm_layout.setContentsMargins(0, 0, 0, 0)
+        rm_layout.setSpacing(4)
+
+        rm_layout.addWidget(QLabel("Cycle Count (Cycles):"))
+        self.cycle_spin = QSpinBox()
+        self.cycle_spin.setRange(50, 1000)
+        self.cycle_spin.setValue(200)
+        self.cycle_spin.setSingleStep(10)
+        self.cycle_spin.valueChanged.connect(self.set_mcu_cycle_count)
+        rm_layout.addWidget(self.cycle_spin)
+
+        self.sensor_stack.addWidget(rm_page) # Index 1
+
+        sensor_box_layout.addWidget(self.sensor_stack)
+        sidebar_layout.addWidget(self.sensor_ctrl_box)
+
         sidebar_layout.addSpacing(10)
         
         # Action Buttons
@@ -256,11 +306,6 @@ class MainWindow(QMainWindow):
         self.stop_rec_btn.setEnabled(False)
         self.stop_rec_btn.clicked.connect(self.stop_recording)
         sidebar_layout.addWidget(self.stop_rec_btn)
-
-        self.recover_rec_btn = QPushButton("Recover Interrupted (.tmp)...")
-        self.recover_rec_btn.setToolTip("Recover data from an interrupted or crashed recording session (.tmp file)")
-        self.recover_rec_btn.clicked.connect(self.recover_tmp_file_dialog)
-        sidebar_layout.addWidget(self.recover_rec_btn)
         
         sidebar_layout.addSpacing(10)
         
@@ -449,16 +494,20 @@ class MainWindow(QMainWindow):
 
     @Slot(object, object, object, object, object)
     def handle_data(self, ts, x, y, z, status=0xC00000):
-        if self.is_recording and self.log_file:
+        if self.is_recording and hasattr(self, 'h5_file') and self.h5_file:
             try:
-                # Store timestamp in seconds as 64-bit IEEE float (<d), x, y, z as int32 (<i), status as uint32 (<I)
                 ts_sec = float(ts) / 1000000.0
-                self.log_file.write(struct.pack('<diiiI', ts_sec, x, y, z, status))
+                self.h5_buffer.append((ts_sec, x, y, z, status))
                 self.recorded_samples += 1
+                
+                # Flush batch to disk every 20 samples (20 ms)
+                if len(self.h5_buffer) >= 20:
+                    self.flush_h5_buffer()
+                    
                 if self.recorded_samples % 10 == 0:
                     self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
             except Exception as e:
-                self.status_bar.showMessage(f"Write error: {str(e)}")
+                self.status_bar.showMessage(f"HDF5 stream error: {str(e)}")
                 self.stop_recording()
 
         self.time_buffer[self.ptr] = ts
@@ -564,12 +613,28 @@ class MainWindow(QMainWindow):
             rate_hex = f"{rate_code:02x}"
             self.send_mcu_command(f"RATE {rate_hex}")
 
+    def set_mcu_downsample(self):
+        val = self.downsample_combo.currentData()
+        if val is not None:
+            self.send_mcu_command(f"DOWNSAMPLE {val}")
+
+    def set_mcu_gain(self):
+        gain = self.gain_combo.currentData()
+        if gain is not None:
+            self.send_mcu_command(f"GAIN {gain}")
+
+    def set_mcu_cycle_count(self):
+        count = self.cycle_spin.value()
+        self.send_mcu_command(f"CYCLE {count}")
+
     def populate_rates_for_sensor(self, sensor_name):
         self.rate_combo.blockSignals(True)
         self.rate_combo.clear()
         self.detected_sensor = sensor_name
         
         if sensor_name == "FLC100-ADS131E08":
+            if hasattr(self, 'sensor_stack'):
+                self.sensor_stack.setCurrentIndex(0) # FLC100 Page
             rates = [
                 ("10 Hz (0A)", 0x0A),
                 ("50 Hz (32)", 0x32),
@@ -579,6 +644,8 @@ class MainWindow(QMainWindow):
                 ("1000 Hz / 1 kS/s (06)", 0x06)
             ]
         else: # Default (RM3100)
+            if hasattr(self, 'sensor_stack'):
+                self.sensor_stack.setCurrentIndex(1) # RM3100 Page
             rates = [
                 ("9 Hz (98)", 0x98),
                 ("18 Hz (97)", 0x97),
@@ -654,38 +721,34 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Recording cancelled (file exists).")
                 return
 
-        # Use a temporary file for raw binary streaming
-        self.temp_filepath = filepath + ".tmp"
-
-        # Check if an interrupted temp file already exists
-        if os.path.exists(self.temp_filepath):
-            reply = QMessageBox.question(
-                self,
-                "Interrupted Recording Found",
-                f"An interrupted temporary recording was found:\n{self.temp_filepath}\n\nWould you like to recover it to a .npy file before starting?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
-            )
-            if reply == QMessageBox.Yes:
-                rec_path = self.temp_filepath.rsplit('.tmp', 1)[0] + "_recovered.npy"
-                n_samples, err = self.convert_tmp_to_npy(self.temp_filepath, rec_path)
-                if err is None:
-                    QMessageBox.information(self, "Recovery Successful", f"Recovered {n_samples:,} samples to:\n{rec_path}")
-                else:
-                    QMessageBox.warning(self, "Recovery Warning", f"Could not recover file: {err}")
-            elif reply == QMessageBox.Cancel:
-                return
         try:
-            self.log_file = open(self.temp_filepath, "wb")
+            # Create HDF5 file directly and initialize header attributes
+            self.h5_file = h5py.File(filepath, "w")
+            self.record_start_time = time.time()
+            self.record_start_iso = datetime.now().astimezone().isoformat()
+            self.record_start_unix = self.record_start_time
+
+            self.h5_file.attrs['start_time_iso'] = self.record_start_iso
+            self.h5_file.attrs['start_time_unix'] = self.record_start_unix
+            self.h5_file.attrs['sensor_type'] = getattr(self, 'detected_sensor', 'FLC100-ADS131E08')
+            self.h5_file.attrs['sample_rate_hz'] = 1000
+            self.h5_file.attrs['vref_v'] = 2.4
+
+            # Create resizable 1D datasets with chunking and Gzip level 4 compression
+            chunk_sz = 1000
+            self.dset_time = self.h5_file.create_dataset('time_s', shape=(0,), maxshape=(None,), dtype='f8', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_status = self.h5_file.create_dataset('status', shape=(0,), maxshape=(None,), dtype='u4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            
+            self.h5_buffer = []
         except Exception as e:
-            self.status_bar.showMessage(f"Error opening temp file: {str(e)}")
+            self.status_bar.showMessage(f"Error initializing HDF5 file: {str(e)}")
             return
 
         self.is_recording = True
         self.recorded_samples = 0
-        self.record_start_time = time.time()
-        self.record_start_iso = datetime.now().astimezone().isoformat()
-        self.record_start_unix = self.record_start_time
 
         # Update UI state
         self.start_rec_btn.setEnabled(False)
@@ -705,7 +768,34 @@ class MainWindow(QMainWindow):
         else:
             self.time_left_label.setText("Time left: Continuous")
 
-        self.status_bar.showMessage(f"Recording started -> {os.path.basename(filepath)}")
+        self.status_bar.showMessage(f"Streaming Compressed HDF5 -> {os.path.basename(filepath)}")
+
+    def flush_h5_buffer(self):
+        """Flushes buffered sample tuples directly into the HDF5 datasets."""
+        if not hasattr(self, 'h5_file') or not self.h5_file or not self.h5_buffer:
+            return
+        try:
+            batch = np.array(self.h5_buffer, dtype=object)
+            n_new = len(batch)
+            curr = self.dset_time.shape[0]
+            new_sz = curr + n_new
+
+            self.dset_time.resize((new_sz,))
+            self.dset_x.resize((new_sz,))
+            self.dset_y.resize((new_sz,))
+            self.dset_z.resize((new_sz,))
+            self.dset_status.resize((new_sz,))
+
+            self.dset_time[curr:new_sz] = batch[:, 0].astype(np.float64)
+            self.dset_x[curr:new_sz] = batch[:, 1].astype(np.int32)
+            self.dset_y[curr:new_sz] = batch[:, 2].astype(np.int32)
+            self.dset_z[curr:new_sz] = batch[:, 3].astype(np.int32)
+            self.dset_status[curr:new_sz] = batch[:, 4].astype(np.uint32)
+
+            self.h5_file.flush()
+            self.h5_buffer.clear()
+        except Exception as e:
+            self.status_bar.showMessage(f"HDF5 flush error: {str(e)}")
 
     def stop_recording(self):
         if not hasattr(self, 'is_recording') or not self.is_recording:
@@ -714,54 +804,33 @@ class MainWindow(QMainWindow):
         self.is_recording = False
         self.record_timer.stop()
 
-        # Close the temporary binary file
-        try:
-            if hasattr(self, 'log_file') and self.log_file:
-                self.log_file.flush()
-                self.log_file.close()
-                self.log_file = None
-        except Exception as e:
-            self.status_bar.showMessage(f"Error closing temp file: {str(e)}")
-
-        # Convert raw binary to output format (.h5 / .hdf5 or .npy)
         filepath = self.file_path_input.text().strip()
         save_success = False
         try:
-            if os.path.exists(self.temp_filepath):
-                # Read structured binary data from temp file
-                data = np.fromfile(
-                    self.temp_filepath,
-                    dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
-                )
-                start_iso = getattr(self, 'record_start_iso', datetime.now().astimezone().isoformat())
-                start_unix = getattr(self, 'record_start_unix', time.time())
+            # Flush any remaining buffer samples to disk
+            self.flush_h5_buffer()
 
-                if filepath.lower().endswith(('.h5', '.hdf5')):
-                    self.write_h5_dataset(filepath, data, start_iso, start_unix)
-                else:
-                    np.save(filepath, data)
-                    # Write sidecar JSON for .npy format
-                    sidecar_path = filepath.rsplit('.', 1)[0] + ".json"
-                    meta = {
-                        "start_time_iso": start_iso,
-                        "start_time_unix": start_unix,
-                        "sensor_type": getattr(self, 'detected_sensor', 'FLC100-ADS131E08'),
-                        "sample_count": len(data),
-                        "sample_rate_hz": 1000
-                    }
-                    with open(sidecar_path, 'w') as sf:
-                        json.dump(meta, sf, indent=2)
+            if hasattr(self, 'h5_file') and self.h5_file:
+                total_samples = self.dset_time.shape[0]
+                self.h5_file.attrs['sample_count'] = total_samples
 
+                # Also write compound dataset 'data' for convenient 1-call loading
+                if total_samples > 0:
+                    compound_dtype = [('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
+                    arr = np.empty(total_samples, dtype=compound_dtype)
+                    arr['time_s'] = self.dset_time[:]
+                    arr['x'] = self.dset_x[:]
+                    arr['y'] = self.dset_y[:]
+                    arr['z'] = self.dset_z[:]
+                    arr['status'] = self.dset_status[:]
+                    self.h5_file.create_dataset('data', data=arr, compression='gzip', compression_opts=4)
+
+                self.h5_file.flush()
+                self.h5_file.close()
+                self.h5_file = None
                 save_success = True
         except Exception as e:
-            self.status_bar.showMessage(f"Error saving dataset file: {str(e)}")
-        finally:
-            # Clean up temp file
-            if hasattr(self, 'temp_filepath') and os.path.exists(self.temp_filepath):
-                try:
-                    os.remove(self.temp_filepath)
-                except Exception:
-                    pass
+            self.status_bar.showMessage(f"Error finalizing HDF5 file: {str(e)}")
 
         # Update UI state
         self.start_rec_btn.setEnabled(True)
@@ -777,29 +846,7 @@ class MainWindow(QMainWindow):
         # Make sure the final count is written
         self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
         if save_success:
-            self.status_bar.showMessage(f"Dataset saved: {os.path.basename(filepath)} ({self.recorded_samples} samples)")
-
-    def write_h5_dataset(self, filepath, data, start_iso, start_unix):
-        """Writes structured data and metadata attributes to an HDF5 file."""
-        sensor_name = getattr(self, 'detected_sensor', 'FLC100-ADS131E08')
-        with h5py.File(filepath, 'w') as f:
-            # Metadata attributes
-            f.attrs['start_time_iso'] = start_iso
-            f.attrs['start_time_unix'] = start_unix
-            f.attrs['sensor_type'] = sensor_name
-            f.attrs['sample_rate_hz'] = 1000
-            f.attrs['sample_count'] = len(data)
-            f.attrs['vref_v'] = 2.4
-
-            # 1D Datasets with Gzip compression
-            f.create_dataset('time_s', data=data['time_s'], compression='gzip')
-            f.create_dataset('x', data=data['x'], compression='gzip')
-            f.create_dataset('y', data=data['y'], compression='gzip')
-            f.create_dataset('z', data=data['z'], compression='gzip')
-            f.create_dataset('status', data=data['status'], compression='gzip')
-
-            # Structured compound dataset
-            f.create_dataset('data', data=data, compression='gzip')
+            self.status_bar.showMessage(f"HDF5 dataset saved: {os.path.basename(filepath)} ({self.recorded_samples} samples)")
 
     def update_recording_timer(self):
         if not hasattr(self, 'is_recording') or not self.is_recording:
@@ -813,58 +860,6 @@ class MainWindow(QMainWindow):
 
         if remaining <= 0:
             self.stop_recording()
-
-    def convert_tmp_to_h5(self, tmp_filepath, h5_filepath):
-        """Converts an interrupted raw binary .tmp file into a structured HDF5 dataset."""
-        try:
-            data = np.fromfile(
-                tmp_filepath,
-                dtype=[('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
-            )
-            # Estimate start time from file creation time
-            mtime = os.path.getmtime(tmp_filepath)
-            start_iso = datetime.fromtimestamp(mtime).astimezone().isoformat()
-            self.write_h5_dataset(h5_filepath, data, start_iso, mtime)
-            return len(data), None
-        except Exception as e:
-            return 0, str(e)
-
-    def recover_tmp_file_dialog(self):
-        """Allows the user to manually select and recover any interrupted .tmp binary file into an HDF5 dataset."""
-        default_tmp = self.file_path_input.text().strip() + ".tmp"
-        initial_dir = default_tmp if os.path.exists(default_tmp) else ""
-        tmp_filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Interrupted Recording (.tmp)",
-            initial_dir,
-            "Temporary Binary Files (*.tmp);;All Files (*)"
-        )
-        if not tmp_filepath:
-            return
-
-        default_out = tmp_filepath.rsplit('.tmp', 1)[0]
-        if not default_out.endswith('.h5') and not default_out.endswith('.hdf5'):
-            default_out += '.h5'
-
-        h5_filepath, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Recovered HDF5 File",
-            default_out,
-            "HDF5 Scientific Files (*.h5 *.hdf5);;All Files (*)"
-        )
-        if not h5_filepath:
-            return
-
-        n_samples, err = self.convert_tmp_to_h5(tmp_filepath, h5_filepath)
-        if err is None:
-            QMessageBox.information(
-                self,
-                "Recovery Successful",
-                f"Successfully recovered {n_samples:,} samples to:\n{h5_filepath}"
-            )
-            self.status_bar.showMessage(f"Recovered {n_samples} samples -> {os.path.basename(h5_filepath)}")
-        else:
-            QMessageBox.critical(self, "Recovery Error", f"Failed to recover file:\n{err}")
 
     def closeEvent(self, event):
         if self.serial_thread and self.serial_thread.isRunning():
