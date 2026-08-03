@@ -32,6 +32,14 @@
 #define ADS131_REG_CH7SET      0x0B
 #define ADS131_REG_CH8SET      0x0C
 
+struct ADCSample {
+    uint64_t ts;
+    int32_t x;
+    int32_t y;
+    int32_t z;
+    uint32_t status;
+};
+
 /**
  * @brief Magnetometer implementation for 3-axis FLC-100 sensor read via an external 24-bit ADS131E08 ADC.
  * 
@@ -64,6 +72,11 @@ public:
     void writeRegister(uint8_t reg, uint8_t val);
     void setTestSignal(bool enable);
 
+    // High-priority task & Ring Buffer API
+    void readAndPushSample();
+    bool popSample(ADCSample &sample);
+    bool isBufferEmpty() const;
+
 private:
     int _csPin;
     int _drdyPin;
@@ -75,6 +88,17 @@ private:
     float _sensitivity = 20.0f;     // FLC-100 sensitivity: 20 uV / nT (0.02 mV/nT)
     uint8_t _gain = 1;              // PGA Gain: 1, 2, 4, 8, 12 etc (default 1)
     bool _useExternalRef = true;    // True when external VREF reference IC is present on PCB
+
+    // Lock-free ring buffer for ISR -> main loop sample transfer
+    static const size_t RING_BUFFER_SIZE = 128; // Power of 2 for fast modulo masking
+    ADCSample _ringBuffer[RING_BUFFER_SIZE];
+    volatile size_t _ringHead = 0;
+    volatile size_t _ringTail = 0;
+
+    int32_t _lastValidX = 0;
+    int32_t _lastValidY = 0;
+    int32_t _lastValidZ = 0;
+    uint32_t _lastValidStatus = 0xC00000;
 
     void sendCommand(uint8_t cmd);
     void stopContinuous();

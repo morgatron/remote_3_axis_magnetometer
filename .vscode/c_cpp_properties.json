@@ -483,7 +483,7 @@
             "defines": [
                 "PLATFORMIO=60119",
                 "ARDUINO_ESP32C3_DEV",
-                "CORE_DEBUG_LEVEL=5",
+                "CORE_DEBUG_LEVEL=0",
                 "ARDUINO_USB_MODE=1",
                 "ARDUINO_USB_CDC_ON_BOOT=1",
                 "HAVE_CONFIG_H",

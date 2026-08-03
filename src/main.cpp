@@ -140,6 +140,17 @@ volatile uint64_t lastDrdyTimeUs = 0;
 volatile uint32_t lastDrdyIntervalUs = 0;
 volatile uint32_t drdyAnomalyCount = 0;
 
+TaskHandle_t adcTaskHandle = NULL;
+
+void adcSamplingTask(void *pvParameters) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (streaming && sensorTypeConfig == 1) {
+            sensorFLC100.readAndPushSample();
+        }
+    }
+}
+
 void IRAM_ATTR drdyISR() {
     uint64_t now = esp_timer_get_time();
     if (lastDrdyTimeUs > 0) {
@@ -152,6 +163,14 @@ void IRAM_ATTR drdyISR() {
     }
     lastDrdyTimeUs = now;
     drdyInterruptFlag = true;
+
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (adcTaskHandle != NULL) {
+        vTaskNotifyGiveFromISR(adcTaskHandle, &xHigherPriorityTaskWoken);
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
+        }
+    }
 }
 
 void setup() {
@@ -222,6 +241,9 @@ void setup() {
     // Resume continuous mode with saved rate
     sensor->setContinuousMode(true, current_rate);
 
+    // Create high-priority task for immediate ISR-notified ADC sampling
+    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 0);
+
     Serial.println("timestamp_us,x,y,z,status");
     serialCLI.printHelp();
     
@@ -268,40 +290,48 @@ void loop() {
     }
 
     // Data Streaming
-    if (streaming && sensor->dataReady()) {
-        int32_t x, y, z;
-        uint32_t status = 0xC00000;
-        sensor->readXYZ(x, y, z, status);
-        
-        if (sensorTypeConfig == 1) { // FLC100-ADS131E08
-            uint16_t decimationFactor = current_downsample;
-            if (decimationFactor <= 1) {
-                // Direct 1 kS/s streaming without averaging
-                sendOutputSample(esp_timer_get_time(), x, y, z, status);
-            } else {
-                static int32_t sumX = 0, sumY = 0, sumZ = 0;
-                static uint16_t sampleCounter = 0;
+    if (streaming) {
+        if (sensorTypeConfig == 1) { // FLC100-ADS131E08 (Ring buffer driven)
+            ADCSample sample;
+            while (sensorFLC100.popSample(sample)) {
+                int32_t x = sample.x;
+                int32_t y = sample.y;
+                int32_t z = sample.z;
+                uint32_t status = sample.status;
+                uint64_t ts = sample.ts;
 
-                sumX += x;
-                sumY += y;
-                sumZ += z;
-                sampleCounter++;
+                uint16_t decimationFactor = current_downsample;
+                if (decimationFactor <= 1) {
+                    // Direct 1 kS/s streaming without averaging
+                    sendOutputSample(ts, x, y, z, status);
+                } else {
+                    static int32_t sumX = 0, sumY = 0, sumZ = 0;
+                    static uint16_t sampleCounter = 0;
 
-                if (sampleCounter >= decimationFactor) {
-                    int32_t avgX = sumX / decimationFactor;
-                    int32_t avgY = sumY / decimationFactor;
-                    int32_t avgZ = sumZ / decimationFactor;
+                    sumX += x;
+                    sumY += y;
+                    sumZ += z;
+                    sampleCounter++;
 
-                    sumX = 0;
-                    sumY = 0;
-                    sumZ = 0;
-                    sampleCounter = 0;
+                    if (sampleCounter >= decimationFactor) {
+                        int32_t avgX = sumX / decimationFactor;
+                        int32_t avgY = sumY / decimationFactor;
+                        int32_t avgZ = sumZ / decimationFactor;
 
-                    sendOutputSample(esp_timer_get_time(), avgX, avgY, avgZ, status);
+                        sumX = 0;
+                        sumY = 0;
+                        sumZ = 0;
+                        sampleCounter = 0;
+
+                        sendOutputSample(ts, avgX, avgY, avgZ, status);
+                    }
                 }
             }
-        } else {
-            // For RM3100, stream raw values directly (hardware controls low rates: 9 Hz to 600 Hz)
+        } else if (sensor->dataReady()) {
+            // For RM3100, stream raw values directly
+            int32_t x, y, z;
+            uint32_t status = 0xC00000;
+            sensor->readXYZ(x, y, z, status);
             sendOutputSample(esp_timer_get_time(), x, y, z, status);
         }
     }

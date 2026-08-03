@@ -82,15 +82,77 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     return true;
 }
 
-extern volatile bool drdyInterruptFlag;
-
 bool FLC100_ADS131::dataReady() {
-    // Check hardware interrupt flag set on /DRDY falling edge
-    if (drdyInterruptFlag) {
-        drdyInterruptFlag = false;
-        return true;
+    return !isBufferEmpty();
+}
+
+bool FLC100_ADS131::isBufferEmpty() const {
+    return _ringHead == _ringTail;
+}
+
+void FLC100_ADS131::readAndPushSample() {
+    if (!_spi) return;
+
+    uint8_t buffer[27];
+    uint64_t now = esp_timer_get_time();
+
+    _spi->beginTransaction(_spiSettings);
+    digitalWrite(_csPin, LOW);
+
+    for (int i = 0; i < 27; i++) {
+        buffer[i] = _spi->transfer(0x00);
     }
-    return false;
+
+    digitalWrite(_csPin, HIGH);
+    _spi->endTransaction();
+
+    // Status header contains 24-bit fault/channel status flags (e.g. 0xC00000 / 0xC00001)
+    uint32_t status = ((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | (uint32_t)buffer[2];
+
+    int32_t x, y, z;
+    // Status header validation: ADS131E08 status upper nibble MUST be 0xC
+    if ((status & 0xF00000) == 0xC00000) {
+        int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
+        if (rawX & 0x800000) rawX |= 0xFF000000;
+
+        int32_t rawY = (int32_t)((buffer[6] << 16) | (buffer[7] << 8) | buffer[8]);
+        if (rawY & 0x800000) rawY |= 0xFF000000;
+
+        int32_t rawZ = (int32_t)((buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
+        if (rawZ & 0x800000) rawZ |= 0xFF000000;
+
+        double scale = ((double)_vref * 1000000.0) / ((double)_gain * 8388608.0 * (double)_sensitivity);
+
+        x = (int32_t)(rawX * scale);
+        y = (int32_t)(rawY * scale);
+        z = (int32_t)(rawZ * scale);
+
+        _lastValidX = x;
+        _lastValidY = y;
+        _lastValidZ = z;
+        _lastValidStatus = status;
+    } else {
+        // Discard SPI collision frame and retain previous valid sample
+        x = _lastValidX;
+        y = _lastValidY;
+        z = _lastValidZ;
+        status = _lastValidStatus;
+    }
+
+    size_t nextHead = (_ringHead + 1) & (RING_BUFFER_SIZE - 1);
+    if (nextHead != _ringTail) { // Drop sample only if ring buffer overflows
+        _ringBuffer[_ringHead] = { now, x, y, z, status };
+        _ringHead = nextHead;
+    }
+}
+
+bool FLC100_ADS131::popSample(ADCSample &sample) {
+    if (_ringHead == _ringTail) {
+        return false;
+    }
+    sample = _ringBuffer[_ringTail];
+    _ringTail = (_ringTail + 1) & (RING_BUFFER_SIZE - 1);
+    return true;
 }
 
 void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
@@ -99,63 +161,18 @@ void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
 }
 
 void FLC100_ADS131::readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) {
-    uint8_t buffer[27];
-
-    // Wrap SPI transfer in critical section to prevent background ESP32 interrupts mid-frame
-    noInterrupts();
-    _spi->beginTransaction(_spiSettings); // 4 MHz SPI frequency
-    digitalWrite(_csPin, LOW);
-
-    for (int i = 0; i < 27; i++) {
-        buffer[i] = _spi->transfer(0x00);
+    ADCSample sample;
+    if (popSample(sample)) {
+        x = sample.x;
+        y = sample.y;
+        z = sample.z;
+        status = sample.status;
+    } else {
+        x = _lastValidX;
+        y = _lastValidY;
+        z = _lastValidZ;
+        status = _lastValidStatus;
     }
-
-    digitalWrite(_csPin, HIGH);
-    delayMicroseconds(2); // Guarantee TI t_CSH High-time (>1 us) for SPI shift register reset
-    _spi->endTransaction();
-    interrupts();
-
-    status = ((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | (uint32_t)buffer[2];
-
-    extern volatile uint32_t lastDrdyIntervalUs;
-    extern volatile uint32_t drdyAnomalyCount;
-
-    // Check for status byte header corruption (Status MUST be 0xC00000)
-    bool isValidHeader = (buffer[0] == 0xC0 && buffer[1] == 0x00 && buffer[2] == 0x00);
-
-    if (!isValidHeader) {
-        char diag[160];
-        snprintf(diag, sizeof(diag), "[SPI BUS CORRUPTION] Status=%02X %02X %02X | RawBytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                 buffer[0], buffer[1], buffer[2],
-                 buffer[3], buffer[4], buffer[5],
-                 buffer[6], buffer[7], buffer[8],
-                 buffer[9], buffer[10], buffer[11]);
-        Serial.println(diag);
-    } else if (lastDrdyIntervalUs > 1500) {
-        char diag[100];
-        snprintf(diag, sizeof(diag), "[CPU TIMING LATENCY] dt=%lu us (Valid C00000 Header)", (unsigned long)lastDrdyIntervalUs);
-        Serial.println(diag);
-    }
-
-    // Channel 1: X-Axis
-    int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
-    if (rawX & 0x800000) rawX |= 0xFF000000; // Sign-extend 24-bit to 32-bit signed
-
-    // Channel 2: Y-Axis
-    int32_t rawY = (int32_t)((buffer[6] << 16) | (buffer[7] << 8) | buffer[8]);
-    if (rawY & 0x800000) rawY |= 0xFF000000;
-
-    // Channel 3: Z-Axis
-    int32_t rawZ = (int32_t)((buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
-    if (rawZ & 0x800000) rawZ |= 0xFF000000;
-
-    // Convert raw ADC counts to physical magnetic field values in nanoTesla (nT)
-    double scale = ((double)_vref * 1000000.0) / ((double)_gain * 8388608.0 * (double)_sensitivity);
-
-    // 100% pure raw output without any filtering, clamping, or sample holding
-    x = (int32_t)(rawX * scale);
-    y = (int32_t)(rawY * scale);
-    z = (int32_t)(rawZ * scale);
 }
 
 void FLC100_ADS131::setContinuousMode(bool enable, uint8_t rate_code) {
