@@ -34,8 +34,8 @@ bool RM3100::begin(SPIClass &spi) {
     if (rev < 0x10) Serial.print("0");
     Serial.println(rev, HEX);
     
-    if (rev == 0x00 || rev == 0xFF) {
-        // 0x00 or 0xFF indicates MISO line is grounded, pulled high, or SPI communication failed
+    if (rev != 0x22) {
+        // RM3100 ASIC REVID register (0x36) MUST equal 0x22
         return false;
     }
     return true;

@@ -3,27 +3,35 @@ This repository contains the firmware and desktop visualization tool for an ESP3
 1. **FLC-100 Analog Fluxgate Array**: Interfaced via an external **TI ADS131E08 24-bit 8-channel SPI ADC** (no analog voltage dividers needed on ESP32 ADC pins).
 2. **PNI RM3100**: High-resolution digital magnetometer (SPI interface).
 
-The microcontroller features a Hardware Abstraction Layer (HAL) for sensor control, a serial/UDP CLI for remote configuration, and streams 5-column magnetic field data at up to **1 kSPS**. A single universal firmware binary supports both sensor models via NVS dynamic provisioning. A companion PySide6 desktop application (`desktop_app`) provides real-time multi-channel plotting, automated Welch Power Spectral Density (PSD) analysis, and direct real-time streaming to Gzip-compressed **HDF5 (`.h5`)** scientific datasets.
+The microcontroller features a Hardware Abstraction Layer (HAL) for sensor control, a serial/UDP CLI for remote configuration, and streams 5-column magnetic field data at up to **1 kSPS** (600 Hz max continuous rate for RM3100). A single universal firmware binary supports both sensor models via NVS dynamic provisioning. A companion PySide6 desktop application (`desktop_app`) provides real-time multi-channel plotting, automated Welch Power Spectral Density (PSD) analysis, and direct real-time streaming to Gzip-compressed **HDF5 (`.h5`)** scientific datasets with embedded calibration metadata.
 
 ---
 
-## Hardware Configuration
+## Hardware Configuration & Sensor Scaling
 
 - **Microcontroller**: ESP32 / ESP32-C3
 - **Serial Interface**: **921,600 baud**
 - **Supported Sensors**:
   - **FLC-100 Array + TI ADS131E08 24-bit ADC (SPI)**: Direct differential analog inputs to ADS131E08 (VREF = 2.4V). Operates at **2.0 MHz SPI clock** (`CLKSEL = 1` internal oscillator mode). Internal lead-off comparators are powered down (`FAULT = 0x00`) to prevent status byte insertions.
-  - **PNI RM3100 (SPI)**: High-resolution digital sensor.
+  - **PNI RM3100 (SPI)**: High-resolution digital sensor. Hardware Revision ID register (`0x36`) MUST equal `0x22`.
 
-### Default ESP32-C3 PCB Pinout
-- **SCK**: GPIO 6
-- **MOSI**: GPIO 7
-- **MISO**: GPIO 2
-- **DRDY**: GPIO 3 (Hardware interrupt pin)
-- **CS**: GPIO 10
+### RM3100 Dynamic nT Sensitivity & Scaling Formula
+The physical sensitivity gain of the RM3100 ASIC depends on the configured oscillation cycle count ($N_C$):
+$$\text{Gain}(N_C) = (0.3671 \times N_C + 1.5)\ \text{LSB}/\mu\text{T}$$
 
-### Default ESP32 Dev Module Pinout
-- **SCK**: GPIO 18 | **MOSI**: GPIO 23 | **MISO**: GPIO 19 | **CS**: GPIO 5 | **DRDY**: GPIO 4
+The conversion scale factor from 24-bit raw counts to nanoteslas (**nT**) is:
+$$\text{Scale Factor (nT per count)} = \frac{1000.0}{\text{Gain}(N_C)}$$
+
+Empirical testing confirms that dividing raw 24-bit integer counts directly by $\text{Gain}(N_C)$ yields an invariant, calibrated Earth magnetic field reading of **$\approx 46,000\text{ nT}$ ($\approx 46\ \mu\text{T}$)** across all cycle count settings ($50$, $100$, $200$, $400$).
+
+### RM3100 High Sample Rate Cycle Count Capping
+Measurement duration across 3 axes requires $T_{\text{meas}} = 3 \times (N_C \cdot T_{\text{LR}} + T_{\text{settle}})$. To prevent measurement durations from exceeding sampling rate intervals and locking up the ASIC state machine, `RM3100::setContinuousMode` automatically caps cycle counts for high-speed sampling rates:
+- **150 Hz (`0x94`)**: Cycle count capped at $N_C \le 100$
+- **300 Hz (`0x93`)**: Cycle count capped at $N_C \le 50$
+- **600 Hz (`0x92`)**: Cycle count capped at $N_C \le 30$
+
+### ASIC Live Register Update Rule (CMM Pause)
+Per Section 5.2 (Page 29) of the RM3100 manual, register writes to `CCX/CCY/CCZ` (addresses `0x04` to `0x09`) while Continuous Measurement Mode (`CMM`) is active are ignored by the ASIC. `RM3100::setCycleCount` pauses `CMM` (`CMM = 0x00`), burst-writes the 6 cycle count registers in a single SPI CS transaction, and cleanly restarts `CMM`, enabling live cycle count adjustments during streaming.
 
 ---
 
@@ -47,7 +55,7 @@ The CLI operates over Serial (**921,600 baud**) and WiFi UDP port **9876**. Comm
 - `STATUS`: Display active sensor type, streaming state, rate code, and register status.
 - `STREAM ON` / `STREAM OFF`: Enable or disable continuous data streaming.
 - `SENSOR <FLC100|RM3100>`: Set active sensor hardware model dynamically (`FLC100` for FLC100-ADS131E08, `RM3100` for PNI RM3100). Saves to NVS Flash and reboots MCU.
-- `RATE <hex>`: Set hardware sampling / ADC rate code (e.g. `RATE 06` for 1 kSPS, `RATE 96` for RM3100 ~37 Hz).
+- `RATE <hex>`: Set hardware sampling / ADC rate code (e.g. `RATE 06` for 1 kSPS, `RATE 95` for RM3100 75 Hz, `RATE 92` for 600 Hz).
 - `DOWNSAMPLE <int>`: Set software decimation factor for FLC100-ADS131E08 (e.g. `1` for 1 kSPS, `10` for 100 Hz, `100` for 10 Hz).
 - `CYCLE <int>`: Set oscillation cycle count for RM3100 (e.g. `CYCLE 200`).
 - `GAIN <int>`: Set ADS131E08 PGA gain (1, 2, 4, 8).
@@ -64,32 +72,24 @@ The CLI operates over Serial (**921,600 baud**) and WiFi UDP port **9876**. Comm
 The Python desktop application (`desktop_app/main.py`) provides live data acquisition, real-time plotting, data logging, and node deployment provisioning:
 
 ### Key Features
-1. **Real-time Visualization**: Multi-channel time-series plotting (X, Y, Z), live channel means, interactive history buffer, live low-pass filtering, and automated Welch Power Spectral Density (PSD) analysis.
+1. **Real-time Visualization**: Multi-channel time-series plotting (X, Y, Z), live channel means in **nT** or counts, interactive history buffer, live low-pass filtering, and automated Welch Power Spectral Density (PSD) analysis.
 2. **Direct Real-time HDF5 Streaming (`.h5` / `.hdf5`)**:
    - Streamed directly into Gzip-compressed resizable HDF5 datasets (`time_s`, `x`, `y`, `z`, `status`).
    - `h5_file.flush()` executes periodically during streaming so that all flushed data remains 100% valid and readable on disk even during unexpected power interruptions.
-3. **Embedded Metadata Attributes**:
-   - Automatically writes `start_time_iso`, `start_time_unix`, `sensor_type`, `sample_rate_hz`, `vref_v`, and `sample_count` directly into HDF5 file header attributes (`f.attrs`).
-4. **Dynamic Sensor Controls**:
-   - Automatically detects connected sensor model and switches sidebar UI controls (Cycle counts for RM3100; Downsampling, Gain, and Test Signals for FLC100-ADS131E08).
+3. **Comprehensive Embedded Metadata Attributes**:
+   - Automatically writes root metadata attributes to `f.attrs`:
+     - `sensor_type`: `"RM3100"` or `"FLC100-ADS131E08"`
+     - `rate_code_hex` & `rate_code_dec`: Selected sample rate code
+     - `cycle_count_spinbox` & `cycle_count_active`: Configured cycle counts
+     - `gain_lsb_per_ut`: Sensitivity gain (LSB/$\mu$T)
+     - `scale_factor_nt_per_count`: Conversion factor (nT/count)
+     - `data_units`: `"raw counts (multiply by scale_factor_nt_per_count for nT)"`
+     - `start_time_iso`, `end_time_iso`, `duration_seconds`, and `sample_count`
+4. **Hardware Auto-Detection & Control Switching**:
+   - Probes `RM3100` via Revision ID `0x22`. Upon connection in **Auto-Detect** mode, the GUI automatically identifies the hardware model, updates the toolbar dropdown to **PNI RM3100 (Digital SPI)**, populates rate options, and activates the Cycle Count sidebar controls.
 5. **Node Provisioning & Deployment Setup Dialog ("Provision Node...")**:
    - Allows one-click setup of Sensor Hardware (`FLC100` vs `RM3100`), ESP32 operational mode (`SERIAL` USB testing vs `WIFI` remote burst vs `BOTH`), WiFi network credentials, and auto-detected Target Ingestion Server IP.
    - Saves all parameters directly to ESP32 NVS Flash (`Preferences.h`) so that nodes recover settings instantly on power loss.
-
-### HDF5 Dataset Loader Module (`desktop_app/hdf5_loader.py`)
-
-A helper module is included for opening and analyzing recorded datasets in Python scripts or Jupyter Notebooks:
-
-```python
-from desktop_app.hdf5_loader import load_magnetometer_h5
-
-# Load dataset and metadata attributes
-df, metadata = load_magnetometer_h5("acquisition.h5", filter_valid_only=True)
-
-print("Start Time:", metadata["start_time_iso"])
-print("Sensor:", metadata["sensor_type"])
-print(df.head())
-```
 
 ---
 
@@ -118,16 +118,7 @@ Power optimization focuses on the **ESP32 microcontroller** and **WiFi radio**:
 * **Inter-Sample Light Sleep**: ESP32 enters Light Sleep ($150\ \mu\text{A}$) between sample interrupts.
 * **Fast WiFi Burst Upload (< 300 ms)**: WiFi radio is powered ON only during high-speed static-IP UDP burst uploads.
 
-### 3. Fast WiFi Burst Upload Protocol (< 300 ms Active Window)
-1. **Static IP Assignment**: Bypasses DHCP negotiation (`WiFi.config(ip, gateway, subnet)`).
-2. **BSSID & Channel Caching**: Connects directly without scanning (`WiFi.begin(ssid, pass, channel, bssid)`).
-3. **UDP Packet Bursting**: Transmits binary compressed packets without TCP handshake overhead.
-
-### 4. Binary Delta Compression Pipeline (85% Size Reduction)
-* **First-Difference Encoding**: Stores $\Delta X, \Delta Y, \Delta Z$ relative changes instead of 32-bit absolute values.
-* **Size Reduction**: Reduces raw ASCII CSV size from **35 bytes/sample** down to **4–6 bytes/sample**, allowing 3,000 samples (~5 minutes of data) to fit within a single ~4 KB UDP burst payload.
-
-### 5. Battery Life Projections (3000 mAh 18650 Li-ion Cell)
+### 3. Battery Life Projections (3000 mAh 18650 Li-ion Cell)
 
 With the analog front-end continuously powered ($8.5\text{ mA}$) to maintain ultra-high sensitivity:
 * **Continuous 100 Hz Sampling + 1-min WiFi Burst**: **~344 Hours (~14.3 Days / 2 Weeks)**
@@ -148,7 +139,7 @@ For digital **RM3100** deployments (SPI power-down $< 20\ \mu\text{A}$):
   ```
 - **Firmware Compilation & Flashing**:
   ```bash
-  pio run -e esp32-c3-devkitm-1 -t upload --upload-port /dev/ttyACM0
+  pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
   ```
 - **Run Desktop Application**:
   ```bash

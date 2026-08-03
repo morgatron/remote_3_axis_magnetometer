@@ -78,6 +78,15 @@ class SerialWorker(QThread):
             time.sleep(sample_period)
 
     def parse_line(self, line):
+        line_up = line.upper()
+        # Always emit status messages if status keywords are present
+        if any(kw in line_up for kw in ["SENSOR:", "RM3100", "FLC100", "RATE CODE:", "STATUS", "REVID"]):
+            print(f"[DEBUG SERIAL] Intercepted Status Line: {line}")
+            self.status_message.emit(f"MCU: {line}")
+            # If line contains letters like Sensor: or RM3100, do not treat as raw numerical data
+            if "SENSOR" in line_up or "REVID" in line_up or "CONNECTED" in line_up:
+                return
+
         # Expected format: timestamp_us,x,y,z[,status_hex]
         try:
             parts = line.split(',')
@@ -89,12 +98,12 @@ class SerialWorker(QThread):
                 status = 0xC00000
                 if len(parts) >= 5:
                     try:
-                        status = int(parts[4], 16)
+                        clean_status = parts[4].strip().split()[0]
+                        status = int(clean_status, 16)
                     except ValueError:
                         status = 0xC00000
                 self.data_received.emit(ts, x, y, z, status)
         except (ValueError, IndexError):
-            # Not a data line, might be a status message or help text
             self.status_message.emit(f"MCU: {line}")
 
     def stop(self):

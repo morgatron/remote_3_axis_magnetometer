@@ -177,23 +177,24 @@ void setup() {
     pinMode(DRDY_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
 
-    Serial.print("Initializing ");
-    Serial.print(sensor->getSensorName());
-    Serial.println("...");
+    Serial.println("Auto-probing sensor hardware...");
+    bool found = false;
+    
+    // Probe RM3100 first (RM3100 REVID register 0x36 MUST equal 0x22)
+    if (sensorRM3100.begin()) {
+        sensor = &sensorRM3100;
+        sensorTypeConfig = 0;
+        found = true;
+        Serial.println("Auto-detected sensor: RM3100");
+    } else if (sensorFLC100.begin()) {
+        sensor = &sensorFLC100;
+        sensorTypeConfig = 1;
+        found = true;
+        Serial.println("Auto-detected sensor: FLC100-ADS131E08");
+    }
 
-    bool found = sensor->begin();
-    if (!found) {
-        Magnetometer* fallback = (sensorTypeConfig == 0) ? (Magnetometer*)&sensorFLC100 : (Magnetometer*)&sensorRM3100;
-        Serial.print("Primary sensor not found. Testing fallback: ");
-        Serial.println(fallback->getSensorName());
-        if (fallback->begin()) {
-            sensorTypeConfig = (sensorTypeConfig == 0) ? 1 : 0;
-            sensor = fallback;
-            found = true;
-            saveSettings();
-            Serial.print("Auto-detected sensor: ");
-            Serial.println(sensor->getSensorName());
-        }
+    if (found) {
+        saveSettings();
     }
 
     while (!found) {

@@ -853,26 +853,37 @@ class MainWindow(QMainWindow):
 
     def handle_status_message(self, msg):
         self.status_bar.showMessage(msg)
+        print(f"[DEBUG AUTO-DETECT] MCU Status Message: {msg}")
         
         line_upper = msg.upper()
         
         # Sensor Identity Detection & UI Control Switching
         if "RM3100" in line_upper:
-            if not hasattr(self, 'detected_sensor') or self.detected_sensor != "RM3100":
-                self.populate_rates_for_sensor("RM3100")
-                if hasattr(self, 'sensor_type_combo'):
-                    self.sensor_type_combo.blockSignals(True)
-                    idx = self.sensor_type_combo.findData("RM3100")
-                    if idx >= 0: self.sensor_type_combo.setCurrentIndex(idx)
-                    self.sensor_type_combo.blockSignals(False)
+            self.detected_sensor = "RM3100"
+            if hasattr(self, 'sensor_type_combo') and self.sensor_type_combo.currentData() == "AUTO":
+                self.sensor_type_combo.blockSignals(True)
+                idx = self.sensor_type_combo.findData("RM3100")
+                if idx >= 0:
+                    self.sensor_type_combo.setCurrentIndex(idx)
+                self.sensor_type_combo.blockSignals(False)
+            
+            if hasattr(self, 'sensor_stack'):
+                self.sensor_stack.setCurrentIndex(1) # RM3100 Page (Cycle Count)
+            self.populate_rates_for_sensor("RM3100")
+            print("[DEBUG AUTO-DETECT] Auto-detected RM3100 -> GUI dropdown, sidebar stack, and rates switched to RM3100!")
         elif "FLC100" in line_upper or "ADS131" in line_upper:
-            if not hasattr(self, 'detected_sensor') or self.detected_sensor != "FLC100-ADS131E08":
-                self.populate_rates_for_sensor("FLC100-ADS131E08")
-                if hasattr(self, 'sensor_type_combo'):
-                    self.sensor_type_combo.blockSignals(True)
-                    idx = self.sensor_type_combo.findData("FLC100")
-                    if idx >= 0: self.sensor_type_combo.setCurrentIndex(idx)
-                    self.sensor_type_combo.blockSignals(False)
+            self.detected_sensor = "FLC100-ADS131E08"
+            if hasattr(self, 'sensor_type_combo') and self.sensor_type_combo.currentData() == "AUTO":
+                self.sensor_type_combo.blockSignals(True)
+                idx = self.sensor_type_combo.findData("FLC100")
+                if idx >= 0:
+                    self.sensor_type_combo.setCurrentIndex(idx)
+                self.sensor_type_combo.blockSignals(False)
+                
+            if hasattr(self, 'sensor_stack'):
+                self.sensor_stack.setCurrentIndex(0) # FLC100 Page
+            self.populate_rates_for_sensor("FLC100-ADS131E08")
+            print("[DEBUG AUTO-DETECT] Auto-detected FLC100 -> GUI dropdown, sidebar stack, and rates switched to FLC100!")
         
         # Rate Code Selection
         if "RATE CODE:" in line_upper or "RATE:" in line_upper:
