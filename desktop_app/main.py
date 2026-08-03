@@ -90,10 +90,19 @@ class MainWindow(QMainWindow):
         self.stop_stream_btn.clicked.connect(lambda: self.send_mcu_command("STREAM OFF"))
         ctrl_layout.addWidget(self.stop_stream_btn)
 
+        ctrl_layout.addSpacing(15)
+        ctrl_layout.addWidget(QLabel("Sensor Model:"))
+        self.sensor_type_combo = QComboBox()
+        self.sensor_type_combo.addItem("Auto-Detect", "AUTO")
+        self.sensor_type_combo.addItem("PNI RM3100 (Digital SPI)", "RM3100")
+        self.sensor_type_combo.addItem("FLC100-ADS131E08 (24-bit Analog)", "FLC100")
+        self.sensor_type_combo.currentIndexChanged.connect(self.on_user_select_sensor_type)
+        ctrl_layout.addWidget(self.sensor_type_combo)
+
+        ctrl_layout.addSpacing(15)
         ctrl_layout.addWidget(QLabel("Rate:"))
         self.rate_combo = QComboBox()
         self.rate_combo.setFixedWidth(160)
-        self.populate_rates_for_sensor("FLC100-ADS131E08")
         self.rate_combo.currentIndexChanged.connect(self.set_mcu_rate)
         ctrl_layout.addWidget(self.rate_combo)
 
@@ -523,8 +532,10 @@ class MainWindow(QMainWindow):
         
         self.ptr = (self.ptr + 1) % self.max_samples
 
-        # Throttle UI updates to keep rendering fast and smooth at up to 1000 Hz
-        if self.ptr % 25 == 0:
+        # Throttle UI plot updates to 50ms interval (20 FPS) for smooth rendering at any data rate
+        now = time.perf_counter()
+        if not hasattr(self, 'last_plot_time') or (now - self.last_plot_time) >= 0.05:
+            self.last_plot_time = now
             # Reconstruct continuous data from ring buffer
             data_t = np.concatenate((self.time_buffer[self.ptr:], self.time_buffer[:self.ptr]))
             data_x = np.concatenate((self.x_buffer[self.ptr:], self.x_buffer[:self.ptr]))
@@ -553,14 +564,49 @@ class MainWindow(QMainWindow):
                         y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
                         z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
 
-                self.curve_x.setData(t_plot, x_val)
-                self.curve_y.setData(t_plot, y_val)
-                self.curve_z.setData(t_plot, z_val)
+                # RM3100 Dynamic nT Scaling: gain = (0.3671 * NC + 1.5) LSB/uT
+                current_sensor_type = self.sensor_type_combo.currentData() if hasattr(self, 'sensor_type_combo') else "RM3100"
+                sensor_name_str = str(getattr(self, 'detected_sensor', 'RM3100')).upper()
+                
+                is_rm3100 = (current_sensor_type == "RM3100") or ("RM3100" in sensor_name_str) or (current_sensor_type == "AUTO" and "FLC100" not in sensor_name_str)
+
+                if is_rm3100:
+                    nc = getattr(self, 'active_cycle_count', self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200)
+                    gain_lsb_per_ut = 0.3671 * float(nc) + 1.5
+                    scale_factor_nt = 1000.0 / gain_lsb_per_ut # 1 uT = 1000 nT
+                    
+                    x_val_disp = x_val * scale_factor_nt
+                    y_val_disp = y_val * scale_factor_nt
+                    z_val_disp = z_val * scale_factor_nt
+                    unit_str = "nT"
+                    self.time_plot_widget.setLabel('left', 'Magnetic Field (nT)')
+                else:
+                    nc = 0
+                    gain_lsb_per_ut = 1.0
+                    scale_factor_nt = 1.0
+                    x_val_disp, y_val_disp, z_val_disp = x_val, y_val, z_val
+                    unit_str = "Counts"
+                    self.time_plot_widget.setLabel('left', 'Magnetic Field (Counts)')
+
+                # Debug print to terminal console every 1 second
+                now_dbg = time.time()
+                if not hasattr(self, 'last_debug_print') or (now_dbg - self.last_debug_print) >= 1.0:
+                    self.last_debug_print = now_dbg
+                    raw_sample_x = x_val[-1] if len(x_val) > 0 else 0
+                    disp_sample_x = x_val_disp[-1] if len(x_val_disp) > 0 else 0
+                    print(f"[DEBUG GUI] is_rm3100={is_rm3100} | sensor_type={current_sensor_type} | NC={nc} | gain={gain_lsb_per_ut:.2f} | scale_factor_nt={scale_factor_nt:.6f} | RawX={raw_sample_x} -> DispX={disp_sample_x:.1f} {unit_str}")
+
+                self.curve_x.setData(t_plot, x_val_disp)
+                self.curve_y.setData(t_plot, y_val_disp)
+                self.curve_z.setData(t_plot, z_val_disp)
 
                 # Calculate and update channel means
-                self.mean_x_label.setText(f"X: {np.mean(data_x[valid_mask]):.2f}")
-                self.mean_y_label.setText(f"Y: {np.mean(data_y[valid_mask]):.2f}")
-                self.mean_z_label.setText(f"Z: {np.mean(data_z[valid_mask]):.2f}")
+                mean_x = np.mean(x_val_disp)
+                mean_y = np.mean(y_val_disp)
+                mean_z = np.mean(z_val_disp)
+                self.mean_x_label.setText(f"X: {mean_x:.1f} {unit_str}")
+                self.mean_y_label.setText(f"Y: {mean_y:.1f} {unit_str}")
+                self.mean_z_label.setText(f"Z: {mean_z:.1f} {unit_str}")
 
     def update_psd(self):
         if not self.auto_psd_cb.isChecked() and self.sender() == self.psd_timer:
@@ -626,6 +672,12 @@ class MainWindow(QMainWindow):
         mode_combo.addItem("BOTH (Simultaneous USB & WiFi)", "BOTH")
         form.addRow("Output Mode:", mode_combo)
 
+        # Sensor Hardware Model
+        sensor_combo = QComboBox()
+        sensor_combo.addItem("FLC100-ADS131E08 (24-bit Analog Fluxgate)", "FLC100")
+        sensor_combo.addItem("PNI RM3100 (Digital SPI Magnetometer)", "RM3100")
+        form.addRow("Sensor Hardware:", sensor_combo)
+
         # WiFi SSID
         ssid_input = QLineEdit()
         ssid_input.setPlaceholderText("Network SSID")
@@ -662,6 +714,7 @@ class MainWindow(QMainWindow):
 
         def apply_provisioning():
             mode_val = mode_combo.currentData()
+            sensor_val = sensor_combo.currentData()
             ssid_val = ssid_input.text().strip()
             pass_val = pass_input.text().strip()
             target_val = target_input.text().strip()
@@ -671,6 +724,7 @@ class MainWindow(QMainWindow):
                 return
 
             self.send_mcu_command(f"MODE {mode_val}")
+            self.send_mcu_command(f"SENSOR {sensor_val}")
             if ssid_val and pass_val:
                 self.send_mcu_command(f"WIFI {ssid_val} {pass_val}")
             if target_val:
@@ -700,6 +754,17 @@ class MainWindow(QMainWindow):
         if rate_code is not None:
             rate_hex = f"{rate_code:02x}"
             self.send_mcu_command(f"RATE {rate_hex}")
+            
+            # Synchronize active cycle count cap matching MCU rate limits
+            user_cc = self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200
+            if rate_code == 0x92:   # 600 Hz
+                self.active_cycle_count = min(user_cc, 30)
+            elif rate_code == 0x93: # 300 Hz
+                self.active_cycle_count = min(user_cc, 50)
+            elif rate_code == 0x94: # 150 Hz
+                self.active_cycle_count = min(user_cc, 100)
+            else:
+                self.active_cycle_count = user_cc
 
     def set_mcu_downsample(self):
         val = self.downsample_combo.currentData()
@@ -713,6 +778,25 @@ class MainWindow(QMainWindow):
 
     def set_mcu_cycle_count(self):
         count = self.cycle_spin.value()
+        rate_code = self.rate_combo.currentData() if hasattr(self, 'rate_combo') else 0x95
+        
+        if rate_code == 0x92:   # 600 Hz limit
+            self.active_cycle_count = min(count, 30)
+        elif rate_code == 0x93: # 300 Hz limit
+            self.active_cycle_count = min(count, 50)
+        elif rate_code == 0x94: # 150 Hz limit
+            self.active_cycle_count = min(count, 100)
+        else:
+            self.active_cycle_count = count
+
+        # Clear ring buffer so past historical samples under previous NC don't create graph step jumps
+        self.time_buffer.fill(0)
+        self.x_buffer.fill(0)
+        self.y_buffer.fill(0)
+        self.z_buffer.fill(0)
+        self.ptr = 0
+
+        print(f"[DEBUG CLI] Spinbox cycle count set to {count} -> active_cycle_count = {self.active_cycle_count} | Ring buffer reset | Sending 'CYCLE {count}' to MCU")
         self.send_mcu_command(f"CYCLE {count}")
 
     def populate_rates_for_sensor(self, sensor_name):
@@ -756,22 +840,45 @@ class MainWindow(QMainWindow):
             self.rate_combo.setCurrentIndex(index)
         self.rate_combo.blockSignals(False)
 
+    def on_user_select_sensor_type(self):
+        val = self.sensor_type_combo.currentData()
+        if val == "RM3100":
+            self.populate_rates_for_sensor("RM3100")
+            self.send_mcu_command("SENSOR RM3100")
+        elif val == "FLC100":
+            self.populate_rates_for_sensor("FLC100-ADS131E08")
+            self.send_mcu_command("SENSOR FLC100")
+        elif val == "AUTO":
+            self.send_mcu_command("STATUS")
+
     def handle_status_message(self, msg):
         self.status_bar.showMessage(msg)
         
-        if msg.startswith("MCU: "):
-            line = msg[5:].strip().upper()
-            
-            # SENSOR: <Name>
-            if line.startswith("SENSOR: "):
-                orig_line = msg[5:].strip()
-                sensor_name = orig_line[8:].strip()
-                if not hasattr(self, 'detected_sensor') or self.detected_sensor != sensor_name:
-                    self.populate_rates_for_sensor(sensor_name)
-            
-            # RATE CODE: 0X
-            elif line.startswith("RATE CODE: 0X"):
-                rate_str = line[13:].strip()
+        line_upper = msg.upper()
+        
+        # Sensor Identity Detection & UI Control Switching
+        if "RM3100" in line_upper:
+            if not hasattr(self, 'detected_sensor') or self.detected_sensor != "RM3100":
+                self.populate_rates_for_sensor("RM3100")
+                if hasattr(self, 'sensor_type_combo'):
+                    self.sensor_type_combo.blockSignals(True)
+                    idx = self.sensor_type_combo.findData("RM3100")
+                    if idx >= 0: self.sensor_type_combo.setCurrentIndex(idx)
+                    self.sensor_type_combo.blockSignals(False)
+        elif "FLC100" in line_upper or "ADS131" in line_upper:
+            if not hasattr(self, 'detected_sensor') or self.detected_sensor != "FLC100-ADS131E08":
+                self.populate_rates_for_sensor("FLC100-ADS131E08")
+                if hasattr(self, 'sensor_type_combo'):
+                    self.sensor_type_combo.blockSignals(True)
+                    idx = self.sensor_type_combo.findData("FLC100")
+                    if idx >= 0: self.sensor_type_combo.setCurrentIndex(idx)
+                    self.sensor_type_combo.blockSignals(False)
+        
+        # Rate Code Selection
+        if "RATE CODE:" in line_upper or "RATE:" in line_upper:
+            parts = line_upper.split(":")
+            if len(parts) >= 2:
+                rate_str = parts[1].replace("0X", "").strip()
                 try:
                     rate_val = int(rate_str, 16)
                     self.select_rate_code(rate_val)
@@ -818,9 +925,36 @@ class MainWindow(QMainWindow):
 
             self.h5_file.attrs['start_time_iso'] = self.record_start_iso
             self.h5_file.attrs['start_time_unix'] = self.record_start_unix
-            self.h5_file.attrs['sensor_type'] = getattr(self, 'detected_sensor', 'FLC100-ADS131E08')
-            self.h5_file.attrs['sample_rate_hz'] = 1000
-            self.h5_file.attrs['vref_v'] = 2.4
+            
+            sensor_type = self.sensor_type_combo.currentData() if hasattr(self, 'sensor_type_combo') else "RM3100"
+            sensor_name_str = str(getattr(self, 'detected_sensor', 'RM3100'))
+            
+            self.h5_file.attrs['sensor_type'] = sensor_type
+            self.h5_file.attrs['sensor_model_detected'] = sensor_name_str
+            
+            rate_code = self.rate_combo.currentData() if hasattr(self, 'rate_combo') else 0x95
+            if rate_code is not None:
+                self.h5_file.attrs['rate_code_hex'] = f"0x{rate_code:02x}"
+                self.h5_file.attrs['rate_code_dec'] = int(rate_code)
+
+            if sensor_type == "RM3100" or "RM3100" in sensor_name_str.upper():
+                nc_spin = self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200
+                nc_active = getattr(self, 'active_cycle_count', nc_spin)
+                gain = 0.3671 * float(nc_active) + 1.5
+                scale_nt = 1000.0 / gain
+                
+                self.h5_file.attrs['cycle_count_spinbox'] = nc_spin
+                self.h5_file.attrs['cycle_count_active'] = nc_active
+                self.h5_file.attrs['gain_lsb_per_ut'] = gain
+                self.h5_file.attrs['scale_factor_nt_per_count'] = scale_nt
+                self.h5_file.attrs['data_units'] = "raw counts (multiply by scale_factor_nt_per_count for nT)"
+            else:
+                ds = self.downsample_combo.currentData() if hasattr(self, 'downsample_combo') else 1
+                gain = self.gain_combo.currentData() if hasattr(self, 'gain_combo') else 1
+                self.h5_file.attrs['downsample_factor'] = ds
+                self.h5_file.attrs['pga_gain'] = gain
+                self.h5_file.attrs['vref_v'] = 2.4
+                self.h5_file.attrs['data_units'] = "raw 24-bit ADC counts"
 
             # Create resizable 1D datasets with chunking and Gzip level 4 compression
             chunk_sz = 1000
@@ -900,6 +1034,13 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, 'h5_file') and self.h5_file:
                 total_samples = self.dset_time.shape[0]
+                end_iso = datetime.now().astimezone().isoformat()
+                end_unix = time.time()
+                dur = end_unix - getattr(self, 'record_start_time', end_unix)
+                
+                self.h5_file.attrs['end_time_iso'] = end_iso
+                self.h5_file.attrs['end_time_unix'] = end_unix
+                self.h5_file.attrs['duration_seconds'] = dur
                 self.h5_file.attrs['sample_count'] = total_samples
 
                 # Also write compound dataset 'data' for convenient 1-call loading

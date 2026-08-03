@@ -8,11 +8,13 @@
 #define RM3100_REG_CCZ     0x08
 #define RM3100_REG_TMRC    0x0B
 #define RM3100_REG_MX      0x24
+#define RM3100_REG_BIST    0x33
 #define RM3100_REG_STATUS  0x34
 #define RM3100_REG_REVID   0x36
 
 RM3100::RM3100(int csPin, int drdyPin) 
-    : _csPin(csPin), _drdyPin(drdyPin), _spi(NULL), _spiSettings(1000000, MSBFIRST, SPI_MODE0) {}
+    : _csPin(csPin), _drdyPin(drdyPin), _spi(NULL), _spiSettings(1000000, MSBFIRST, SPI_MODE0),
+      _cycleX(200), _cycleY(200), _cycleZ(200) {}
 
 bool RM3100::begin() {
     return begin(SPI);
@@ -28,76 +30,134 @@ bool RM3100::begin(SPIClass &spi) {
     }
 
     uint8_t rev = getREVID();
-    if (rev != 0x22) {
+    Serial.print("RM3100 getREVID() readback: 0x");
+    if (rev < 0x10) Serial.print("0");
+    Serial.println(rev, HEX);
+    
+    if (rev == 0x00 || rev == 0xFF) {
+        // 0x00 or 0xFF indicates MISO line is grounded, pulled high, or SPI communication failed
         return false;
     }
     return true;
 }
 
+uint8_t RM3100::runBIST() {
+    writeReg(RM3100_REG_BIST, 0x8F);
+    delay(10);
+    uint8_t res = readReg(RM3100_REG_BIST);
+    writeReg(RM3100_REG_BIST, 0x00); // Clear BIST mode to resume normal measurement
+    delay(5);
+    return res;
+}
+
 String RM3100::getStatusString() {
-    return "Revision ID: 0x" + String(getREVID(), HEX);
+    uint8_t rev = getREVID();
+    uint8_t ccx1 = readReg(RM3100_REG_CCX);      // 0x04 MSB
+    uint8_t ccx0 = readReg(RM3100_REG_CCX + 1);  // 0x05 LSB
+    uint8_t ccy1 = readReg(RM3100_REG_CCY);
+    uint8_t ccy0 = readReg(RM3100_REG_CCY + 1);
+    uint8_t ccz1 = readReg(RM3100_REG_CCZ);
+    uint8_t ccz0 = readReg(RM3100_REG_CCZ + 1);
+    uint8_t tmrc = readReg(RM3100_REG_TMRC);
+    uint8_t status = readReg(RM3100_REG_STATUS);
+    uint8_t bist = runBIST();
+
+    uint8_t raw[9];
+    readRegs(RM3100_REG_MX, raw, 9);
+
+    uint16_t ccx = (ccx1 << 8) | ccx0;
+    uint16_t ccy = (ccy1 << 8) | ccy0;
+    uint16_t ccz = (ccz1 << 8) | ccz0;
+
+    String s = "RM3100 Register Status:\r\n";
+    s += "  RevID: 0x" + String(rev, HEX) + "\r\n";
+    s += "  TMRC: 0x" + String(tmrc, HEX) + "\r\n";
+    s += "  CCX: " + String(ccx) + " [MSB:0x" + String(ccx1, HEX) + " LSB:0x" + String(ccx0, HEX) + "]\r\n";
+    s += "  CCY: " + String(ccy) + " [MSB:0x" + String(ccy1, HEX) + " LSB:0x" + String(ccy0, HEX) + "]\r\n";
+    s += "  CCZ: " + String(ccz) + " [MSB:0x" + String(ccz1, HEX) + " LSB:0x" + String(ccz0, HEX) + "]\r\n";
+    s += "  STATUS: 0x" + String(status, HEX) + "\r\n";
+    s += "  BIST: 0x" + String(bist, HEX) + " (XOK=" + String((bist & 0x10) ? "PASS" : "FAIL") + " YOK=" + String((bist & 0x20) ? "PASS" : "FAIL") + " ZOK=" + String((bist & 0x40) ? "PASS" : "FAIL") + ")\r\n";
+    s += "  RAW BYTES: ";
+    for (int i = 0; i < 9; i++) {
+        if (raw[i] < 0x10) s += "0";
+        s += String(raw[i], HEX) + " ";
+    }
+    return s;
 }
 
 void RM3100::setCycleCount(uint16_t x, uint16_t y, uint16_t z) {
-    // Read CMM register to check if continuous measurement mode is active
+    _cycleX = x;
+    _cycleY = y;
+    _cycleZ = z;
+
     uint8_t cmm = readReg(RM3100_REG_CMM);
     bool cmmActive = (cmm & 0x01) != 0;
 
     if (cmmActive) {
-        // Temporarily stop continuous mode before modifying cycle counts to avoid ASIC lockup
+        // Stop CMM first so the ASIC accepts cycle count writes
         writeReg(RM3100_REG_CMM, 0x00);
-        delayMicroseconds(20);
+        delay(20);
     }
 
-    writeReg(RM3100_REG_CCX, (x >> 8) & 0xFF);
-    writeReg(RM3100_REG_CCX + 1, x & 0xFF);
-    writeReg(RM3100_REG_CCY, (y >> 8) & 0xFF);
-    writeReg(RM3100_REG_CCY + 1, y & 0xFF);
-    writeReg(RM3100_REG_CCZ, (z >> 8) & 0xFF);
-    writeReg(RM3100_REG_CCZ + 1, z & 0xFF);
-    delayMicroseconds(20);
+    uint8_t ccData[6];
+    ccData[0] = (_cycleX >> 8) & 0xFF; // X MSB
+    ccData[1] = _cycleX & 0xFF;        // X LSB
+    ccData[2] = (_cycleY >> 8) & 0xFF; // Y MSB
+    ccData[3] = _cycleY & 0xFF;        // Y LSB
+    ccData[4] = (_cycleZ >> 8) & 0xFF; // Z MSB
+    ccData[5] = _cycleZ & 0xFF;        // Z LSB
+
+    // Burst write 6 bytes starting at address 0x04 in a single CS transaction (Section 5.7.1)
+    _spi->beginTransaction(_spiSettings);
+    digitalWrite(_csPin, LOW);
+    _spi->transfer(RM3100_REG_CCX & 0x7F);
+    for (int i = 0; i < 6; i++) {
+        _spi->transfer(ccData[i]);
+    }
+    digitalWrite(_csPin, HIGH);
+    _spi->endTransaction();
+    delay(5);
 
     if (cmmActive) {
-        // Restore continuous mode settings
-        writeReg(RM3100_REG_CMM, cmm);
+        // Restart CMM mode cleanly
+        uint8_t tmrc = readReg(RM3100_REG_TMRC);
+        if ((tmrc & 0xF0) == 0x00) tmrc |= 0x90;
+        writeReg(RM3100_REG_TMRC, tmrc);
+        writeReg(RM3100_REG_CMM, 0x79);
+        delay(5);
     }
 }
 
 void RM3100::setContinuousMode(bool enable, uint8_t rate) {
-    // Stop continuous mode first to prevent the ASIC state machine from locking up
-    writeReg(RM3100_REG_CMM, 0x00);
-    delayMicroseconds(20);
-
     if (enable) {
-        // Automatically adjust cycle count based on the requested rate
-        // to prevent the hardware cycle count duration from overriding/capping the rate.
-        uint16_t cc = 200; // Default: ~147 Hz limit
-        if (rate == 0x92) {        // 600 Hz
-            cc = 30; // Max rate ~890 Hz
-        } else if (rate == 0x93) { // 300 Hz
-            cc = 50; // Max rate ~534 Hz
-        } else if (rate == 0x94) { // 150 Hz
-            cc = 100; // Max rate ~284 Hz
+        uint8_t tmrcVal = rate;
+        if ((tmrcVal & 0xF0) == 0x00) {
+            tmrcVal |= 0x90; // Convert 0x05 -> 0x95, 0x02 -> 0x92, 0x03 -> 0x93, 0x04 -> 0x94, etc.
         }
-        
-        // Write the dynamically scaled cycle counts
-        writeReg(RM3100_REG_CCX, (cc >> 8) & 0xFF);
-        writeReg(RM3100_REG_CCX + 1, cc & 0xFF);
-        writeReg(RM3100_REG_CCY, (cc >> 8) & 0xFF);
-        writeReg(RM3100_REG_CCY + 1, cc & 0xFF);
-        writeReg(RM3100_REG_CCZ, (cc >> 8) & 0xFF);
-        writeReg(RM3100_REG_CCZ + 1, cc & 0xFF);
-        delayMicroseconds(20);
 
-        writeReg(RM3100_REG_TMRC, rate);
-        delayMicroseconds(20);
-        writeReg(RM3100_REG_CMM, 0x79); // Alarm off, X,Y,Z enabled, Continuous on
+        // Cap cycle counts for high sample rates to prevent ASIC measurement duration from exceeding rate interval
+        uint16_t ccX = _cycleX, ccY = _cycleY, ccZ = _cycleZ;
+        if (tmrcVal == 0x92 && ccX > 30)  { ccX = 30;  ccY = 30;  ccZ = 30; }  // 600 Hz limit (cc <= 30)
+        if (tmrcVal == 0x93 && ccX > 50)  { ccX = 50;  ccY = 50;  ccZ = 50; }  // 300 Hz limit (cc <= 50)
+        if (tmrcVal == 0x94 && ccX > 100) { ccX = 100; ccY = 100; ccZ = 100; } // 150 Hz limit (cc <= 100)
+
+        writeReg(RM3100_REG_CCX, (ccX >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCX + 1, ccX & 0xFF);
+        writeReg(RM3100_REG_CCY, (ccY >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCY + 1, ccY & 0xFF);
+        writeReg(RM3100_REG_CCZ, (ccZ >> 8) & 0xFF);
+        writeReg(RM3100_REG_CCZ + 1, ccZ & 0xFF);
+
+        writeReg(RM3100_REG_TMRC, tmrcVal);
+        writeReg(RM3100_REG_CMM, 0x79); // Alarm off, X,Y,Z enabled, Continuous ON
+    } else {
+        writeReg(RM3100_REG_CMM, 0x00);
     }
 }
 
 bool RM3100::dataReady() {
-    if (_drdyPin != -1) {
-        return digitalRead(_drdyPin) == HIGH;
+    if (_drdyPin != -1 && digitalRead(_drdyPin) == HIGH) {
+        return true;
     }
     return (readReg(RM3100_REG_STATUS) & 0x80) != 0;
 }
@@ -105,15 +165,15 @@ bool RM3100::dataReady() {
 void RM3100::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
     uint8_t buffer[9];
     readRegs(RM3100_REG_MX, buffer, 9);
-    
+
     // 24-bit to 32-bit signed conversion
-    x = (int32_t)((buffer[0] << 16) | (buffer[1] << 8) | buffer[2]);
+    x = (int32_t)(((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | buffer[2]);
     if (x & 0x800000) x |= 0xFF000000;
     
-    y = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
+    y = (int32_t)(((uint32_t)buffer[3] << 16) | ((uint32_t)buffer[4] << 8) | buffer[5]);
     if (y & 0x800000) y |= 0xFF000000;
     
-    z = (int32_t)((buffer[6] << 16) | (buffer[7] << 8) | buffer[8]);
+    z = (int32_t)(((uint32_t)buffer[6] << 16) | ((uint32_t)buffer[7] << 8) | buffer[8]);
     if (z & 0x800000) z |= 0xFF000000;
 }
 

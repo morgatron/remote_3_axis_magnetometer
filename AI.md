@@ -3,7 +3,7 @@ This repository contains the firmware and desktop visualization tool for an ESP3
 1. **FLC-100 Analog Fluxgate Array**: Interfaced via an external **TI ADS131E08 24-bit 8-channel SPI ADC** (no analog voltage dividers needed on ESP32 ADC pins).
 2. **PNI RM3100**: High-resolution digital magnetometer (SPI interface).
 
-The microcontroller features a Hardware Abstraction Layer (HAL) for sensor control, a serial/UDP CLI for remote configuration, and streams 5-column magnetic field data at up to **1 kSPS**. A companion PySide6 desktop application (`desktop_app`) provides real-time multi-channel plotting, automated Welch Power Spectral Density (PSD) analysis, and direct real-time streaming to Gzip-compressed **HDF5 (`.h5`)** scientific datasets.
+The microcontroller features a Hardware Abstraction Layer (HAL) for sensor control, a serial/UDP CLI for remote configuration, and streams 5-column magnetic field data at up to **1 kSPS**. A single universal firmware binary supports both sensor models via NVS dynamic provisioning. A companion PySide6 desktop application (`desktop_app`) provides real-time multi-channel plotting, automated Welch Power Spectral Density (PSD) analysis, and direct real-time streaming to Gzip-compressed **HDF5 (`.h5`)** scientific datasets.
 
 ---
 
@@ -21,7 +21,6 @@ The microcontroller features a Hardware Abstraction Layer (HAL) for sensor contr
 - **MISO**: GPIO 2
 - **DRDY**: GPIO 3 (Hardware interrupt pin)
 - **CS**: GPIO 10
-- **CLK_GEN**: GPIO 1 (Optional external clock output)
 
 ### Default ESP32 Dev Module Pinout
 - **SCK**: GPIO 18 | **MOSI**: GPIO 23 | **MISO**: GPIO 19 | **CS**: GPIO 5 | **DRDY**: GPIO 4
@@ -47,6 +46,7 @@ The CLI operates over Serial (**921,600 baud**) and WiFi UDP port **9876**. Comm
 - `HELP`: Display available commands.
 - `STATUS`: Display active sensor type, streaming state, rate code, and register status.
 - `STREAM ON` / `STREAM OFF`: Enable or disable continuous data streaming.
+- `SENSOR <FLC100|RM3100>`: Set active sensor hardware model dynamically (`FLC100` for FLC100-ADS131E08, `RM3100` for PNI RM3100). Saves to NVS Flash and reboots MCU.
 - `RATE <hex>`: Set hardware sampling / ADC rate code (e.g. `RATE 06` for 1 kSPS, `RATE 96` for RM3100 ~37 Hz).
 - `DOWNSAMPLE <int>`: Set software decimation factor for FLC100-ADS131E08 (e.g. `1` for 1 kSPS, `10` for 100 Hz, `100` for 10 Hz).
 - `CYCLE <int>`: Set oscillation cycle count for RM3100 (e.g. `CYCLE 200`).
@@ -73,7 +73,7 @@ The Python desktop application (`desktop_app/main.py`) provides live data acquis
 4. **Dynamic Sensor Controls**:
    - Automatically detects connected sensor model and switches sidebar UI controls (Cycle counts for RM3100; Downsampling, Gain, and Test Signals for FLC100-ADS131E08).
 5. **Node Provisioning & Deployment Setup Dialog ("Provision Node...")**:
-   - Allows one-click setup of ESP32 operational mode (`SERIAL` USB testing vs `WIFI` remote burst vs `BOTH`), WiFi network credentials, and auto-detected Target Ingestion Server IP.
+   - Allows one-click setup of Sensor Hardware (`FLC100` vs `RM3100`), ESP32 operational mode (`SERIAL` USB testing vs `WIFI` remote burst vs `BOTH`), WiFi network credentials, and auto-detected Target Ingestion Server IP.
    - Saves all parameters directly to ESP32 NVS Flash (`Preferences.h`) so that nodes recover settings instantly on power loss.
 
 ### HDF5 Dataset Loader Module (`desktop_app/hdf5_loader.py`)

@@ -1,1 +1,1 @@
-{"port": "MOCK_SENSOR", "rate": "0a", "history": "10000", "fft_window": "256"}
+{"port": "/dev/ttyUSB0", "rate": "96", "history": "500", "fft_window": "256"}

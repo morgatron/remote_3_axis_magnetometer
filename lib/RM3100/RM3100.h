@@ -21,12 +21,16 @@ public:
     // RM3100 specific
     void setCycleCount(uint16_t x, uint16_t y, uint16_t z);
     uint8_t getREVID();
+    uint8_t runBIST();
 
 private:
     int _csPin;
     int _drdyPin;
     SPIClass *_spi;
     SPISettings _spiSettings;
+    uint16_t _cycleX;
+    uint16_t _cycleY;
+    uint16_t _cycleZ;
 
     void writeReg(uint8_t reg, uint8_t val);
     uint8_t readReg(uint8_t reg);

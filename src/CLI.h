@@ -14,7 +14,7 @@ public:
      * @param current_rate Reference to the current sampling rate variable
      * @param saveCallback Function pointer to call when settings need to be saved
      */
-    CLI(Magnetometer* sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)());
+    CLI(Magnetometer*& sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)());
 
     /**
      * @brief Initialize the CLI (e.g., reserve buffer)
@@ -39,7 +39,7 @@ public:
 
 private:
     
-    Magnetometer* _sensor;
+    Magnetometer*& _sensor;
     bool& _streaming;
     uint8_t& _current_rate;
     void (*_saveCallback)();
