@@ -1,10 +1,15 @@
 import sqlite3
 import os
 import io
+import asyncio
+import json
+import math
 from datetime import datetime, timezone
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import numpy as np
 import pandas as pd
@@ -45,14 +50,49 @@ def init_db():
 
 init_db()
 
+# WebSocket Connection Manager for Real-Time GUI Updates
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+ws_manager = ConnectionManager()
+
 app = FastAPI(
     title="Lightweight Magnetometer Central Data Server",
-    description="Simple, lightweight server for 10-50 magnetometer nodes. Runs on Raspberry Pi with SQLite & NumPy export."
+    description="Simple, lightweight server for 10-50 magnetometer nodes with real-time web monitoring."
 )
+
+# Serve static files for web GUI
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+def index_page():
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h3>Magnetometer Central Data Server Running</h3>"
 
 class TelemetryPoint(BaseModel):
     node_id: str
-    timestamp: Optional[str] = None  # ISO format string, e.g. "2026-08-08T07:58:00Z"
+    timestamp: Optional[str] = None
     x: float
     y: float
     z: float
@@ -70,7 +110,7 @@ def health():
     return {"status": "ok", "db": DB_FILE}
 
 @app.post("/api/telemetry", status_code=201)
-def ingest_sample(point: TelemetryPoint):
+async def ingest_sample(point: TelemetryPoint):
     """Ingest a single reading from a node (HTTP POST)."""
     ts = point.timestamp or datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
@@ -85,11 +125,23 @@ def ingest_sample(point: TelemetryPoint):
             (point.node_id, point.node_id, point.lat, point.lon, ts)
         )
         conn.commit()
+
+    # Broadcast live reading to Web GUI
+    await ws_manager.broadcast({
+        "type": "telemetry",
+        "node_id": point.node_id,
+        "timestamp": ts,
+        "x": point.x,
+        "y": point.y,
+        "z": point.z,
+        "temp": point.temp,
+        "vbat": point.vbat
+    })
     return {"status": "ok"}
 
 @app.post("/api/telemetry/batch", status_code=201)
-def ingest_batch(batch: BatchTelemetry):
-    """Ingest a batch of readings from a node (useful after network reconnect)."""
+async def ingest_batch(batch: BatchTelemetry):
+    """Ingest a batch of readings from a node."""
     rows = []
     now_str = datetime.now(timezone.utc).isoformat()
     for p in batch.points:
@@ -107,13 +159,35 @@ def ingest_batch(batch: BatchTelemetry):
             (batch.node_id, batch.node_id, now_str)
         )
         conn.commit()
+
+    # Broadcast last point in batch
+    if batch.points:
+        last_pt = batch.points[-1]
+        await ws_manager.broadcast({
+            "type": "telemetry",
+            "node_id": batch.node_id,
+            "timestamp": last_pt.timestamp or now_str,
+            "x": last_pt.x,
+            "y": last_pt.y,
+            "z": last_pt.z,
+            "temp": last_pt.temp,
+            "vbat": last_pt.vbat
+        })
     return {"status": "ok", "inserted": len(rows)}
 
 @app.get("/api/nodes")
 def list_nodes():
     """List all reporting nodes and last seen timestamp."""
     with get_db() as conn:
-        cursor = conn.execute("SELECT node_id, name, lat, lon, last_seen FROM nodes ORDER BY node_id")
+        cursor = conn.execute("""
+        SELECT n.node_id, n.name, n.lat, n.lon, n.last_seen,
+               t.x, t.y, t.z, t.temp, t.vbat
+        FROM nodes n
+        LEFT JOIN telemetry t ON t.id = (
+            SELECT id FROM telemetry WHERE node_id = n.node_id ORDER BY timestamp DESC LIMIT 1
+        )
+        ORDER BY n.node_id;
+        """)
         return [dict(row) for row in cursor.fetchall()]
 
 @app.get("/api/data")
@@ -162,7 +236,6 @@ def query_data(
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
     elif format == "npz":
-        # Export as NumPy compressed dictionary (.npz) containing arrays
         buf = io.BytesIO()
         np.savez_compressed(
             buf,
@@ -183,6 +256,16 @@ def query_data(
         )
     else:
         return data
+
+@app.websocket("/ws/live")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep socket alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn
