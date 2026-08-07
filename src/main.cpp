@@ -47,11 +47,14 @@ IPAddress targetIP(255, 255, 255, 255); // Default broadcast
 uint16_t targetPort = 9876;
 uint16_t udpListenPort = 9876;
 
-enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2 };
+#include "BLEStream.h"
+
+enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3 };
 uint8_t outputMode = MODE_SERIAL;
 String wifiSSID = "";
 String wifiPass = "";
 bool wifiConnected = false;
+String deviceID = "";
 
 void saveSettings() {
     prefs.begin("mcu_v0", false);
@@ -63,6 +66,7 @@ void saveSettings() {
     prefs.putString("ssid", wifiSSID);
     prefs.putString("pass", wifiPass);
     prefs.putString("target", targetIP.toString());
+    prefs.putString("device_id", deviceID);
     prefs.end();
 }
 
@@ -105,12 +109,25 @@ void loadSettings() {
     wifiPass = prefs.getString("pass", "");
     String tIP = prefs.getString("target", "255.255.255.255");
     targetIP.fromString(tIP);
+    deviceID = prefs.getString("device_id", "");
     prefs.end();
+
+    if (deviceID.length() == 0) {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char macBuf[32];
+        snprintf(macBuf, sizeof(macBuf), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
+        deviceID = String(macBuf);
+    }
 
     if (sensorTypeConfig == 0) {
         sensor = &sensorRM3100;
     } else {
         sensor = &sensorFLC100;
+    }
+
+    if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
+        bleStream.begin(deviceID);
     }
 
     if (wifiSSID.length() > 0) {
@@ -119,8 +136,8 @@ void loadSettings() {
 }
 
 void sendOutputSample(uint64_t ts, int32_t x, int32_t y, int32_t z, uint32_t status = 0xC00000) {
-    char line[128];
-    snprintf(line, sizeof(line), "%llu,%ld,%ld,%ld,%06X", (unsigned long long)ts, (long)x, (long)y, (long)z, (unsigned int)(status & 0xFFFFFF));
+    char line[160];
+    snprintf(line, sizeof(line), "%s,%llu,%ld,%ld,%ld,%06X", deviceID.c_str(), (unsigned long long)ts, (long)x, (long)y, (long)z, (unsigned int)(status & 0xFFFFFF));
 
     if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
         Serial.println(line);
@@ -130,6 +147,10 @@ void sendOutputSample(uint64_t ts, int32_t x, int32_t y, int32_t z, uint32_t sta
         udp.beginPacket(targetIP, targetPort);
         udp.println(line);
         udp.endPacket();
+    }
+
+    if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
+        bleStream.notify(line);
     }
 }
 
@@ -145,8 +166,8 @@ TaskHandle_t adcTaskHandle = NULL;
 void adcSamplingTask(void *pvParameters) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (streaming && sensorTypeConfig == 1) {
-            sensorFLC100.readAndPushSample();
+        if (streaming && sensor != NULL) {
+            sensor->readAndPushSample();
         }
     }
 }
@@ -194,7 +215,6 @@ void setup() {
     Serial.println("Initializing SPI Bus...");
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
     pinMode(DRDY_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
 
     Serial.println("Auto-probing sensor hardware...");
     bool found = false;
@@ -224,7 +244,9 @@ void setup() {
             found = true;
         }
     }
-    
+
+    // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
+    attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
 
     Serial.print("Sensor Found: ");
     Serial.println(sensor->getSensorName());
@@ -244,7 +266,9 @@ void setup() {
     // Create high-priority task for immediate ISR-notified ADC sampling
     xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 0);
 
-    Serial.println("timestamp_us,x,y,z,status");
+    Serial.print("Device ID: ");
+    Serial.println(deviceID);
+    Serial.println("device_id,timestamp_us,x,y,z,status");
     serialCLI.printHelp();
     
 #if LED_PIN >= 0
@@ -289,50 +313,42 @@ void loop() {
         }
     }
 
-    // Data Streaming
-    if (streaming) {
-        if (sensorTypeConfig == 1) { // FLC100-ADS131E08 (Ring buffer driven)
-            ADCSample sample;
-            while (sensorFLC100.popSample(sample)) {
-                int32_t x = sample.x;
-                int32_t y = sample.y;
-                int32_t z = sample.z;
-                uint32_t status = sample.status;
-                uint64_t ts = sample.ts;
+    // Data Streaming (Unified ring-buffer driven for all sensors)
+    if (streaming && sensor != NULL) {
+        ADCSample sample;
+        while (sensor->popSample(sample)) {
+            int32_t x = sample.x;
+            int32_t y = sample.y;
+            int32_t z = sample.z;
+            uint32_t status = sample.status;
+            uint64_t ts = sample.ts;
 
-                uint16_t decimationFactor = current_downsample;
-                if (decimationFactor <= 1) {
-                    // Direct 1 kS/s streaming without averaging
-                    sendOutputSample(ts, x, y, z, status);
-                } else {
-                    static int32_t sumX = 0, sumY = 0, sumZ = 0;
-                    static uint16_t sampleCounter = 0;
+            uint16_t decimationFactor = current_downsample;
+            if (decimationFactor <= 1) {
+                // Direct streaming without averaging
+                sendOutputSample(ts, x, y, z, status);
+            } else {
+                static int32_t sumX = 0, sumY = 0, sumZ = 0;
+                static uint16_t sampleCounter = 0;
 
-                    sumX += x;
-                    sumY += y;
-                    sumZ += z;
-                    sampleCounter++;
+                sumX += x;
+                sumY += y;
+                sumZ += z;
+                sampleCounter++;
 
-                    if (sampleCounter >= decimationFactor) {
-                        int32_t avgX = sumX / decimationFactor;
-                        int32_t avgY = sumY / decimationFactor;
-                        int32_t avgZ = sumZ / decimationFactor;
+                if (sampleCounter >= decimationFactor) {
+                    int32_t avgX = sumX / decimationFactor;
+                    int32_t avgY = sumY / decimationFactor;
+                    int32_t avgZ = sumZ / decimationFactor;
 
-                        sumX = 0;
-                        sumY = 0;
-                        sumZ = 0;
-                        sampleCounter = 0;
+                    sumX = 0;
+                    sumY = 0;
+                    sumZ = 0;
+                    sampleCounter = 0;
 
-                        sendOutputSample(ts, avgX, avgY, avgZ, status);
-                    }
+                    sendOutputSample(ts, avgX, avgY, avgZ, status);
                 }
             }
-        } else if (sensor->dataReady()) {
-            // For RM3100, stream raw values directly
-            int32_t x, y, z;
-            uint32_t status = 0xC00000;
-            sensor->readXYZ(x, y, z, status);
-            sendOutputSample(esp_timer_get_time(), x, y, z, status);
         }
     }
 }

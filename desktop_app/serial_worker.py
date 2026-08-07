@@ -6,7 +6,7 @@ import serial.tools.list_ports
 from PySide6.QtCore import QThread, Signal
 
 class SerialWorker(QThread):
-    data_received = Signal(object, object, object, object, object)  # timestamp, x, y, z, status
+    data_received = Signal(str, object, object, object, object, object)  # device_id, timestamp, x, y, z, status
     status_message = Signal(str)
     connection_status = Signal(bool)
 
@@ -73,36 +73,41 @@ class SerialWorker(QThread):
                 # Z: Static + Noise
                 z = int(20000 + random.gauss(0, 200))
 
-                self.data_received.emit(ts_us, x, y, z, 0xC00000)
+                self.data_received.emit("MOCK_NODE", ts_us, x, y, z, 0xC00000)
 
             time.sleep(sample_period)
 
     def parse_line(self, line):
         line_up = line.upper()
         # Always emit status messages if status keywords are present
-        if any(kw in line_up for kw in ["SENSOR:", "RM3100", "FLC100", "RATE CODE:", "STATUS", "REVID"]):
+        if any(kw in line_up for kw in ["SENSOR:", "RM3100", "FLC100", "RATE CODE:", "STATUS", "REVID", "DEVICE ID:"]):
             print(f"[DEBUG SERIAL] Intercepted Status Line: {line}")
             self.status_message.emit(f"MCU: {line}")
             # If line contains letters like Sensor: or RM3100, do not treat as raw numerical data
-            if "SENSOR" in line_up or "REVID" in line_up or "CONNECTED" in line_up:
+            if "SENSOR" in line_up or "REVID" in line_up or "CONNECTED" in line_up or "DEVICE ID" in line_up:
                 return
 
-        # Expected format: timestamp_us,x,y,z[,status_hex]
+        # Expected format: device_id,timestamp_us,x,y,z,status_hex OR timestamp_us,x,y,z,status_hex
         try:
             parts = line.split(',')
-            if len(parts) >= 4:
-                ts = float(parts[0]) # Raw microseconds
+            if len(parts) >= 6:
+                device_id = parts[0].strip()
+                ts = float(parts[1])
+                x = int(parts[2])
+                y = int(parts[3])
+                z = int(parts[4])
+                clean_status = parts[5].strip().split()[0]
+                status = int(clean_status, 16)
+                self.data_received.emit(device_id, ts, x, y, z, status)
+            elif len(parts) == 5:
+                device_id = "LOCAL_SERIAL"
+                ts = float(parts[0])
                 x = int(parts[1])
                 y = int(parts[2])
                 z = int(parts[3])
-                status = 0xC00000
-                if len(parts) >= 5:
-                    try:
-                        clean_status = parts[4].strip().split()[0]
-                        status = int(clean_status, 16)
-                    except ValueError:
-                        status = 0xC00000
-                self.data_received.emit(ts, x, y, z, status)
+                clean_status = parts[4].strip().split()[0]
+                status = int(clean_status, 16)
+                self.data_received.emit(device_id, ts, x, y, z, status)
         except (ValueError, IndexError):
             self.status_message.emit(f"MCU: {line}")
 

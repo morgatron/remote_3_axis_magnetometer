@@ -156,25 +156,63 @@ void RM3100::setContinuousMode(bool enable, uint8_t rate) {
 }
 
 bool RM3100::dataReady() {
-    if (_drdyPin != -1 && digitalRead(_drdyPin) == HIGH) {
-        return true;
+    return !isBufferEmpty();
+}
+
+bool RM3100::isBufferEmpty() const {
+    return _ringHead == _ringTail;
+}
+
+void RM3100::readAndPushSample() {
+    if (!_spi) return;
+
+    uint8_t buffer[9];
+    uint64_t now = esp_timer_get_time();
+
+    readRegs(RM3100_REG_MX, buffer, 9);
+
+    int32_t x = (int32_t)(((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | buffer[2]);
+    if (x & 0x800000) x |= 0xFF000000;
+
+    int32_t y = (int32_t)(((uint32_t)buffer[3] << 16) | ((uint32_t)buffer[4] << 8) | buffer[5]);
+    if (y & 0x800000) y |= 0xFF000000;
+
+    int32_t z = (int32_t)(((uint32_t)buffer[6] << 16) | ((uint32_t)buffer[7] << 8) | buffer[8]);
+    if (z & 0x800000) z |= 0xFF000000;
+
+    _lastValidX = x;
+    _lastValidY = y;
+    _lastValidZ = z;
+
+    uint32_t status = 0xC00000;
+
+    size_t nextHead = (_ringHead + 1) & (RING_BUFFER_SIZE - 1);
+    if (nextHead != _ringTail) {
+        _ringBuffer[_ringHead] = { now, x, y, z, status };
+        _ringHead = nextHead;
     }
-    return (readReg(RM3100_REG_STATUS) & 0x80) != 0;
+}
+
+bool RM3100::popSample(ADCSample &sample) {
+    if (_ringHead == _ringTail) {
+        return false;
+    }
+    sample = _ringBuffer[_ringTail];
+    _ringTail = (_ringTail + 1) & (RING_BUFFER_SIZE - 1);
+    return true;
 }
 
 void RM3100::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
-    uint8_t buffer[9];
-    readRegs(RM3100_REG_MX, buffer, 9);
-
-    // 24-bit to 32-bit signed conversion
-    x = (int32_t)(((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | buffer[2]);
-    if (x & 0x800000) x |= 0xFF000000;
-    
-    y = (int32_t)(((uint32_t)buffer[3] << 16) | ((uint32_t)buffer[4] << 8) | buffer[5]);
-    if (y & 0x800000) y |= 0xFF000000;
-    
-    z = (int32_t)(((uint32_t)buffer[6] << 16) | ((uint32_t)buffer[7] << 8) | buffer[8]);
-    if (z & 0x800000) z |= 0xFF000000;
+    ADCSample sample;
+    if (popSample(sample)) {
+        x = sample.x;
+        y = sample.y;
+        z = sample.z;
+    } else {
+        x = _lastValidX;
+        y = _lastValidY;
+        z = _lastValidZ;
+    }
 }
 
 uint8_t RM3100::getREVID() {

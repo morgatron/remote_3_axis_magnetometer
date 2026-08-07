@@ -32,24 +32,8 @@
 #define ADS131_REG_CH7SET      0x0B
 #define ADS131_REG_CH8SET      0x0C
 
-struct ADCSample {
-    uint64_t ts;
-    int32_t x;
-    int32_t y;
-    int32_t z;
-    uint32_t status;
-};
-
 /**
  * @brief Magnetometer implementation for 3-axis FLC-100 sensor read via an external 24-bit ADS131E08 ADC.
- * 
- * Connection schematic:
- *   - FLC-100 X Out -> ADS131E08 Channel 1 Positive (IN1P)
- *   - FLC-100 Y Out -> ADS131E08 Channel 2 Positive (IN2P)
- *   - FLC-100 Z Out -> ADS131E08 Channel 3 Positive (IN3P)
- *   - FLC-100 Ref Out -> ADS131E08 Channels 1-3 Negative (IN1N, IN2N, IN3N)
- * 
- * Using differential inputs eliminates the 2.5V common mode offset and avoids voltage dividers.
  */
 class FLC100_ADS131 : public Magnetometer {
 public:
@@ -61,7 +45,7 @@ public:
     bool dataReady() override;
     void readXYZ(int32_t &x, int32_t &y, int32_t &z) override;
     void readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) override;
-    void setContinuousMode(bool enable, uint8_t rate_code = 0x06) override; // Default rate_code: 0x06 (1kSPS)
+    void setContinuousMode(bool enable, uint8_t rate_code = 0x06) override;
     String getStatusString() override;
     String getSensorName() override { return "FLC100-ADS131E08"; }
 
@@ -73,9 +57,9 @@ public:
     void setTestSignal(bool enable);
 
     // High-priority task & Ring Buffer API
-    void readAndPushSample();
-    bool popSample(ADCSample &sample);
-    bool isBufferEmpty() const;
+    void readAndPushSample() override;
+    bool popSample(ADCSample &sample) override;
+    bool isBufferEmpty() const override;
 
 private:
     int _csPin;

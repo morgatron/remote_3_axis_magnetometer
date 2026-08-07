@@ -1,6 +1,7 @@
 #include "CLI.h"
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
+#include "BLEStream.h"
 #include <WiFi.h>
 
 CLI::CLI(Magnetometer*& sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)())
@@ -60,6 +61,7 @@ void CLI::handleCommand(String cmd) {
         uint16_t cycle = (uint16_t)valStr.toInt();
         if (_sensor->getSensorName() == "RM3100") {
             static_cast<RM3100*>(_sensor)->setCycleCount(cycle, cycle, cycle);
+            if (_saveCallback) _saveCallback();
             Serial.print("Cycle count set to ");
             Serial.println(cycle);
         } else {
@@ -70,6 +72,7 @@ void CLI::handleCommand(String cmd) {
         if (ratio >= 1) {
             extern uint16_t current_downsample;
             current_downsample = ratio;
+            if (_saveCallback) _saveCallback();
             Serial.print("Downsample ratio set to ");
             Serial.print(current_downsample);
             Serial.println("x");
@@ -108,10 +111,21 @@ void CLI::handleCommand(String cmd) {
         }
         if (_saveCallback) _saveCallback();
     } else if (cmd == "STATUS") {
+        extern String deviceID;
+        Serial.print("Device ID: "); Serial.println(deviceID);
         Serial.print("Streaming: "); Serial.println(_streaming ? "ON" : "OFF");
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
         Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
         Serial.println(_sensor->getStatusString());
+    } else if (cmd.startsWith("ID ")) {
+        String newID = cmd.substring(3);
+        newID.trim();
+        if (newID.length() > 0) {
+            extern String deviceID;
+            deviceID = newID;
+            Serial.print("Device ID set to "); Serial.println(deviceID);
+            if (_saveCallback) _saveCallback();
+        }
     } else if (cmd == "TEST ON") {
         if (_sensor->getSensorName() == "FLC100-ADS131E08") {
             static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(true);
@@ -128,6 +142,7 @@ void CLI::handleCommand(String cmd) {
         uint8_t gain = (uint8_t)cmd.substring(5).toInt();
         if (_sensor->getSensorName() == "FLC100-ADS131E08") {
             static_cast<FLC100_ADS131*>(_sensor)->setCalibration(2.4f, 20.0f, gain);
+            if (_saveCallback) _saveCallback();
             Serial.print("PGA Gain set to ");
             Serial.println(gain);
         }
@@ -194,8 +209,14 @@ void CLI::handleCommand(String cmd) {
         } else if (modeStr == "BOTH") {
             outputMode = 2;
             Serial.println("Output Mode set to BOTH (Serial & WiFi).");
+        } else if (modeStr == "BLE") {
+            outputMode = 3;
+            extern String deviceID;
+            extern BLEStream bleStream;
+            bleStream.begin(deviceID);
+            Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
         } else {
-            Serial.println("Usage: MODE <SERIAL|WIFI|BOTH>");
+            Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE>");
         }
         _saveCallback();
     } else if (cmd.length() > 0) {

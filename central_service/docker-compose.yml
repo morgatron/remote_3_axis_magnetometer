@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  magnetometer_server:
+    build: .
+    container_name: magnetometer_server
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DB_FILE=/app/data/magnetometer.db

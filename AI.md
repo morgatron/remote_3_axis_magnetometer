@@ -5,7 +5,9 @@ This repository contains firmware and a PySide6 desktop visualization applicatio
 1. **FLC-100 Analog Fluxgate Array**: Differential analog front-end sampled via an external **TI ADS131E08 24-bit 8-channel SPI ADC** (VREF = 2.4V, 2.0 MHz SPI clock).
 2. **PNI RM3100**: High-resolution digital SPI magnetometer (Hardware REVID `0x22`).
 
-Streams 5-column magnetic field data over Serial (921.6 kbaud) or WiFi UDP (Port 9876) at up to **1 kSPS** (600 Hz max for RM3100). The companion PySide6 desktop application (`desktop_app`) provides real-time time-series plotting, automated Welch Power Spectral Density (PSD) analysis, and Gzip-compressed **HDF5 (`.h5`)** scientific logging with embedded calibration metadata.
+Streams 5-column magnetic field data over Serial (921.6 kbaud) or WiFi UDP (Port 9876) at up to **1 kSPS** (600 Hz max for RM3100). The acquisition pipeline uses a **unified FreeRTOS task-driven ring-buffer architecture** for both sensor types: hardware `/DRDY` pin interrupts trigger a high-priority sampling task (`adcSamplingTask`) that reads SPI samples into a 128-entry lock-free ring buffer, eliminating SPI shift-register collisions and USB CDC buffer stalls.
+
+The companion PySide6 desktop application (`desktop_app`) provides real-time time-series plotting, automated Welch Power Spectral Density (PSD) analysis, and Gzip-compressed **HDF5 (`.h5`)** scientific logging with embedded calibration metadata.
 
 ---
 
@@ -45,15 +47,38 @@ During `setup()`, the MCU probes SPI devices in sequence:
 - **Live Register Updates (CMM Pause)**: Per RM3100 manual Section 5.2, `RM3100::setCycleCount` temporarily pauses Continuous Measurement Mode (`CMM = 0x00`), burst-writes the 6 cycle count registers (`0x04`..`0x09`), and restarts `CMM`, enabling live adjustments during active streaming.
 
 ### FLC100 + TI ADS131E08 24-bit ADC
-- **Status Header**: 24-bit status header contains ADC channel fault and lead-off flags. Headers are verified by checking that SPI MISO is active (not all `0x00` or `0xFF`).
-- **Raw ADC Scaling**: Raw 24-bit signed counts reflect direct voltage output ($1\text{ mV/}\mu\text{T}$).
+### Unified Event-Driven Firmware Architecture
+Both FLC100 and RM3100 sensors operate under a **unified FreeRTOS task-driven ring-buffer architecture**:
+
+- **Hardware DRDY Interrupt (`drdyISR`)**: Low-latency ISR (< 1 µs) handles `/DRDY` pin edge signals (`FALLING` for FLC100 / ADS131E08, `RISING` for RM3100). The ISR calls `vTaskNotifyGiveFromISR()` to wake the sampling task.
+- **High-Priority Sampling Task (`adcSamplingTask`)**: Runs at `configMAX_PRIORITIES - 1`. Wakes in ~1–2 µs to perform SPI transfers (`readAndPushSample()`), validate 24-bit status headers, and push samples into a 128-entry lock-free ring buffer.
+- **Buffer Consumer (`loop()`)**: `loop()` pops samples via `sensor->popSample(sample)`, formats 5-column CSV lines, and streams over Serial / UDP.
+- **USB CDC Log Suppression**: `-D CORE_DEBUG_LEVEL=0` is configured in `platformio.ini` to suppress hardware USB CDC warnings (`HWCDC.cpp`) from splicing into active Serial CSV streams.
+
+---
+
+## WiFi & Remote Operation: Current State & Future Roadmap
+
+### Current State (Fully Implemented & Operational)
+- **Multi-Mode Streaming (`MODE SERIAL | WIFI | BOTH`)**: Supports routing data to USB Serial (`SERIAL`), remote UDP socket (`WIFI`), or both simultaneously (`BOTH`).
+- **NVS Non-Volatile Persistence**: Operational parameters (`sensor_type`, `mode`, `ssid`, `pass`, `target`, `rate`, `downsample`, `cycle`) are stored in NVS flash memory (`Preferences.h`). Sensor nodes automatically reconnect to WiFi and resume streaming upon power restoration.
+- **Node Provisioning Setup Dialog ("Provision Node...")**: One-click setup in `desktop_app/main.py` over Serial to provision WiFi SSID, password, mode, sensor hardware, and target server IP.
+- **Desktop Application UDP Listener (`UdpWorker`)**: Receives remote UDP streams (`WIFI_UDP` port selection on port `9876`) for real-time plotting, PSD analysis, and HDF5 logging.
+
+### Current Limitations & Development Goals
+- **Bandwidth Efficiency**: Current WiFi streaming outputs raw ASCII CSV strings (`35 bytes/sample`). The next milestone is implementing binary delta compression ($\Delta X, \Delta Y, \Delta Z$), reducing payload size to **$4-6\text{ bytes/sample}$** (~85% size reduction).
+- **Power Optimization Roadmap**:
+  - **Inter-Sample Light Sleep ($150\ \mu\text{A}$)**: Suspend ESP32 CPU into light sleep between hardware DRDY interrupts while maintaining active RAM.
+  - **Fast WiFi Burst Transmission (< 300 ms)**: Cache static IP and AP channel (`WiFi.config` / `WiFi.begin`) to transmit 5-minute data blocks in < 300 ms bursts, minimizing active TX radio time ($180\text{ mA}$).
+  - **Battery Life Projection**: A 3000 mAh Li-ion cell yields **~14.3 days** of continuous 100 Hz sampling (FLC100 front-end) or **~7 months** for periodic RM3100 bursts.
 
 ---
 
 ## Data Stream Format & CLI Reference
 
-### 5-Column CSV Data Stream
-`timestamp_us,x,y,z,status`
+### 6-Column CSV Data Stream
+`device_id,timestamp_us,x,y,z,status`
+- **`device_id`**: Device / Node Name string (e.g. `SENSOR_01` or auto-generated `NODE_686F80` from MAC eFuse).
 - **`timestamp_us`**: Uptime in microseconds (`uint64_t`).
 - **`x, y, z`**: Magnetic field values in nT (RM3100) or raw ADC counts (FLC100).
 - **`status`**: 24-bit hex SPI status word (e.g., `C00000`).
@@ -62,14 +87,15 @@ During `setup()`, the MCU probes SPI devices in sequence:
 
 | Command | Description |
 | :--- | :--- |
-| `HELP` / `STATUS` | Display CLI help / Query sensor model, rate code, and register status |
+| `HELP` / `STATUS` | Display CLI help / Query Device ID, sensor model, rate code, and register status |
 | `STREAM ON` / `OFF` | Enable / disable continuous sampling data stream |
+| `ID <name>` | Configure custom Device ID / Node name (saves to NVS Flash, e.g. `ID NORTH_FIELD`) |
 | `SENSOR <FLC100\|RM3100>` | Force active sensor model (saves to NVS Flash and reboots MCU) |
 | `RATE <hex>` | Set rate code (`0x06` for 1 kSPS FLC100, `0x95` for 75 Hz RM3100, `0x92` for 600 Hz RM3100) |
 | `CYCLE <int>` | Set RM3100 oscillation cycle count (e.g. `CYCLE 200`) |
 | `DOWNSAMPLE <int>` | Set software decimation factor for FLC100 (e.g., `1` = 1 kSPS, `10` = 100 Hz) |
 | `GAIN <int>` | Set ADS131E08 PGA gain (`1`, `2`, `4`, `8`) |
-| `MODE <SERIAL\|WIFI\|BOTH>` | Direct output stream to Serial (USB), WiFi UDP, or both |
+| `MODE <SERIAL\|WIFI\|BLE\|BOTH>` | Direct output stream to Serial (USB), WiFi UDP, BLE (Bluetooth LE Long Range), or both |
 | `WIFI <ssid> <pass>` | Configure WiFi station mode credentials |
 | `TARGET <ip>` | Set destination server IP for UDP packet bursts |
 

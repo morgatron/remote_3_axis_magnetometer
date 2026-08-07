@@ -3,7 +3,7 @@ import time
 from PySide6.QtCore import QThread, Signal
 
 class UdpWorker(QThread):
-    data_received = Signal(object, object, object, object, object)  # timestamp, x, y, z, status
+    data_received = Signal(str, object, object, object, object, object)  # device_id, timestamp, x, y, z, status
     status_message = Signal(str)
     connection_status = Signal(bool)
 
@@ -51,21 +51,25 @@ class UdpWorker(QThread):
             self.connection_status.emit(False)
 
     def parse_line(self, line):
-        # Expected format: timestamp_us,x,y,z[,status_hex]
+        # Format: device_id,timestamp_us,x,y,z,status_hex OR timestamp_us,x,y,z,status_hex
         try:
             parts = line.split(',')
-            if len(parts) >= 4:
-                ts = float(parts[0]) # Raw microseconds or float seconds
+            if len(parts) >= 6:
+                device_id = parts[0].strip()
+                ts = float(parts[1])
+                x = int(parts[2])
+                y = int(parts[3])
+                z = int(parts[4])
+                status = int(parts[5].strip(), 16)
+                self.data_received.emit(device_id, ts, x, y, z, status)
+            elif len(parts) == 5:
+                device_id = "NODE_DEFAULT"
+                ts = float(parts[0])
                 x = int(parts[1])
                 y = int(parts[2])
                 z = int(parts[3])
-                status = 0xC00000
-                if len(parts) >= 5:
-                    try:
-                        status = int(parts[4], 16)
-                    except ValueError:
-                        status = 0xC00000
-                self.data_received.emit(ts, x, y, z, status)
+                status = int(parts[4].strip(), 16)
+                self.data_received.emit(device_id, ts, x, y, z, status)
         except (ValueError, IndexError):
             # Not a numeric data line, treat as MCU status message
             self.status_message.emit(f"MCU (WiFi): {line}")

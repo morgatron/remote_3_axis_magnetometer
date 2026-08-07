@@ -72,8 +72,15 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self.refresh_ports)
         conn_layout.addWidget(refresh_btn)
         
+        conn_layout.addSpacing(15)
+        conn_layout.addWidget(QLabel("Active Node:"))
+        self.node_combo = QComboBox()
+        self.node_combo.addItem("All Nodes")
+        self.discovered_nodes = set(["All Nodes"])
+        conn_layout.addWidget(self.node_combo)
+
         provision_btn = QPushButton("Provision Node...")
-        provision_btn.setToolTip("Configure WiFi, streaming output mode, and target server IP for remote node deployment")
+        provision_btn.setToolTip("Configure WiFi, streaming output mode, target server IP, and Device ID for remote deployment")
         provision_btn.clicked.connect(self.open_provision_dialog)
         conn_layout.addWidget(provision_btn)
         
@@ -386,6 +393,10 @@ class MainWindow(QMainWindow):
 
     def refresh_ports(self):
         self.port_combo.clear()
+        
+        # Always allow WiFi UDP receiver mode for remote wireless operation
+        self.port_combo.addItem("WIFI_UDP (Port 9876)")
+
         ports = serial.tools.list_ports.comports()
         for p in ports:
             # Filter for typical USB-serial devices (ttyUSBx, ttyACMx, or COMx on Windows)
@@ -507,8 +518,19 @@ class MainWindow(QMainWindow):
             # Request MCU status after a 1.5 second delay (allows ESP32 auto-reset bootloader to pass)
             QTimer.singleShot(1500, lambda: self.send_mcu_command("STATUS"))
 
-    @Slot(object, object, object, object, object)
-    def handle_data(self, ts, x, y, z, status=0xC00000):
+    @Slot(str, object, object, object, object, object)
+    def handle_data(self, device_id, ts, x, y, z, status=0xC00000):
+        if not hasattr(self, 'discovered_nodes'):
+            self.discovered_nodes = set(["All Nodes"])
+        if device_id not in self.discovered_nodes:
+            self.discovered_nodes.add(device_id)
+            if hasattr(self, 'node_combo'):
+                self.node_combo.addItem(device_id)
+
+        selected_node = self.node_combo.currentText() if hasattr(self, 'node_combo') else "All Nodes"
+        if selected_node != "All Nodes" and device_id != selected_node:
+            return
+
         if self.is_recording and hasattr(self, 'h5_file') and self.h5_file:
             try:
                 ts_sec = float(ts) / 1000000.0
@@ -579,14 +601,14 @@ class MainWindow(QMainWindow):
                     y_val_disp = y_val * scale_factor_nt
                     z_val_disp = z_val * scale_factor_nt
                     unit_str = "nT"
-                    self.time_plot_widget.setLabel('left', 'Magnetic Field (nT)')
+                    self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (nT)')
                 else:
                     nc = 0
                     gain_lsb_per_ut = 1.0
                     scale_factor_nt = 1.0
                     x_val_disp, y_val_disp, z_val_disp = x_val, y_val, z_val
                     unit_str = "Counts"
-                    self.time_plot_widget.setLabel('left', 'Magnetic Field (Counts)')
+                    self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (Counts)')
 
                 # Debug print to terminal console every 1 second
                 now_dbg = time.time()
@@ -594,7 +616,7 @@ class MainWindow(QMainWindow):
                     self.last_debug_print = now_dbg
                     raw_sample_x = x_val[-1] if len(x_val) > 0 else 0
                     disp_sample_x = x_val_disp[-1] if len(x_val_disp) > 0 else 0
-                    print(f"[DEBUG GUI] is_rm3100={is_rm3100} | sensor_type={current_sensor_type} | NC={nc} | gain={gain_lsb_per_ut:.2f} | scale_factor_nt={scale_factor_nt:.6f} | RawX={raw_sample_x} -> DispX={disp_sample_x:.1f} {unit_str}")
+                    print(f"[DEBUG GUI] Node={device_id} | is_rm3100={is_rm3100} | RawX={raw_sample_x} -> DispX={disp_sample_x:.1f} {unit_str}")
 
                 self.curve_x.setData(t_plot, x_val_disp)
                 self.curve_y.setData(t_plot, y_val_disp)
@@ -669,6 +691,7 @@ class MainWindow(QMainWindow):
         mode_combo = QComboBox()
         mode_combo.addItem("SERIAL (USB Testing Mode)", "SERIAL")
         mode_combo.addItem("WIFI (Remote UDP Burst Mode)", "WIFI")
+        mode_combo.addItem("BLE (Bluetooth LE Long Range)", "BLE")
         mode_combo.addItem("BOTH (Simultaneous USB & WiFi)", "BOTH")
         form.addRow("Output Mode:", mode_combo)
 
@@ -677,6 +700,48 @@ class MainWindow(QMainWindow):
         sensor_combo.addItem("FLC100-ADS131E08 (24-bit Analog Fluxgate)", "FLC100")
         sensor_combo.addItem("PNI RM3100 (Digital SPI Magnetometer)", "RM3100")
         form.addRow("Sensor Hardware:", sensor_combo)
+
+        # Device ID
+        device_id_input = QLineEdit()
+        device_id_input.setPlaceholderText("e.g. SENSOR_01 (Leave blank for MAC default)")
+        form.addRow("Device ID:", device_id_input)
+
+        # Sampling Rate
+        rate_combo = QComboBox()
+        rates_flc = [("1000 Hz / 1 kS/s", "06"), ("500 Hz", "05"), ("250 Hz", "FA"), ("100 Hz", "64"), ("50 Hz", "32"), ("10 Hz", "0A")]
+        rates_rm = [("37 Hz", "96"), ("75 Hz", "95"), ("150 Hz", "94"), ("300 Hz", "93"), ("600 Hz", "92"), ("18 Hz", "97"), ("9 Hz", "98")]
+        
+        for label, val in rates_flc:
+            rate_combo.addItem(f"FLC100: {label}", ("FLC100", val))
+        for label, val in rates_rm:
+            rate_combo.addItem(f"RM3100: {label}", ("RM3100", val))
+            
+        if hasattr(self, 'rate_combo') and self.rate_combo.currentData() is not None:
+            curr_hex = f"{self.rate_combo.currentData():02x}".upper()
+            for i in range(rate_combo.count()):
+                if rate_combo.itemData(i)[1].upper() == curr_hex:
+                    rate_combo.setCurrentIndex(i)
+                    break
+        form.addRow("Sampling Rate:", rate_combo)
+
+        # Software Downsample (FLC100)
+        ds_spin = QSpinBox()
+        ds_spin.setRange(1, 100)
+        ds_spin.setValue(self.downsample_combo.currentData() if hasattr(self, 'downsample_combo') and self.downsample_combo.currentData() is not None else 1)
+        form.addRow("Downsample Factor (FLC100):", ds_spin)
+
+        # PGA Gain (FLC100)
+        gain_combo = QComboBox()
+        for g in [1, 2, 4, 8]:
+            gain_combo.addItem(f"{g}x", g)
+        form.addRow("PGA Gain (FLC100):", gain_combo)
+
+        # RM3100 Cycle Count
+        cycle_spin = QSpinBox()
+        cycle_spin.setRange(50, 1000)
+        cycle_spin.setSingleStep(10)
+        cycle_spin.setValue(self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200)
+        form.addRow("Cycle Count (RM3100):", cycle_spin)
 
         # WiFi SSID
         ssid_input = QLineEdit()
@@ -715,6 +780,7 @@ class MainWindow(QMainWindow):
         def apply_provisioning():
             mode_val = mode_combo.currentData()
             sensor_val = sensor_combo.currentData()
+            dev_id_val = device_id_input.text().strip()
             ssid_val = ssid_input.text().strip()
             pass_val = pass_input.text().strip()
             target_val = target_input.text().strip()
@@ -725,6 +791,19 @@ class MainWindow(QMainWindow):
 
             self.send_mcu_command(f"MODE {mode_val}")
             self.send_mcu_command(f"SENSOR {sensor_val}")
+            if dev_id_val:
+                self.send_mcu_command(f"ID {dev_id_val}")
+                
+            rate_info = rate_combo.itemData(rate_combo.currentIndex())
+            if rate_info:
+                self.send_mcu_command(f"RATE {rate_info[1]}")
+            
+            if sensor_val == "FLC100":
+                self.send_mcu_command(f"DOWNSAMPLE {ds_spin.value()}")
+                self.send_mcu_command(f"GAIN {gain_combo.currentData()}")
+            elif sensor_val == "RM3100":
+                self.send_mcu_command(f"CYCLE {cycle_spin.value()}")
+
             if ssid_val and pass_val:
                 self.send_mcu_command(f"WIFI {ssid_val} {pass_val}")
             if target_val:
@@ -733,7 +812,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 dialog,
                 "Provisioning Saved",
-                f"Node provisioned successfully!\n\n- Output Mode: {mode_val}\n- Target IP: {target_val}\n\nParameters saved to ESP32 NVS Flash."
+                f"Node provisioned successfully!\n\n- Output Mode: {mode_val}\n- Device ID: {dev_id_val or 'MAC Default'}\n- Target IP: {target_val}\n\nAll measurement & network parameters saved to ESP32 NVS Flash."
             )
             dialog.accept()
 

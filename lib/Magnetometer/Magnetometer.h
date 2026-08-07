@@ -3,6 +3,14 @@
 
 #include <Arduino.h>
 
+struct ADCSample {
+    uint64_t ts;
+    int32_t x;
+    int32_t y;
+    int32_t z;
+    uint32_t status;
+};
+
 /**
  * @brief Abstract base class for 3-axis magnetometers.
  */
@@ -41,6 +49,24 @@ public:
         readXYZ(x, y, z);
         status = 0xC00000;
     }
+
+    /**
+     * @brief Read sample via SPI and push to ring buffer (called by high-priority sampling task).
+     */
+    virtual void readAndPushSample() = 0;
+
+    /**
+     * @brief Pop a sample from the ring buffer.
+     * @param sample Reference to store popped sample.
+     * @return true if sample was successfully popped.
+     */
+    virtual bool popSample(ADCSample &sample) = 0;
+
+    /**
+     * @brief Check if the ring buffer is empty.
+     * @return true if ring buffer is empty.
+     */
+    virtual bool isBufferEmpty() const = 0;
 
     /**
      * @brief Enable or disable continuous measurement mode.
