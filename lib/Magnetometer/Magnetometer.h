@@ -40,10 +40,6 @@ public:
 
     /**
      * @brief Read raw X, Y, Z magnetic field values along with the 24-bit status header.
-     * @param x Reference to store X-axis value.
-     * @param y Reference to store Y-axis value.
-     * @param z Reference to store Z-axis value.
-     * @param status Reference to store 24-bit raw status header.
      */
     virtual void readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) {
         readXYZ(x, y, z);
@@ -57,35 +53,33 @@ public:
 
     /**
      * @brief Pop a sample from the ring buffer.
-     * @param sample Reference to store popped sample.
-     * @return true if sample was successfully popped.
      */
     virtual bool popSample(ADCSample &sample) = 0;
 
     /**
      * @brief Check if the ring buffer is empty.
-     * @return true if ring buffer is empty.
      */
     virtual bool isBufferEmpty() const = 0;
 
     /**
      * @brief Enable or disable continuous measurement mode.
-     * @param enable True to enable, false to disable.
-     * @param rate_code Implementation-specific rate code.
      */
     virtual void setContinuousMode(bool enable, uint8_t rate_code) = 0;
 
     /**
      * @brief Get a sensor-specific identifier or status string.
-     * @return String describing the sensor status or ID.
      */
     virtual String getStatusString() = 0;
 
     /**
      * @brief Get the name of the sensor model.
-     * @return String sensor name.
      */
     virtual String getSensorName() = 0;
+
+    /**
+     * @brief Get the scale factor to convert raw LSB counts to Nanotesla (nT).
+     */
+    virtual float getScaleFactor() { return 1.0f; }
 };
 
 #endif

@@ -2,31 +2,31 @@
 
 ## Overview
 
-The `central_service` is a lightweight, Raspberry Pi-friendly central data ingestion, gateway service, and monitoring platform designed for distributed 3-axis magnetometer sensor networks (10 to 50 nodes operating at ~1 Hz down to 1 sample/minute).
+The `central_service` is a future-proof, lightweight, Raspberry Pi-friendly central data ingestion, edge gateway, and monitoring platform designed for long-term time-series recording of distributed 3-axis magnetometer networks (10 to 50 nodes operating at ~1 Hz down to 1 sample/minute).
 
-Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy database setup and minimal memory (< 30 MB RAM).
+Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy database setup and minimal memory footprint (< 30 MB RAM).
 
 ---
 
-## Unified Edge Gateway Architecture (`gateway.py`)
+## API v1 & Data Schema Future-Proofing
 
-In field deployments where sensor nodes operate on isolated subnets (WiFi UDP), Bluetooth LE (BLE), or USB/Serial interfaces without direct internet connectivity, a single **Unified Gateway (`gateway.py`)** manages all interfaces concurrently:
+1. **Database Schema Stability (`magnetometer.db`)**:
+   - `telemetry`: `timestamp`, `node_id`, `x`, `y`, `z`, `units` ('nT'), `temp`, `vbat`, `rssi`, `status_flags`, `extra_json`.
+   - `nodes`: `node_id`, `name`, `lat`, `lon`, `elevation_m`, `last_seen`, `sensor_model`, `cycle_count`, `baseline_x`, `baseline_y`, `baseline_z`, `notes`.
+   - **Automatic Safe Migrations**: `init_db()` automatically runs non-destructive `ALTER TABLE ADD COLUMN` checks on startup, ensuring past SQLite database files remain 100% compatible.
 
-```
-[Field Sensor Layer]                          [Edge Gateway Layer]                        [Central Data Server]
+2. **API Versioning & Forward Compatibility**:
+   - Primary REST endpoints are versioned under `/api/v1/...` (`/api/v1/telemetry`, `/api/v1/telemetry/batch`, `/api/v1/data`, `/api/v1/nodes`).
+   - Legacy routes (`/api/telemetry`, `/api/data`, `/api/nodes`) are maintained as permanent alias routes for 100% backward compatibility.
 
-ESP32 Node 01 (WiFi UDP)  ──┐
-ESP32 Node 02 (WiFi UDP)  ──┼─► [gateway.py] ───┐
-ESP32 Node 03 (USB Serial)─┤    (Unified        ├──(HTTP POST /api/telemetry/batch)──► [server.py (FastAPI)]
-ESP32 Node 04 (BLE 5.0)   ──┤     Store-and-    │                                           │
-ESP32 Node 05 (BLE 5.0)   ──┘     Forward)      │                                      SQLite Database
-                                                │                                     (magnetometer.db)
-```
+3. **Data Export Formats**:
+   - **CSV (`.csv`)**: Standardized headers (`timestamp_utc`, `node_id`, `x_nT`, `y_nT`, `z_nT`, `magnitude_nT`, `temp_c`, `vbat_mv`).
+   - **Apache Parquet (`.parquet`)**: Ultra-fast, compressed columnar binary format for scientific data.
+   - **NumPy Compressed (`.npz`)**: Native array export for Python (`x_nT`, `y_nT`, `z_nT`, `magnitude_nT`).
+   - **JSON**: Structured REST responses with `schema_version: "1.0"`.
 
-### Gateway Responsibilities (`gateway.py`):
-1. **Multi-Interface Ingestion**: Runs UDP (Port 9876), BLE Central Scanner (Nordic UART Service), and Serial/USB listeners in parallel threads.
-2. **Unified Store-and-Forward Queue**: Buffers incoming samples from all interfaces. If the connection to the central server drops, queued samples are preserved and flushed in batch upon reconnection.
-3. **Graceful Fallbacks**: Automatically degrades gracefully (e.g., if `bleak` is not installed, BLE is skipped while UDP/Serial continue running).
+4. **Server-Side Downsampling**:
+   - Use `downsample_sec=60` (1-min) or `3600` (1-hour) on `/api/v1/data` to query multi-month datasets at high speeds.
 
 ---
 
@@ -34,15 +34,15 @@ ESP32 Node 05 (BLE 5.0)   ──┘     Forward)      │                       
 
 ```
 central_service/
-├── server.py             # Single-file FastAPI + SQLite backend server & WebSocket hub
+├── server.py                 # Single-file FastAPI + SQLite backend server & WebSocket hub
 ├── gateway.py            # Unified UDP, BLE, and Serial store-and-forward edge gateway
 ├── static/
-│   └── index.html        # Real-time web GUI monitoring dashboard
-├── client_example.py     # Example Python script loading data into Pandas/NumPy
-├── test_simulator.py     # Multi-node simulator for testing 1 Hz telemetry & magnetic transients
-├── requirements.txt      # Python dependencies
-├── docker-compose.yml    # Optional single-container Docker deployment configuration
-└── Dockerfile            # Lightweight Python container setup
+│   └── index.html            # Real-time web GUI monitoring dashboard
+├── client_example.py         # Future-proof Python script loading data into Pandas/NumPy/Parquet
+├── test_simulator.py         # Multi-node simulator for testing 1 Hz telemetry & magnetic transients
+├── requirements.txt          # Python dependencies
+├── docker-compose.yml        # Optional single-container Docker deployment configuration
+└── Dockerfile                # Lightweight Python container setup
 ```
 
 ---
@@ -57,15 +57,8 @@ python server.py
 ```
 Open `http://localhost:8000` (or `http://<pi-ip>:8000`) in your web browser.
 
-### 2. Run Unified Gateway (on Edge Pi / Field Gateway)
+### 2. Run Edge Gateway (on Edge Pi / Field Gateway)
 ```bash
 export CENTRAL_SERVER_URL="http://192.168.1.100:8000"
 python gateway.py
 ```
-
-### 3. Optional Environment Variables for `gateway.py`
-- `CENTRAL_SERVER_URL`: Target server URL (default: `http://localhost:8000`).
-- `ENABLE_UDP`: Enable/disable WiFi UDP listener (default: `true`, port `9876`).
-- `ENABLE_BLE`: Enable/disable Bluetooth LE listener (default: `true`).
-- `ENABLE_SERIAL`: Enable/disable USB Serial listener (default: `false`).
-- `SERIAL_PORT`: e.g. `/dev/ttyUSB0`.

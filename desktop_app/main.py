@@ -586,27 +586,16 @@ class MainWindow(QMainWindow):
                         y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
                         z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
 
-                # RM3100 Dynamic nT Scaling: gain = (0.3671 * NC + 1.5) LSB/uT
+                # MCU streams pre-scaled physical nT directly
                 current_sensor_type = self.sensor_type_combo.currentData() if hasattr(self, 'sensor_type_combo') else "RM3100"
                 sensor_name_str = str(getattr(self, 'detected_sensor', 'RM3100')).upper()
-                
                 is_rm3100 = (current_sensor_type == "RM3100") or ("RM3100" in sensor_name_str) or (current_sensor_type == "AUTO" and "FLC100" not in sensor_name_str)
 
+                x_val_disp, y_val_disp, z_val_disp = x_val, y_val, z_val
                 if is_rm3100:
-                    nc = getattr(self, 'active_cycle_count', self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200)
-                    gain_lsb_per_ut = 0.3671 * float(nc) + 1.5
-                    scale_factor_nt = 1000.0 / gain_lsb_per_ut # 1 uT = 1000 nT
-                    
-                    x_val_disp = x_val * scale_factor_nt
-                    y_val_disp = y_val * scale_factor_nt
-                    z_val_disp = z_val * scale_factor_nt
                     unit_str = "nT"
                     self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (nT)')
                 else:
-                    nc = 0
-                    gain_lsb_per_ut = 1.0
-                    scale_factor_nt = 1.0
-                    x_val_disp, y_val_disp, z_val_disp = x_val, y_val, z_val
                     unit_str = "Counts"
                     self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (Counts)')
 
@@ -789,7 +778,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(dialog, "Missing WiFi SSID", "Please enter a valid WiFi SSID for WiFi mode.")
                 return
 
-            self.send_mcu_command(f"MODE {mode_val}")
             self.send_mcu_command(f"SENSOR {sensor_val}")
             if dev_id_val:
                 self.send_mcu_command(f"ID {dev_id_val}")
@@ -808,6 +796,8 @@ class MainWindow(QMainWindow):
                 self.send_mcu_command(f"WIFI {ssid_val} {pass_val}")
             if target_val:
                 self.send_mcu_command(f"TARGET {target_val}")
+
+            self.send_mcu_command(f"MODE {mode_val}")
 
             QMessageBox.information(
                 dialog,
@@ -868,14 +858,7 @@ class MainWindow(QMainWindow):
         else:
             self.active_cycle_count = count
 
-        # Clear ring buffer so past historical samples under previous NC don't create graph step jumps
-        self.time_buffer.fill(0)
-        self.x_buffer.fill(0)
-        self.y_buffer.fill(0)
-        self.z_buffer.fill(0)
-        self.ptr = 0
-
-        print(f"[DEBUG CLI] Spinbox cycle count set to {count} -> active_cycle_count = {self.active_cycle_count} | Ring buffer reset | Sending 'CYCLE {count}' to MCU")
+        print(f"[DEBUG CLI] Spinbox cycle count set to {count} -> active_cycle_count = {self.active_cycle_count} | Sending 'CYCLE {count}' to MCU")
         self.send_mcu_command(f"CYCLE {count}")
 
     def populate_rates_for_sensor(self, sensor_name):
@@ -1049,9 +1032,9 @@ class MainWindow(QMainWindow):
             # Create resizable 1D datasets with chunking and Gzip level 4 compression
             chunk_sz = 1000
             self.dset_time = self.h5_file.create_dataset('time_s', shape=(0,), maxshape=(None,), dtype='f8', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='i4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
             self.dset_status = self.h5_file.create_dataset('status', shape=(0,), maxshape=(None,), dtype='u4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
             
             self.h5_buffer = []
@@ -1099,9 +1082,9 @@ class MainWindow(QMainWindow):
             self.dset_status.resize((new_sz,))
 
             self.dset_time[curr:new_sz] = batch[:, 0].astype(np.float64)
-            self.dset_x[curr:new_sz] = batch[:, 1].astype(np.int32)
-            self.dset_y[curr:new_sz] = batch[:, 2].astype(np.int32)
-            self.dset_z[curr:new_sz] = batch[:, 3].astype(np.int32)
+            self.dset_x[curr:new_sz] = batch[:, 1].astype(np.float32)
+            self.dset_y[curr:new_sz] = batch[:, 2].astype(np.float32)
+            self.dset_z[curr:new_sz] = batch[:, 3].astype(np.float32)
             self.dset_status[curr:new_sz] = batch[:, 4].astype(np.uint32)
 
             self.h5_file.flush()

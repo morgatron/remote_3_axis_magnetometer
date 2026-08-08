@@ -70,30 +70,61 @@ void saveSettings() {
     prefs.end();
 }
 
+static char udpBatchBuf[4096];
+static size_t udpBatchLen = 0;
+static uint32_t lastUdpFlushMs = 0;
+
+void flushUdpBatch() {
+    if (udpBatchLen > 0 && wifiConnected) {
+        udp.beginPacket(targetIP, targetPort);
+        udp.write((const uint8_t*)udpBatchBuf, udpBatchLen);
+        udp.endPacket();
+        udpBatchLen = 0;
+        lastUdpFlushMs = millis();
+    }
+}
+
 void connectWiFi() {
     if (wifiSSID.length() > 0) {
-        Serial.print("Connecting to WiFi network: ");
-        Serial.println(wifiSSID);
+        Serial.println("\r\n==========================================");
+        Serial.print("[WIFI DEBUG] Initiating connection to SSID: '");
+        Serial.print(wifiSSID);
+        Serial.println("'...");
+        
+        WiFi.disconnect(true);
+        delay(100);
         WiFi.mode(WIFI_STA);
+        WiFi.setTxPower(WIFI_POWER_15dBm); // Cap TX power to 15dBm to prevent 3.3V power supply dips
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
         
         unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - start < 8000)) {
-            delay(250);
-            Serial.print(".");
+        while (WiFi.status() != WL_CONNECTED && (millis() - start < 12000)) {
+            delay(500);
+            wl_status_t status = WiFi.status();
+            Serial.print("[WIFI DEBUG] Connecting... State=");
+            Serial.print((int)status);
+            if (status == WL_NO_SSID_AVAIL) Serial.println(" (SSID Not Found in 2.4GHz scan)");
+            else if (status == WL_CONNECT_FAILED) Serial.println(" (Connection Failed - Check Password)");
+            else if (status == WL_DISCONNECTED) Serial.println(" (Associating...)");
+            else Serial.println();
         }
-        Serial.println();
 
         if (WiFi.status() == WL_CONNECTED) {
             wifiConnected = true;
-            Serial.print("WiFi Connected! IP Address: ");
-            Serial.println(WiFi.localIP());
+            Serial.println("[WIFI SUCCESS] Connected to network!");
+            Serial.print("  Local IP:    "); Serial.println(WiFi.localIP());
+            Serial.print("  Subnet Mask: "); Serial.println(WiFi.subnetMask());
+            Serial.print("  Gateway IP:  "); Serial.println(WiFi.gatewayIP());
+            Serial.print("  RSSI Signal: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
+            Serial.print("  Target IP:   "); Serial.println(targetIP);
             udp.begin(udpListenPort);
-            Serial.print("UDP Receiver active on port ");
-            Serial.println(udpListenPort);
+            Serial.print("  UDP Active on Port "); Serial.println(udpListenPort);
+            Serial.println("==========================================\r\n");
         } else {
             wifiConnected = false;
-            Serial.println("WiFi Connection Failed.");
+            Serial.println("[WIFI ERROR] Connection timed out after 12 seconds!");
+            Serial.println("  Check SSID spelling, WPA2 password, or 2.4GHz band availability.");
+            Serial.println("==========================================\r\n");
         }
     }
 }
@@ -130,23 +161,34 @@ void loadSettings() {
         bleStream.begin(deviceID);
     }
 
-    if (wifiSSID.length() > 0) {
-        connectWiFi();
+    if (outputMode == MODE_WIFI || outputMode == MODE_BOTH) {
+        if (wifiSSID.length() > 0) {
+            connectWiFi();
+        }
+    } else {
+        WiFi.mode(WIFI_OFF);
     }
 }
 
-void sendOutputSample(uint64_t ts, int32_t x, int32_t y, int32_t z, uint32_t status = 0xC00000) {
+void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
     char line[160];
-    snprintf(line, sizeof(line), "%s,%llu,%ld,%ld,%ld,%06X", deviceID.c_str(), (unsigned long long)ts, (long)x, (long)y, (long)z, (unsigned int)(status & 0xFFFFFF));
+    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
 
-    if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
-        Serial.println(line);
-    }
+
+    // Always output to USB Serial so debug information and data remain visible
+    Serial.print(line);
 
     if ((outputMode == MODE_WIFI || outputMode == MODE_BOTH) && wifiConnected) {
-        udp.beginPacket(targetIP, targetPort);
-        udp.println(line);
-        udp.endPacket();
+        if (udpBatchLen + len >= sizeof(udpBatchBuf) - 1) {
+            flushUdpBatch();
+        }
+        memcpy(udpBatchBuf + udpBatchLen, line, len);
+        udpBatchLen += len;
+
+        // Flush UDP batch every 1000 ms (1 Hz packet rate)
+        if (millis() - lastUdpFlushMs >= 1000) {
+            flushUdpBatch();
+        }
     }
 
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
@@ -177,7 +219,6 @@ void IRAM_ATTR drdyISR() {
     if (lastDrdyTimeUs > 0) {
         uint32_t dt = (uint32_t)(now - lastDrdyTimeUs);
         lastDrdyIntervalUs = dt;
-        // Expected interval at 1 kSPS is 1000 us (+/- 200 us). Flag any gap outside 800 us - 1200 us.
         if (dt < 800 || dt > 1200) {
             drdyAnomalyCount++;
         }
@@ -193,6 +234,32 @@ void IRAM_ATTR drdyISR() {
         }
     }
 }
+
+void recoverSensor() {
+    Serial.println("\r\n[WATCHDOG STALL DETECTED] No DRDY interrupt for >500ms! Recovering sensor...");
+    detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
+
+    pinMode(CS_PIN, OUTPUT);
+    digitalWrite(CS_PIN, HIGH);
+    delay(10);
+
+    bool ok = sensor->begin();
+    if (!ok) {
+        Serial.println("[WATCHDOG RECOVERY] Re-initializing SPI bus...");
+        SPI.end();
+        delay(10);
+        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
+        sensor->begin();
+    }
+
+    sensor->setContinuousMode(true, current_rate);
+    sensor->readAndPushSample(); // Clear pending DRDY latch on ASIC
+
+    lastDrdyTimeUs = esp_timer_get_time();
+    attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
+    Serial.println("[WATCHDOG RECOVERY] Sensor streaming recovered successfully.\r\n");
+}
+
 
 void setup() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
@@ -263,8 +330,12 @@ void setup() {
     // Resume continuous mode with saved rate
     sensor->setContinuousMode(true, current_rate);
 
-    // Create high-priority task for immediate ISR-notified ADC sampling
+    // Create high-priority task for immediate ISR-notified ADC sampling (Pinned to Core 1 to isolate from WiFi on Core 0)
+#if CONFIG_FREERTOS_UNICORE
     xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 0);
+#else
+    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 1);
+#endif
 
     Serial.print("Device ID: ");
     Serial.println(deviceID);
@@ -293,6 +364,17 @@ void loop() {
     // CLI Parsing
     serialCLI.update();
 
+    // Hardware Watchdog: Detect DRDY interrupt stall due to physical bumps or power glitches
+    static uint32_t lastWdCheckMs = 0;
+    uint32_t nowWdMs = millis();
+    if (streaming && sensor != NULL && (nowWdMs - lastWdCheckMs >= 500)) {
+        lastWdCheckMs = nowWdMs;
+        uint64_t nowUs = esp_timer_get_time();
+        if (lastDrdyTimeUs > 0 && (nowUs - lastDrdyTimeUs > 500000ULL)) {
+            recoverSensor();
+        }
+    }
+
     // WiFi UDP Command Listening
     if (wifiConnected) {
         int packetSize = udp.parsePacket();
@@ -315,11 +397,12 @@ void loop() {
 
     // Data Streaming (Unified ring-buffer driven for all sensors)
     if (streaming && sensor != NULL) {
+        float scaleFactor = sensor->getScaleFactor();
         ADCSample sample;
         while (sensor->popSample(sample)) {
-            int32_t x = sample.x;
-            int32_t y = sample.y;
-            int32_t z = sample.z;
+            float x = (float)sample.x * scaleFactor;
+            float y = (float)sample.y * scaleFactor;
+            float z = (float)sample.z * scaleFactor;
             uint32_t status = sample.status;
             uint64_t ts = sample.ts;
 
@@ -328,7 +411,7 @@ void loop() {
                 // Direct streaming without averaging
                 sendOutputSample(ts, x, y, z, status);
             } else {
-                static int32_t sumX = 0, sumY = 0, sumZ = 0;
+                static float sumX = 0, sumY = 0, sumZ = 0;
                 static uint16_t sampleCounter = 0;
 
                 sumX += x;
@@ -337,9 +420,9 @@ void loop() {
                 sampleCounter++;
 
                 if (sampleCounter >= decimationFactor) {
-                    int32_t avgX = sumX / decimationFactor;
-                    int32_t avgY = sumY / decimationFactor;
-                    int32_t avgZ = sumZ / decimationFactor;
+                    float avgX = sumX / (float)decimationFactor;
+                    float avgY = sumY / (float)decimationFactor;
+                    float avgZ = sumZ / (float)decimationFactor;
 
                     sumX = 0;
                     sumY = 0;

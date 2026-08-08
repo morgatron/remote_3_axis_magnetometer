@@ -1,39 +1,61 @@
 """
-Example script showing how users can easily download and load magnetometer data subsets
-directly into Pandas DataFrames or NumPy arrays for custom analysis.
+Future-Proof Client Data Access Example (`client_example.py`)
+
+Demonstrates how researchers can easily query, filter, and load recorded magnetometer data
+into Pandas DataFrames, NumPy arrays, or Parquet files for analysis.
 """
 
-import pandas as pd
-import numpy as np
 import io
 import requests
+import pandas as pd
+import numpy as np
 
 SERVER_URL = "http://localhost:8000" # Change to http://<raspberrypi-ip>:8000
 
-# 1. Fetch data directly into a Pandas DataFrame via CSV API
-print("1. Fetching subset into Pandas DataFrame...")
-url = f"{SERVER_URL}/api/data?node_id=NODE_01&format=csv"
-df = pd.read_csv(url)
+print("=== Magnetometer Data Access Examples ===")
+
+# 1. Fetch data directly into a Pandas DataFrame via CSV API (/api/v1/data)
+print("\n1. Fetching data subset into Pandas DataFrame (CSV)...")
+csv_url = f"{SERVER_URL}/api/v1/data?node_id=NODE_01&format=csv"
+df = pd.read_csv(csv_url)
 print(df.head())
 print(f"Loaded {len(df)} rows.")
 
-# 2. Fetch data directly into NumPy arrays via .npz API
-print("\n2. Fetching subset into NumPy arrays...")
-url_npz = f"{SERVER_URL}/api/data?node_id=NODE_01&format=npz"
-response = requests.get(url_npz)
+# 2. Fetch downsampled trend data (1-minute averages over a date range)
+print("\n2. Fetching 1-minute averaged trend data...")
+trend_url = f"{SERVER_URL}/api/v1/data?node_id=NODE_01&downsample_sec=60&format=csv"
+df_trend = pd.read_csv(trend_url)
+print(df_trend.head())
 
-if response.status_code == 200:
-    data = np.load(io.BytesIO(response.content))
-    x = data["x"]
-    y = data["y"]
-    z = data["z"]
-    timestamps = data["timestamp"]
+# 3. Fetch data directly into NumPy arrays via compressed .npz API
+print("\n3. Fetching data subset into NumPy arrays (.npz)...")
+npz_url = f"{SERVER_URL}/api/v1/data?node_id=NODE_01&format=npz"
+res_npz = requests.get(npz_url)
+
+if res_npz.status_code == 200:
+    npz_data = np.load(io.BytesIO(res_npz.content))
+    x_nT = npz_data["x_nT"]
+    y_nT = npz_data["y_nT"]
+    z_nT = npz_data["z_nT"]
+    mag_nT = npz_data["magnitude_nT"]
+    timestamps = npz_data["timestamp"]
     
-    mag = np.sqrt(x**2 + y**2 + z**2)
-    print(f"NumPy arrays loaded successfully: {len(x)} samples.")
-    print(f"Mean magnetic field magnitude: {np.mean(mag):.2f} nT")
+    print(f"NumPy arrays loaded successfully: {len(x_nT)} samples.")
+    print(f"Mean magnetic field magnitude: {np.mean(mag_nT):.2f} nT")
 
-# 3. Direct SQLite database access (if running locally or over SSH)
+# 4. Fetch Apache Parquet file (.parquet) for ultra-fast columnar loading
+try:
+    print("\n4. Fetching Apache Parquet dataset (.parquet)...")
+    parquet_url = f"{SERVER_URL}/api/v1/data?node_id=NODE_01&format=parquet"
+    res_parquet = requests.get(parquet_url)
+    if res_parquet.status_code == 200:
+        df_parquet = pd.read_parquet(io.BytesIO(res_parquet.content))
+        print(df_parquet.head())
+        print(f"Parquet loaded successfully: {len(df_parquet)} rows.")
+except Exception as e:
+    print(f"Parquet load skipped: {e} (install pyarrow/fastparquet if needed)")
+
+# 5. Direct SQLite Connection (Local or via SSH/SCP)
 # import sqlite3
 # conn = sqlite3.connect("magnetometer.db")
 # df = pd.read_sql("SELECT * FROM telemetry WHERE node_id = 'NODE_01'", conn)

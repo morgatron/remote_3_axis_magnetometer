@@ -17,6 +17,7 @@ public:
     void setContinuousMode(bool enable, uint8_t rate = 0x92) override;
     String getStatusString() override;
     String getSensorName() override { return "RM3100"; }
+    float getScaleFactor() override;
 
     // High-priority task & Ring Buffer API
     void readAndPushSample() override;

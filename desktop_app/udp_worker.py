@@ -57,17 +57,17 @@ class UdpWorker(QThread):
             if len(parts) >= 6:
                 device_id = parts[0].strip()
                 ts = float(parts[1])
-                x = int(parts[2])
-                y = int(parts[3])
-                z = int(parts[4])
+                x = float(parts[2])
+                y = float(parts[3])
+                z = float(parts[4])
                 status = int(parts[5].strip(), 16)
                 self.data_received.emit(device_id, ts, x, y, z, status)
             elif len(parts) == 5:
                 device_id = "NODE_DEFAULT"
                 ts = float(parts[0])
-                x = int(parts[1])
-                y = int(parts[2])
-                z = int(parts[3])
+                x = float(parts[1])
+                y = float(parts[2])
+                z = float(parts[3])
                 status = int(parts[4].strip(), 16)
                 self.data_received.emit(device_id, ts, x, y, z, status)
         except (ValueError, IndexError):

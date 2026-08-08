@@ -36,6 +36,9 @@ void CLI::printHelp() {
 }
 
 void CLI::handleCommand(String cmd) {
+    String originalCmd = cmd;
+    originalCmd.trim();
+
     cmd.trim();
     cmd.toUpperCase();
 
@@ -154,29 +157,66 @@ void CLI::handleCommand(String cmd) {
             Serial.print(vref);
             Serial.println(" V");
         }
+    } else if (cmd.startsWith("SSID ")) {
+        String ssid = originalCmd.substring(5);
+        ssid.trim();
+        extern String wifiSSID, wifiPass;
+        extern void connectWiFi();
+        wifiSSID = ssid;
+        Serial.print("WiFi SSID set to "); Serial.println(wifiSSID);
+        if (_saveCallback) _saveCallback();
+        if (wifiSSID.length() > 0 && wifiPass.length() > 0) {
+            connectWiFi();
+        }
+    } else if (cmd.startsWith("PASS ")) {
+        String pass = originalCmd.substring(5);
+        pass.trim();
+        extern String wifiSSID, wifiPass;
+        extern void connectWiFi();
+        wifiPass = pass;
+        Serial.println("WiFi Password updated.");
+        if (_saveCallback) _saveCallback();
+        if (wifiSSID.length() > 0 && wifiPass.length() > 0) {
+            connectWiFi();
+        }
     } else if (cmd.startsWith("WIFI ")) {
-        String sub = cmd.substring(5);
-        sub.trim();
-        if (sub == "OFF") {
+        String subUpper = cmd.substring(5);
+        subUpper.trim();
+        if (subUpper == "OFF") {
             extern bool wifiConnected;
             WiFi.disconnect(true);
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
             Serial.println("WiFi Disabled.");
-        } else if (sub == "STATUS") {
+        } else if (subUpper == "STATUS") {
             extern bool wifiConnected;
             Serial.print("WiFi Connected: "); Serial.println(wifiConnected ? "YES" : "NO");
             if (wifiConnected) {
                 Serial.print("IP Address: "); Serial.println(WiFi.localIP());
                 Serial.print("RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
             }
+        } else if (subUpper == "SCAN") {
+            Serial.println("Scanning 2.4GHz WiFi networks...");
+            WiFi.mode(WIFI_STA);
+            WiFi.disconnect();
+            delay(100);
+            int n = WiFi.scanNetworks();
+            Serial.print("Scan completed. Found "); Serial.print(n); Serial.println(" networks:");
+            for (int i = 0; i < n; ++i) {
+                Serial.print("  "); Serial.print(i + 1); Serial.print(": ");
+                Serial.print(WiFi.SSID(i)); Serial.print(" (");
+                Serial.print(WiFi.RSSI(i)); Serial.println(" dBm)");
+                delay(10);
+            }
         } else {
-            int spaceIdx = sub.indexOf(' ');
+            String rawSub = originalCmd.substring(5);
+            rawSub.trim();
+            int spaceIdx = rawSub.lastIndexOf(' ');
             if (spaceIdx > 0) {
                 extern String wifiSSID, wifiPass;
                 extern void connectWiFi();
-                wifiSSID = sub.substring(0, spaceIdx);
-                wifiPass = sub.substring(spaceIdx + 1);
+                wifiSSID = rawSub.substring(0, spaceIdx);
+                wifiPass = rawSub.substring(spaceIdx + 1);
                 wifiSSID.trim();
                 wifiPass.trim();
                 connectWiFi();
@@ -200,15 +240,27 @@ void CLI::handleCommand(String cmd) {
         modeStr.trim();
         modeStr.toUpperCase();
         extern uint8_t outputMode;
+        extern String wifiSSID;
+        extern bool wifiConnected;
+        extern void connectWiFi();
+
         if (modeStr == "SERIAL") {
             outputMode = 0;
+            WiFi.mode(WIFI_OFF);
+            wifiConnected = false;
             Serial.println("Output Mode set to SERIAL.");
         } else if (modeStr == "WIFI") {
             outputMode = 1;
             Serial.println("Output Mode set to WIFI.");
+            if (wifiSSID.length() > 0 && !wifiConnected) {
+                connectWiFi();
+            }
         } else if (modeStr == "BOTH") {
             outputMode = 2;
             Serial.println("Output Mode set to BOTH (Serial & WiFi).");
+            if (wifiSSID.length() > 0 && !wifiConnected) {
+                connectWiFi();
+            }
         } else if (modeStr == "BLE") {
             outputMode = 3;
             extern String deviceID;

@@ -93,18 +93,18 @@ class SerialWorker(QThread):
             if len(parts) >= 6:
                 device_id = parts[0].strip()
                 ts = float(parts[1])
-                x = int(parts[2])
-                y = int(parts[3])
-                z = int(parts[4])
+                x = float(parts[2])
+                y = float(parts[3])
+                z = float(parts[4])
                 clean_status = parts[5].strip().split()[0]
                 status = int(clean_status, 16)
                 self.data_received.emit(device_id, ts, x, y, z, status)
             elif len(parts) == 5:
                 device_id = "LOCAL_SERIAL"
                 ts = float(parts[0])
-                x = int(parts[1])
-                y = int(parts[2])
-                z = int(parts[3])
+                x = float(parts[1])
+                y = float(parts[2])
+                z = float(parts[3])
                 clean_status = parts[4].strip().split()[0]
                 status = int(clean_status, 16)
                 self.data_received.emit(device_id, ts, x, y, z, status)

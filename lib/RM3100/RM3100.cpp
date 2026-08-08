@@ -13,7 +13,7 @@
 #define RM3100_REG_REVID   0x36
 
 RM3100::RM3100(int csPin, int drdyPin) 
-    : _csPin(csPin), _drdyPin(drdyPin), _spi(NULL), _spiSettings(1000000, MSBFIRST, SPI_MODE0),
+    : _csPin(csPin), _drdyPin(drdyPin), _spi(NULL), _spiSettings(500000, MSBFIRST, SPI_MODE0),
       _cycleX(200), _cycleY(200), _cycleZ(200) {}
 
 bool RM3100::begin() {
@@ -110,10 +110,12 @@ void RM3100::setCycleCount(uint16_t x, uint16_t y, uint16_t z) {
     // Burst write 6 bytes starting at address 0x04 in a single CS transaction (Section 5.7.1)
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
+    delayMicroseconds(1);
     _spi->transfer(RM3100_REG_CCX & 0x7F);
     for (int i = 0; i < 6; i++) {
         _spi->transfer(ccData[i]);
     }
+    delayMicroseconds(1);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
     delay(5);
@@ -123,7 +125,7 @@ void RM3100::setCycleCount(uint16_t x, uint16_t y, uint16_t z) {
         uint8_t tmrc = readReg(RM3100_REG_TMRC);
         if ((tmrc & 0xF0) == 0x00) tmrc |= 0x90;
         writeReg(RM3100_REG_TMRC, tmrc);
-        writeReg(RM3100_REG_CMM, 0x79);
+        writeReg(RM3100_REG_CMM, 0x71); // Alarm off, X,Y,Z enabled, DRDM=0 (DRDY on all axes done), Continuous ON
         delay(5);
     }
 }
@@ -149,7 +151,7 @@ void RM3100::setContinuousMode(bool enable, uint8_t rate) {
         writeReg(RM3100_REG_CCZ + 1, ccZ & 0xFF);
 
         writeReg(RM3100_REG_TMRC, tmrcVal);
-        writeReg(RM3100_REG_CMM, 0x79); // Alarm off, X,Y,Z enabled, Continuous ON
+        writeReg(RM3100_REG_CMM, 0x71); // Alarm off, X,Y,Z enabled, DRDM=0 (DRDY on all axes done), Continuous ON // Alarm off, X,Y,Z enabled, Continuous ON
     } else {
         writeReg(RM3100_REG_CMM, 0x00);
     }
@@ -169,7 +171,19 @@ void RM3100::readAndPushSample() {
     uint8_t buffer[9];
     uint64_t now = esp_timer_get_time();
 
-    readRegs(RM3100_REG_MX, buffer, 9);
+    // Atomic 9-byte SPI burst read locked against CPU interrupts to prevent Wi-Fi background task preemption
+    noInterrupts();
+    _spi->beginTransaction(_spiSettings);
+    digitalWrite(_csPin, LOW);
+    delayMicroseconds(5); // CS to SCK setup time
+    _spi->transfer(RM3100_REG_MX | 0x80);
+    delayMicroseconds(2); // Address decode to MISO data latch settling time (RM3100 datasheet Section 5.7)
+    for (uint8_t i = 0; i < 9; i++) {
+        buffer[i] = _spi->transfer(0x00);
+    }
+    digitalWrite(_csPin, HIGH);
+    _spi->endTransaction();
+    interrupts();
 
     int32_t x = (int32_t)(((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | buffer[2]);
     if (x & 0x800000) x |= 0xFF000000;
@@ -222,8 +236,11 @@ uint8_t RM3100::getREVID() {
 void RM3100::writeReg(uint8_t reg, uint8_t val) {
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
+    delayMicroseconds(5);
     _spi->transfer(reg & 0x7F);
+    delayMicroseconds(5);
     _spi->transfer(val);
+    delayMicroseconds(5);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
 }
@@ -232,8 +249,11 @@ uint8_t RM3100::readReg(uint8_t reg) {
     uint8_t val;
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
+    delayMicroseconds(5);
     _spi->transfer(reg | 0x80);
+    delayMicroseconds(5);
     val = _spi->transfer(0x00);
+    delayMicroseconds(5);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
     return val;
@@ -242,10 +262,20 @@ uint8_t RM3100::readReg(uint8_t reg) {
 void RM3100::readRegs(uint8_t reg, uint8_t *buffer, uint8_t len) {
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
+    delayMicroseconds(5);
     _spi->transfer(reg | 0x80);
+    delayMicroseconds(5);
     for (uint8_t i = 0; i < len; i++) {
         buffer[i] = _spi->transfer(0x00);
     }
+    delayMicroseconds(5);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
 }
+
+float RM3100::getScaleFactor() {
+    uint16_t cc = _cycleX > 0 ? _cycleX : 200;
+    float gain = 0.3671f * (float)cc + 1.5f;
+    return 1000.0f / gain; // nT per LSB count
+}
+

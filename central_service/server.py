@@ -1,18 +1,22 @@
 import sqlite3
 import os
 import io
-import asyncio
 import json
 import math
+import logging
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 import pandas as pd
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("central_server")
 
 DB_FILE = os.getenv("DB_FILE", "magnetometer.db")
 
@@ -22,8 +26,11 @@ def get_db():
     return conn
 
 def init_db():
+    """Initializes database tables and safely applies migrations for missing columns."""
     with get_db() as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
+        
+        # 1. Telemetry Table
         conn.execute("""
         CREATE TABLE IF NOT EXISTS telemetry (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,25 +39,55 @@ def init_db():
             x REAL NOT NULL,
             y REAL NOT NULL,
             z REAL NOT NULL,
+            units TEXT DEFAULT 'nT',
             temp REAL,
-            vbat INTEGER
+            vbat INTEGER,
+            rssi INTEGER,
+            status_flags TEXT DEFAULT '0xC00000',
+            extra_json TEXT
         );
         """)
+        
+        # Indexes for high-speed time-range and spatial slicing
         conn.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_node_time ON telemetry(node_id, timestamp);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_time ON telemetry(timestamp);")
+
+        # 2. Nodes Registry Table
         conn.execute("""
         CREATE TABLE IF NOT EXISTS nodes (
             node_id TEXT PRIMARY KEY,
             name TEXT,
             lat REAL,
             lon REAL,
-            last_seen TEXT
+            elevation_m REAL DEFAULT 0.0,
+            last_seen TEXT,
+            sensor_model TEXT DEFAULT 'RM3100',
+            cycle_count INTEGER DEFAULT 200,
+            baseline_x REAL DEFAULT 0.0,
+            baseline_y REAL DEFAULT 0.0,
+            baseline_z REAL DEFAULT 0.0,
+            notes TEXT
         );
         """)
+
+        # Safe schema migrations for legacy database files
+        existing_telemetry_cols = [row[1] for row in conn.execute("PRAGMA table_info(telemetry)").fetchall()]
+        for col_name, col_type in [("units", "TEXT DEFAULT 'nT'"), ("rssi", "INTEGER"), ("status_flags", "TEXT DEFAULT '0xC00000'"), ("extra_json", "TEXT")]:
+            if col_name not in existing_telemetry_cols:
+                logger.info(f"Applying migration: Adding column '{col_name}' to telemetry table")
+                conn.execute(f"ALTER TABLE telemetry ADD COLUMN {col_name} {col_type};")
+
+        existing_node_cols = [row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()]
+        for col_name, col_type in [("elevation_m", "REAL DEFAULT 0.0"), ("baseline_x", "REAL DEFAULT 0.0"), ("baseline_y", "REAL DEFAULT 0.0"), ("baseline_z", "REAL DEFAULT 0.0"), ("notes", "TEXT")]:
+            if col_name not in existing_node_cols:
+                logger.info(f"Applying migration: Adding column '{col_name}' to nodes table")
+                conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_type};")
+
         conn.commit()
 
 init_db()
 
-# WebSocket Connection Manager for Real-Time GUI Updates
+# WebSocket Manager for Live Broadcasting
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -73,11 +110,11 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 app = FastAPI(
-    title="Lightweight Magnetometer Central Data Server",
-    description="Simple, lightweight server for 10-50 magnetometer nodes with real-time web monitoring."
+    title="Magnetometer Central Data Server",
+    description="Future-proof, lightweight time-series server for distributed 3-axis magnetometers.",
+    version="1.0.0"
 )
 
-# Serve static files for web GUI
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -90,43 +127,89 @@ def index_page():
             return f.read()
     return "<h3>Magnetometer Central Data Server Running</h3>"
 
+# --- Pydantic Data Models (Version 1.0) ---
+
 class TelemetryPoint(BaseModel):
-    node_id: str
-    timestamp: Optional[str] = None
-    x: float
-    y: float
-    z: float
-    temp: Optional[float] = None
-    vbat: Optional[int] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
+    node_id: str = Field(..., description="Unique hardware identifier string")
+    timestamp: Optional[str] = Field(None, description="ISO8601 UTC timestamp string")
+    x: float = Field(..., description="X-axis magnetic field in nT")
+    y: float = Field(..., description="Y-axis magnetic field in nT")
+    z: float = Field(..., description="Z-axis magnetic field in nT")
+    units: Optional[str] = Field("nT", description="Physical unit string")
+    temp: Optional[float] = Field(None, description="Temperature in Celsius")
+    vbat: Optional[int] = Field(None, description="Battery voltage in mV")
+    rssi: Optional[int] = Field(None, description="Signal strength in dBm")
+    status_flags: Optional[str] = Field("0xC00000", description="Hex status flags")
+    lat: Optional[float] = Field(None, description="Latitude in decimal degrees")
+    lon: Optional[float] = Field(None, description="Longitude in decimal degrees")
+    elevation_m: Optional[float] = Field(None, description="Elevation in meters")
+    sensor_model: Optional[str] = Field("RM3100", description="Sensor hardware model")
+    cycle_count: Optional[int] = Field(200, description="RM3100 cycle count")
+    extra_json: Optional[str] = Field(None, description="Extensible JSON string for custom diagnostics")
 
 class BatchTelemetry(BaseModel):
     node_id: str
     points: List[TelemetryPoint]
 
+class NodeUpdate(BaseModel):
+    node_id: str
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    elevation_m: Optional[float] = None
+    baseline_x: Optional[float] = 0.0
+    baseline_y: Optional[float] = 0.0
+    baseline_z: Optional[float] = 0.0
+    notes: Optional[str] = None
+
+# --- Ingestion Helper ---
+
+async def store_telemetry_point(conn, point: TelemetryPoint):
+    ts = point.timestamp or datetime.now(timezone.utc).isoformat()
+    units = point.units or "nT"
+    status_flags = point.status_flags or "0xC00000"
+    cycle = point.cycle_count or 200
+    model = point.sensor_model or "RM3100"
+
+    conn.execute(
+        """
+        INSERT INTO telemetry (timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags, extra_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (ts, point.node_id, point.x, point.y, point.z, units, point.temp, point.vbat, point.rssi, status_flags, point.extra_json)
+    )
+    
+    conn.execute(
+        """
+        INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+            last_seen = excluded.last_seen,
+            lat = COALESCE(excluded.lat, nodes.lat),
+            lon = COALESCE(excluded.lon, nodes.lon),
+            elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
+            sensor_model = COALESCE(excluded.sensor_model, nodes.sensor_model),
+            cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count)
+        """,
+        (point.node_id, point.node_id, point.lat, point.lon, point.elevation_m or 0.0, ts, model, cycle)
+    )
+
+# --- API v1 Endpoints ---
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "db": DB_FILE}
+    return {"status": "ok", "api_version": "1.0", "db": DB_FILE}
 
+@app.post("/api/v1/telemetry", status_code=201)
 @app.post("/api/telemetry", status_code=201)
 async def ingest_sample(point: TelemetryPoint):
-    """Ingest a single reading from a node (HTTP POST)."""
+    """Ingest a single telemetry reading (HTTP POST). Supported on /api/v1/telemetry and /api/telemetry."""
     ts = point.timestamp or datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO telemetry (timestamp, node_id, x, y, z, temp, vbat) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ts, point.node_id, point.x, point.y, point.z, point.temp, point.vbat)
-        )
-        conn.execute(
-            "INSERT INTO nodes (node_id, name, lat, lon, last_seen) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(node_id) DO UPDATE SET last_seen=excluded.last_seen, "
-            "lat=COALESCE(excluded.lat, nodes.lat), lon=COALESCE(excluded.lon, nodes.lon)",
-            (point.node_id, point.node_id, point.lat, point.lon, ts)
-        )
+        await store_telemetry_point(conn, point)
         conn.commit()
 
-    # Broadcast live reading to Web GUI
+    # Broadcast live reading via WebSockets
     await ws_manager.broadcast({
         "type": "telemetry",
         "node_id": point.node_id,
@@ -134,54 +217,55 @@ async def ingest_sample(point: TelemetryPoint):
         "x": point.x,
         "y": point.y,
         "z": point.z,
+        "units": point.units or "nT",
         "temp": point.temp,
-        "vbat": point.vbat
+        "vbat": point.vbat,
+        "sensor_model": point.sensor_model or "RM3100",
+        "cycle_count": point.cycle_count or 200
     })
-    return {"status": "ok"}
+    return {"status": "success", "node_id": point.node_id, "timestamp": ts}
 
+@app.post("/api/v1/telemetry/batch", status_code=201)
 @app.post("/api/telemetry/batch", status_code=201)
 async def ingest_batch(batch: BatchTelemetry):
-    """Ingest a batch of readings from a node."""
-    rows = []
+    """Ingest a batch of telemetry readings from a node (useful after offline periods)."""
+    if not batch.points:
+        return {"status": "success", "inserted": 0}
+
     now_str = datetime.now(timezone.utc).isoformat()
-    for p in batch.points:
-        ts = p.timestamp or now_str
-        rows.append((ts, batch.node_id, p.x, p.y, p.z, p.temp, p.vbat))
-    
     with get_db() as conn:
-        conn.executemany(
-            "INSERT INTO telemetry (timestamp, node_id, x, y, z, temp, vbat) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            rows
-        )
-        conn.execute(
-            "INSERT INTO nodes (node_id, name, last_seen) VALUES (?, ?, ?) "
-            "ON CONFLICT(node_id) DO UPDATE SET last_seen=excluded.last_seen",
-            (batch.node_id, batch.node_id, now_str)
-        )
+        for p in batch.points:
+            p.node_id = batch.node_id
+            await store_telemetry_point(conn, p)
         conn.commit()
 
     # Broadcast last point in batch
-    if batch.points:
-        last_pt = batch.points[-1]
-        await ws_manager.broadcast({
-            "type": "telemetry",
-            "node_id": batch.node_id,
-            "timestamp": last_pt.timestamp or now_str,
-            "x": last_pt.x,
-            "y": last_pt.y,
-            "z": last_pt.z,
-            "temp": last_pt.temp,
-            "vbat": last_pt.vbat
-        })
-    return {"status": "ok", "inserted": len(rows)}
+    last_pt = batch.points[-1]
+    await ws_manager.broadcast({
+        "type": "telemetry",
+        "node_id": batch.node_id,
+        "timestamp": last_pt.timestamp or now_str,
+        "x": last_pt.x,
+        "y": last_pt.y,
+        "z": last_pt.z,
+        "units": last_pt.units or "nT",
+        "temp": last_pt.temp,
+        "vbat": last_pt.vbat,
+        "sensor_model": last_pt.sensor_model or "RM3100",
+        "cycle_count": last_pt.cycle_count or 200
+    })
+    return {"status": "success", "node_id": batch.node_id, "inserted": len(batch.points)}
 
+@app.get("/api/v1/nodes")
 @app.get("/api/nodes")
 def list_nodes():
-    """List all reporting nodes and last seen timestamp."""
+    """List all registered nodes, geographic coordinates, and latest readings."""
     with get_db() as conn:
         cursor = conn.execute("""
-        SELECT n.node_id, n.name, n.lat, n.lon, n.last_seen,
-               t.x, t.y, t.z, t.temp, t.vbat
+        SELECT n.node_id, n.name, n.lat, n.lon, n.elevation_m, n.last_seen,
+               n.sensor_model, COALESCE(n.cycle_count, 200) as cycle_count,
+               n.baseline_x, n.baseline_y, n.baseline_z, n.notes,
+               t.x, t.y, t.z, t.temp, t.vbat, t.rssi, t.status_flags
         FROM nodes n
         LEFT JOIN telemetry t ON t.id = (
             SELECT id FROM telemetry WHERE node_id = n.node_id ORDER BY timestamp DESC LIMIT 1
@@ -190,15 +274,20 @@ def list_nodes():
         """)
         return [dict(row) for row in cursor.fetchall()]
 
+@app.get("/api/v1/data")
 @app.get("/api/data")
 def query_data(
     node_id: Optional[str] = Query(None, description="Filter by node ID"),
     start: Optional[str] = Query(None, description="Start timestamp (ISO format)"),
     end: Optional[str] = Query(None, description="End timestamp (ISO format)"),
-    format: str = Query("csv", description="Output format: csv, json, or npz (NumPy compressed array)")
+    downsample_sec: Optional[int] = Query(None, description="Downsample averaging window in seconds (e.g. 60 for 1-min)"),
+    format: str = Query("csv", description="Output format: csv, json, npz, or parquet")
 ):
-    """Query data subsets and download directly as CSV, JSON, or NumPy (.npz)."""
-    query = "SELECT timestamp, node_id, x, y, z, temp, vbat FROM telemetry WHERE 1=1"
+    """Query time-series telemetry subsets and download in CSV, JSON, NumPy (.npz), or Parquet (.parquet)."""
+    query = """
+    SELECT timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags
+    FROM telemetry WHERE 1=1
+    """
     params = []
     
     if node_id:
@@ -219,50 +308,103 @@ def query_data(
 
     if not rows:
         if format == "json":
-            return []
+            return {"schema_version": "1.0", "count": 0, "data": []}
         elif format == "csv":
-            return Response(content="timestamp,node_id,x,y,z,temp,vbat\n", media_type="text/csv")
+            return Response(content="timestamp_utc,node_id,x_nT,y_nT,z_nT,magnitude_nT,temp_c,vbat_mv,rssi_dbm,status_flags\n", media_type="text/csv")
 
     data = [dict(r) for r in rows]
     df = pd.DataFrame(data)
 
+    # Rename columns to standardized, self-describing field names
+    df.rename(columns={
+        "timestamp": "timestamp_utc",
+        "x": "x_nT",
+        "y": "y_nT",
+        "z": "z_nT",
+        "temp": "temp_c",
+        "vbat": "vbat_mv",
+        "rssi": "rssi_dbm"
+    }, inplace=True)
+
+    # Compute scalar total magnitude |B|
+    df["magnitude_nT"] = np.sqrt(df["x_nT"]**2 + df["y_nT"]**2 + df["z_nT"]**2).round(2)
+
+    # Apply optional time downsampling (averaging)
+    if downsample_sec and downsample_sec > 1 and len(df) > 0:
+        try:
+            df["dt"] = pd.to_datetime(df["timestamp_utc"])
+            agg_dict = {
+                "x_nT": "mean",
+                "y_nT": "mean",
+                "z_nT": "mean",
+                "magnitude_nT": "mean"
+            }
+            for col in ["temp_c", "vbat_mv", "rssi_dbm"]:
+                if col in df.columns:
+                    agg_dict[col] = "mean"
+            if "status_flags" in df.columns:
+                agg_dict["status_flags"] = "first"
+
+            resampled = df.groupby(["node_id", pd.Grouper(key="dt", freq=f"{downsample_sec}s")]).agg(agg_dict).reset_index()
+            resampled["timestamp_utc"] = resampled["dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            resampled.drop(columns=["dt"], inplace=True)
+            df = resampled
+        except Exception as ds_err:
+            logger.error(f"Downsampling error: {ds_err}")
+
+    # Output Formats
+    filename_base = f"mag_data_{node_id or 'all'}"
+
     if format == "csv":
         stream = io.StringIO()
         df.to_csv(stream, index=False)
-        filename = f"mag_data_{node_id or 'all'}.csv"
         return Response(
             content=stream.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f"attachment; filename={filename_base}.csv"}
         )
     elif format == "npz":
         buf = io.BytesIO()
         np.savez_compressed(
             buf,
-            timestamp=df["timestamp"].to_numpy(dtype=str),
+            timestamp=df["timestamp_utc"].to_numpy(dtype=str),
             node_id=df["node_id"].to_numpy(dtype=str),
-            x=df["x"].to_numpy(dtype=np.float32),
-            y=df["y"].to_numpy(dtype=np.float32),
-            z=df["z"].to_numpy(dtype=np.float32),
-            temp=df["temp"].to_numpy(dtype=np.float32),
-            vbat=df["vbat"].to_numpy(dtype=np.int32)
+            x_nT=df["x_nT"].to_numpy(dtype=np.float32),
+            y_nT=df["y_nT"].to_numpy(dtype=np.float32),
+            z_nT=df["z_nT"].to_numpy(dtype=np.float32),
+            magnitude_nT=df["magnitude_nT"].to_numpy(dtype=np.float32),
+            temp_c=df["temp_c"].to_numpy(dtype=np.float32),
+            vbat_mv=df["vbat_mv"].to_numpy(dtype=np.float32),
+            schema_version="1.0"
         )
         buf.seek(0)
-        filename = f"mag_data_{node_id or 'all'}.npz"
         return StreamingResponse(
             buf,
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f"attachment; filename={filename_base}.npz"}
         )
+    elif format == "parquet":
+        try:
+            buf = io.BytesIO()
+            df.to_parquet(buf, index=False)
+            buf.seek(0)
+            return StreamingResponse(
+                buf,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f"attachment; filename={filename_base}.parquet"}
+            )
+        except Exception as e:
+            logger.warning(f"Parquet export error: {e}")
+            raise HTTPException(status_code=400, detail=f"Parquet export engine missing or failed: {str(e)}. Install pyarrow via 'pip install pyarrow'.")
     else:
-        return data
+        df_clean = df.where(pd.notnull(df), None)
+        return {"schema_version": "1.0", "count": len(df_clean), "data": df_clean.to_dict(orient="records")}
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
-            # Keep socket alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)

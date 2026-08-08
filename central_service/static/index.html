@@ -145,7 +145,6 @@
             color: var(--text-muted);
         }
 
-        /* Node Selector List */
         .node-list {
             display: flex;
             flex-direction: column;
@@ -202,7 +201,6 @@
             font-weight: 500;
         }
 
-        /* Chart Area */
         .chart-container {
             position: relative;
             height: 380px;
@@ -211,8 +209,9 @@
 
         .chart-controls {
             display: flex;
-            gap: 1rem;
+            gap: 0.75rem;
             align-items: center;
+            flex-wrap: wrap;
         }
 
         select, input, button {
@@ -242,7 +241,6 @@
             opacity: 0.9;
         }
 
-        /* Download Section */
         .download-panel {
             display: flex;
             flex-wrap: wrap;
@@ -271,7 +269,7 @@
         </div>
         <div class="status-badge" id="net-status">
             <div class="pulse-dot"></div>
-            <span id="status-text">Connected Live</span>
+            <span id="status-text">Connecting...</span>
         </div>
     </header>
 
@@ -295,6 +293,7 @@
                 <div class="panel-header">
                     <span class="panel-title" id="selected-node-title">Real-Time Telemetry</span>
                     <div class="chart-controls">
+                        <!-- Field Component Selector -->
                         <select id="field-selector" onchange="updateChartSeries()">
                             <option value="all">3-Axis Vectors (X, Y, Z)</option>
                             <option value="mag">Total Magnitude (|B|)</option>
@@ -324,8 +323,18 @@
                     <label>Format</label>
                     <select id="export-format">
                         <option value="csv">CSV File (.csv)</option>
+                        <option value="parquet">Apache Parquet (.parquet)</option>
                         <option value="npz">NumPy Compressed (.npz)</option>
                         <option value="json">JSON</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Averaging (Averaging Window)</label>
+                    <select id="export-downsample">
+                        <option value="0">Raw 1 Hz Samples</option>
+                        <option value="10">10-Second Averaging</option>
+                        <option value="60">1-Minute Averaging</option>
+                        <option value="3600">1-Hour Averaging</option>
                     </select>
                 </div>
                 <div class="form-group" style="align-self: flex-end;">
@@ -336,13 +345,17 @@
     </main>
 
     <script>
+        const isFileProtocol = window.location.protocol === 'file:';
+        const apiHost = isFileProtocol ? 'localhost:8000' : window.location.host;
+        const apiBaseUrl = `http://${apiHost}`;
+        const wsBaseUrl = `ws://${apiHost}`;
+
         let nodesData = {};
         let selectedNodeId = null;
         let chart = null;
-        const maxDataPoints = 60; // Keep last 60 points in chart
+        const maxDataPoints = 60;
 
-        // Time series storage per node: { nodeId: [{time, x, y, z, mag}, ...] }
-        let timeSeriesStore = {};
+        let timeSeriesStore = {}; // Stores nT points: { nodeId: [{timeLabel, x, y, z}, ...] }
 
         function initChart() {
             const ctx = document.getElementById('realtimeChart').getContext('2d');
@@ -392,8 +405,8 @@
         function renderNodeList() {
             const listEl = document.getElementById('node-list');
             const selectEl = document.getElementById('export-node-id');
+
             const nodes = Object.values(nodesData);
-            
             document.getElementById('node-count').innerText = `${nodes.length} nodes registered`;
             
             if (nodes.length === 0) return;
@@ -403,8 +416,16 @@
 
             nodes.forEach(n => {
                 const isSel = n.node_id === selectedNodeId ? 'selected' : '';
-                const mag = Math.sqrt(n.x*n.x + n.y*n.y + n.z*n.z).toFixed(1);
-                const timeStr = n.last_seen ? new Date(n.last_seen).toLocaleTimeString() : 'N/A';
+                const bx = n.x !== undefined ? n.x : 0;
+                const by = n.y !== undefined ? n.y : 0;
+                const bz = n.z !== undefined ? n.z : 0;
+                const mag = Math.sqrt(bx*bx + by*by + bz*bz).toFixed(1);
+                
+                let timeStr = 'N/A';
+                if (n.last_seen) {
+                    const d = new Date(n.last_seen);
+                    timeStr = isNaN(d.getTime()) ? n.last_seen : d.toLocaleTimeString();
+                }
 
                 listHtml += `
                     <div class="node-card ${isSel}" onclick="selectNode('${n.node_id}')">
@@ -413,8 +434,8 @@
                             <span class="node-time">${timeStr}</span>
                         </div>
                         <div class="node-metrics">
-                            <span>B: <span class="metric-val">${mag} nT</span></span>
-                            <span>Temp: <span class="metric-val">${n.temp ? n.temp + '°C' : 'N/A'}</span></span>
+                            <span>|B|: <span class="metric-val">${mag} nT</span></span>
+                            <span>Temp: <span class="metric-val">${n.temp !== undefined && n.temp !== null ? n.temp + '°C' : 'N/A'}</span></span>
                         </div>
                     </div>
                 `;
@@ -425,10 +446,39 @@
             selectEl.innerHTML = optionsHtml;
         }
 
-        function selectNode(nodeId) {
+        async function selectNode(nodeId) {
             selectedNodeId = nodeId;
             document.getElementById('selected-node-title').innerText = `Real-Time Telemetry: ${nodeId}`;
             renderNodeList();
+
+            if (!timeSeriesStore[nodeId] || timeSeriesStore[nodeId].length < 10) {
+                await fetchHistoryForNode(nodeId);
+            } else {
+                refreshChartForNode();
+            }
+        }
+
+        async function fetchHistoryForNode(nodeId) {
+            try {
+                const res = await fetch(`${apiBaseUrl}/api/v1/data?node_id=${nodeId}&format=json`);
+                const body = await res.json();
+                const rows = Array.isArray(body) ? body : (body.data || []);
+                
+                if (Array.isArray(rows) && rows.length > 0) {
+                    const recent = rows.slice(-maxDataPoints);
+                    timeSeriesStore[nodeId] = recent.map(r => {
+                        const ts_str = r.timestamp_utc || r.timestamp;
+                        const d = ts_str ? new Date(ts_str) : new Date();
+                        const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString();
+                        const x = r.x_nT !== undefined ? r.x_nT : r.x;
+                        const y = r.y_nT !== undefined ? r.y_nT : r.y;
+                        const z = r.z_nT !== undefined ? r.z_nT : r.z;
+                        return { timeLabel, x, y, z };
+                    });
+                }
+            } catch (err) {
+                console.error(`Failed to fetch history for ${nodeId}`, err);
+            }
             refreshChartForNode();
         }
 
@@ -440,16 +490,16 @@
             chart.data.datasets[0].data = series.map(s => s.x);
             chart.data.datasets[1].data = series.map(s => s.y);
             chart.data.datasets[2].data = series.map(s => s.z);
-            chart.data.datasets[3].data = series.map(s => s.mag);
-            chart.update();
+            chart.data.datasets[3].data = series.map(s => Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z));
+
+            updateChartSeries();
         }
 
         function pushTelemetryData(pt) {
             const nodeId = pt.node_id;
-            const mag = Math.sqrt(pt.x*pt.x + pt.y*pt.y + pt.z*pt.z);
-            const timeLabel = new Date(pt.timestamp || Date.now()).toLocaleTimeString();
+            const d = pt.timestamp ? new Date(pt.timestamp) : new Date();
+            const timeLabel = isNaN(d.getTime()) ? new Date().toLocaleTimeString() : d.toLocaleTimeString();
 
-            // Update Node State
             nodesData[nodeId] = {
                 node_id: nodeId,
                 x: pt.x,
@@ -460,11 +510,6 @@
                 last_seen: pt.timestamp || new Date().toISOString()
             };
 
-            if (!selectedNodeId) {
-                selectNode(nodeId);
-            }
-
-            // Push to timeseries buffer
             if (!timeSeriesStore[nodeId]) {
                 timeSeriesStore[nodeId] = [];
             }
@@ -472,53 +517,57 @@
                 timeLabel: timeLabel,
                 x: pt.x,
                 y: pt.y,
-                z: pt.z,
-                mag: mag
+                z: pt.z
             });
 
             if (timeSeriesStore[nodeId].length > maxDataPoints) {
                 timeSeriesStore[nodeId].shift();
             }
 
-            renderNodeList();
-
-            if (selectedNodeId === nodeId) {
-                refreshChartForNode();
+            if (!selectedNodeId) {
+                selectNode(nodeId);
+            } else {
+                renderNodeList();
+                if (selectedNodeId === nodeId) {
+                    refreshChartForNode();
+                }
             }
         }
 
-        // Poll for initial node list and fallback data
         async function fetchInitialNodes() {
             try {
-                const res = await fetch('/api/nodes');
+                const res = await fetch(`${apiBaseUrl}/api/v1/nodes`);
                 const nodes = await res.json();
                 nodes.forEach(n => {
                     nodesData[n.node_id] = n;
                 });
+                renderNodeList();
+                
                 if (nodes.length > 0 && !selectedNodeId) {
                     selectNode(nodes[0].node_id);
                 }
-                renderNodeList();
             } catch (err) {
                 console.error("Failed to fetch nodes", err);
             }
         }
 
-        // WebSocket Connection for Live Updates
         function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/live`;
+            const wsUrl = `${wsBaseUrl}/ws/live`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
-                document.getElementById('status-text').innerText = 'Connected Live (WS)';
+                document.getElementById('status-text').innerText = 'Connected Live';
                 document.getElementById('net-status').style.borderColor = 'rgba(34, 197, 94, 0.4)';
             };
 
             ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'telemetry') {
-                    pushTelemetryData(msg);
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'telemetry') {
+                        pushTelemetryData(msg);
+                    }
+                } catch (err) {
+                    console.error("Error handling WS message:", err);
                 }
             };
 
@@ -532,12 +581,18 @@
         function downloadDataSubset() {
             const nodeId = document.getElementById('export-node-id').value;
             const fmt = document.getElementById('export-format').value;
-            let url = `/api/data?format=${fmt}`;
+            const downsampleSec = document.getElementById('export-downsample').value;
+
+            let url = `${apiBaseUrl}/api/v1/data?format=${fmt}`;
             if (nodeId) url += `&node_id=${nodeId}`;
+            if (parseInt(downsampleSec) > 0) url += `&downsample_sec=${downsampleSec}`;
             window.open(url, '_blank');
         }
 
-        // Initialize
+        setInterval(async () => {
+            await fetchInitialNodes();
+        }, 3000);
+
         window.addEventListener('DOMContentLoaded', () => {
             initChart();
             fetchInitialNodes();
