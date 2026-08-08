@@ -1,6 +1,12 @@
+import os
+import sys
 import socket
 import time
 from PySide6.QtCore import QThread, Signal
+
+# Import shared stream parser from repository root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from stream_parser import parse_telemetry_line
 
 class UdpWorker(QThread):
     data_received = Signal(str, object, object, object, object, object)  # device_id, timestamp, x, y, z, status
@@ -51,39 +57,24 @@ class UdpWorker(QThread):
             self.connection_status.emit(False)
 
     def parse_line(self, line):
-        # Format: device_id,timestamp_us,x,y,z,status_hex OR timestamp_us,x,y,z,status_hex
-        try:
-            parts = line.split(',')
-            if len(parts) >= 6:
-                device_id = parts[0].strip()
-                ts = float(parts[1])
-                x = float(parts[2])
-                y = float(parts[3])
-                z = float(parts[4])
-                status = int(parts[5].strip(), 16)
-                self.data_received.emit(device_id, ts, x, y, z, status)
-            elif len(parts) == 5:
-                device_id = "NODE_DEFAULT"
-                ts = float(parts[0])
-                x = float(parts[1])
-                y = float(parts[2])
-                z = float(parts[3])
-                status = int(parts[4].strip(), 16)
-                self.data_received.emit(device_id, ts, x, y, z, status)
-        except (ValueError, IndexError):
-            # Not a numeric data line, treat as MCU status message
-            self.status_message.emit(f"MCU (WiFi): {line}")
+        parsed = parse_telemetry_line(line)
+        if parsed:
+            self.data_received.emit(
+                parsed["node_id"],
+                parsed["timestamp_us"],
+                parsed["x"],
+                parsed["y"],
+                parsed["z"],
+                parsed["status_int"]
+            )
+        else:
+            if line and line.strip():
+                self.status_message.emit(f"MCU (WiFi): {line.strip()}")
 
     def stop(self):
         self.running = False
-
-    def send_command(self, cmd):
-        if self.sock and self.target_ip:
+        if self.sock:
             try:
-                msg = f"{cmd}\n".encode('utf-8')
-                self.sock.sendto(msg, (self.target_ip, self.target_port))
-                self.status_message.emit(f"Sent UDP command to {self.target_ip}: {cmd}")
-            except Exception as e:
-                self.status_message.emit(f"Failed to send UDP command: {str(e)}")
-        else:
-            self.status_message.emit("Cannot send UDP command: Target IP not discovered yet.")
+                self.sock.close()
+            except Exception:
+                pass

@@ -46,31 +46,25 @@ if ENABLE_BLE:
     except ImportError:
         print("[Gateway Notice] 'bleak' package not found. BLE listener will be disabled (install via 'pip install bleak').")
 
+# Import shared stream parser from repository root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from stream_parser import parse_telemetry_line
+
 # Thread-safe / Async-safe Telemetry Queue
 send_queue = queue.Queue(maxsize=10000)
 
 def parse_csv_line(line: str):
-    """
-    Parses standard CSV line from ESP32:
-    Format: device_id,timestamp_us,x,y,z,status
-    Example: SENSOR_01,123456789,23415.2,-4120.8,48910.1,C00000
-    """
-    parts = line.strip().split(",")
-    if len(parts) >= 5:
-        node_id = parts[0].strip()
-        try:
-            x = float(parts[2])
-            y = float(parts[3])
-            z = float(parts[4])
-            return {
-                "node_id": node_id,
-                "x": x,
-                "y": y,
-                "z": z,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            }
-        except ValueError:
-            pass
+    """Parses standard CSV line from ESP32 using shared stream_parser module."""
+    parsed = parse_telemetry_line(line)
+    if parsed:
+        return {
+            "node_id": parsed["node_id"],
+            "x": parsed["x"],
+            "y": parsed["y"],
+            "z": parsed["z"],
+            "status_flags": parsed["status_hex"],
+            "timestamp": parsed["timestamp_iso"]
+        }
     return None
 
 def forwarder_worker():

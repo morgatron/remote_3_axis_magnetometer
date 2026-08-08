@@ -1029,13 +1029,13 @@ class MainWindow(QMainWindow):
                 self.h5_file.attrs['vref_v'] = 2.4
                 self.h5_file.attrs['data_units'] = "raw 24-bit ADC counts"
 
-            # Create resizable 1D datasets with chunking and Gzip level 4 compression
-            chunk_sz = 1000
-            self.dset_time = self.h5_file.create_dataset('time_s', shape=(0,), maxshape=(None,), dtype='f8', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
-            self.dset_status = self.h5_file.create_dataset('status', shape=(0,), maxshape=(None,), dtype='u4', chunks=(chunk_sz,), compression='gzip', compression_opts=4)
+            # Create resizable 1D datasets with 32k chunking, byte-shuffle filter, and Gzip level 4 compression
+            chunk_sz = 32768
+            self.dset_time = self.h5_file.create_dataset('time_s', shape=(0,), maxshape=(None,), dtype='f8', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
+            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
+            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
+            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
+            self.dset_status = self.h5_file.create_dataset('status', shape=(0,), maxshape=(None,), dtype='u4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
             
             self.h5_buffer = []
         except Exception as e:
@@ -1087,7 +1087,6 @@ class MainWindow(QMainWindow):
             self.dset_z[curr:new_sz] = batch[:, 3].astype(np.float32)
             self.dset_status[curr:new_sz] = batch[:, 4].astype(np.uint32)
 
-            self.h5_file.flush()
             self.h5_buffer.clear()
         except Exception as e:
             self.status_bar.showMessage(f"HDF5 flush error: {str(e)}")
@@ -1115,17 +1114,6 @@ class MainWindow(QMainWindow):
                 self.h5_file.attrs['end_time_unix'] = end_unix
                 self.h5_file.attrs['duration_seconds'] = dur
                 self.h5_file.attrs['sample_count'] = total_samples
-
-                # Also write compound dataset 'data' for convenient 1-call loading
-                if total_samples > 0:
-                    compound_dtype = [('time_s', '<f8'), ('x', '<i4'), ('y', '<i4'), ('z', '<i4'), ('status', '<u4')]
-                    arr = np.empty(total_samples, dtype=compound_dtype)
-                    arr['time_s'] = self.dset_time[:]
-                    arr['x'] = self.dset_x[:]
-                    arr['y'] = self.dset_y[:]
-                    arr['z'] = self.dset_z[:]
-                    arr['status'] = self.dset_status[:]
-                    self.h5_file.create_dataset('data', data=arr, compression='gzip', compression_opts=4)
 
                 self.h5_file.flush()
                 self.h5_file.close()
