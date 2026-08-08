@@ -70,36 +70,39 @@ def parse_csv_line(line: str):
 def forwarder_worker():
     """Flushes queued telemetry from all interfaces to the Central Data Server."""
     print(f"[Gateway Forwarder] Worker active. Target: {CENTRAL_SERVER_URL}")
-    last_flush = time.time()
     
     while True:
         try:
-            batch = []
-            while not send_queue.empty() and len(batch) < 50:
-                try:
-                    sample = send_queue.get_nowait()
-                    batch.append(sample)
-                except queue.Empty:
-                    break
+            if not send_queue.empty():
+                batches_by_node = {}
+                count = 0
+                while not send_queue.empty() and count < 100:
+                    try:
+                        sample = send_queue.get_nowait()
+                        nid = sample["node_id"]
+                        if nid not in batches_by_node:
+                            batches_by_node[nid] = []
+                        batches_by_node[nid].append(sample)
+                        count += 1
+                    except queue.Empty:
+                        break
 
-            if batch:
-                node_id = batch[0]["node_id"]
-                payload = {"node_id": node_id, "points": batch}
-                try:
-                    resp = requests.post(f"{CENTRAL_SERVER_URL}/api/telemetry/batch", json=payload, timeout=3.0)
-                    if resp.status_code != 201:
-                        print(f"[Gateway Warning] HTTP {resp.status_code} from central server")
-                        # Re-queue on error
-                        for s in batch:
+                for nid, node_batch in batches_by_node.items():
+                    payload = {"node_id": nid, "points": node_batch}
+                    try:
+                        resp = requests.post(f"{CENTRAL_SERVER_URL}/api/v1/telemetry/batch", json=payload, timeout=3.0)
+                        if resp.status_code != 201:
+                            print(f"[Gateway Warning] HTTP {resp.status_code} from central server: {resp.text}")
+                            for s in node_batch:
+                                send_queue.put(s)
+                            time.sleep(1.0)
+                    except Exception as net_err:
+                        print(f"[Gateway Network Error] Central Server unreachable: {net_err}")
+                        for s in node_batch:
                             send_queue.put(s)
                         time.sleep(2.0)
-                except Exception as net_err:
-                    print(f"[Gateway Network Error] Central Server unreachable: {net_err}")
-                    for s in batch:
-                        send_queue.put(s)
-                    time.sleep(3.0)
 
-            time.sleep(0.5)
+            time.sleep(0.2)
         except Exception as e:
             print(f"[Gateway Error] {e}")
             time.sleep(1.0)
@@ -112,11 +115,14 @@ def udp_listener_thread():
     
     while True:
         try:
-            data, _ = sock.recvfrom(2048)
-            line = data.decode("utf-8", errors="ignore")
-            sample = parse_csv_line(line)
-            if sample and not send_queue.full():
-                send_queue.put(sample)
+            data, _ = sock.recvfrom(4096)
+            raw_str = data.decode("utf-8", errors="ignore")
+            for line in raw_str.splitlines():
+                line = line.strip()
+                if line:
+                    sample = parse_csv_line(line)
+                    if sample and not send_queue.full():
+                        send_queue.put(sample)
         except Exception as e:
             print(f"[Gateway UDP Error] {e}")
             time.sleep(0.5)
@@ -128,7 +134,7 @@ def serial_listener_thread(port, baud):
         print(f"[Gateway Serial] Opening {port} at {baud} baud...")
         ser = serial.Serial(port, baud, timeout=1.0)
         while True:
-            line = ser.readline().decode("utf-8", errors="ignore")
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
             if line:
                 sample = parse_csv_line(line)
                 if sample and not send_queue.full():
@@ -150,10 +156,13 @@ async def ble_listener_loop():
         print(f"[Gateway BLE] Connecting to '{name}' ({addr})...")
         
         def notify_handler(sender, data: bytearray):
-            line = data.decode("utf-8", errors="ignore")
-            sample = parse_csv_line(line)
-            if sample and not send_queue.full():
-                send_queue.put(sample)
+            raw_str = data.decode("utf-8", errors="ignore")
+            for line in raw_str.splitlines():
+                line = line.strip()
+                if line:
+                    sample = parse_csv_line(line)
+                    if sample and not send_queue.full():
+                        send_queue.put(sample)
 
         try:
             async with BleakClient(addr, timeout=10.0) as client:

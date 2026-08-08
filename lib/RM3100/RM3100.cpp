@@ -14,7 +14,7 @@
 
 RM3100::RM3100(int csPin, int drdyPin) 
     : _csPin(csPin), _drdyPin(drdyPin), _spi(NULL), _spiSettings(500000, MSBFIRST, SPI_MODE0),
-      _cycleX(200), _cycleY(200), _cycleZ(200) {}
+      _cycleX(200), _cycleY(200), _cycleZ(200), _activeCycleX(200) {}
 
 bool RM3100::begin() {
     return begin(SPI);
@@ -89,6 +89,7 @@ void RM3100::setCycleCount(uint16_t x, uint16_t y, uint16_t z) {
     _cycleX = x;
     _cycleY = y;
     _cycleZ = z;
+    _activeCycleX = x;
 
     uint8_t cmm = readReg(RM3100_REG_CMM);
     bool cmmActive = (cmm & 0x01) != 0;
@@ -137,11 +138,13 @@ void RM3100::setContinuousMode(bool enable, uint8_t rate) {
             tmrcVal |= 0x90; // Convert 0x05 -> 0x95, 0x02 -> 0x92, 0x03 -> 0x93, 0x04 -> 0x94, etc.
         }
 
-        // Cap cycle counts for high sample rates to prevent ASIC measurement duration from exceeding rate interval
+        // Cap cycle counts with ~10% timing safety buffer so measurement duration does not exceed rate interval
         uint16_t ccX = _cycleX, ccY = _cycleY, ccZ = _cycleZ;
-        if (tmrcVal == 0x92 && ccX > 30)  { ccX = 30;  ccY = 30;  ccZ = 30; }  // 600 Hz limit (cc <= 30)
-        if (tmrcVal == 0x93 && ccX > 50)  { ccX = 50;  ccY = 50;  ccZ = 50; }  // 300 Hz limit (cc <= 50)
-        if (tmrcVal == 0x94 && ccX > 100) { ccX = 100; ccY = 100; ccZ = 100; } // 150 Hz limit (cc <= 100)
+        if (tmrcVal == 0x92 && ccX > 38)  { ccX = 38;  ccY = 38;  ccZ = 38; }  // 600 Hz limit (cc <= 38, ~1.49ms vs 1.67ms period)
+        if (tmrcVal == 0x93 && ccX > 84)  { ccX = 84;  ccY = 84;  ccZ = 84; }  // 300 Hz limit (cc <= 84, ~3.00ms vs 3.33ms period)
+        if (tmrcVal == 0x94 && ccX > 175) { ccX = 175; ccY = 175; ccZ = 175; } // 150 Hz limit (cc <= 175, ~5.99ms vs 6.67ms period)
+
+        _activeCycleX = ccX;
 
         writeReg(RM3100_REG_CCX, (ccX >> 8) & 0xFF);
         writeReg(RM3100_REG_CCX + 1, ccX & 0xFF);
@@ -274,7 +277,7 @@ void RM3100::readRegs(uint8_t reg, uint8_t *buffer, uint8_t len) {
 }
 
 float RM3100::getScaleFactor() {
-    uint16_t cc = _cycleX > 0 ? _cycleX : 200;
+    uint16_t cc = _activeCycleX > 0 ? _activeCycleX : 200;
     float gain = 0.3671f * (float)cc + 1.5f;
     return 1000.0f / gain; // nT per LSB count
 }

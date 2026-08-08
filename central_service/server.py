@@ -72,13 +72,13 @@ def init_db():
 
         # Safe schema migrations for legacy database files
         existing_telemetry_cols = [row[1] for row in conn.execute("PRAGMA table_info(telemetry)").fetchall()]
-        for col_name, col_type in [("units", "TEXT DEFAULT 'nT'"), ("rssi", "INTEGER"), ("status_flags", "TEXT DEFAULT '0xC00000'"), ("extra_json", "TEXT")]:
+        for col_name, col_type in [("units", "TEXT DEFAULT 'nT'"), ("temp", "REAL"), ("vbat", "INTEGER"), ("rssi", "INTEGER"), ("status_flags", "TEXT DEFAULT '0xC00000'"), ("extra_json", "TEXT")]:
             if col_name not in existing_telemetry_cols:
                 logger.info(f"Applying migration: Adding column '{col_name}' to telemetry table")
                 conn.execute(f"ALTER TABLE telemetry ADD COLUMN {col_name} {col_type};")
 
         existing_node_cols = [row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()]
-        for col_name, col_type in [("elevation_m", "REAL DEFAULT 0.0"), ("baseline_x", "REAL DEFAULT 0.0"), ("baseline_y", "REAL DEFAULT 0.0"), ("baseline_z", "REAL DEFAULT 0.0"), ("notes", "TEXT")]:
+        for col_name, col_type in [("elevation_m", "REAL DEFAULT 0.0"), ("sensor_model", "TEXT DEFAULT 'RM3100'"), ("cycle_count", "INTEGER DEFAULT 200"), ("baseline_x", "REAL DEFAULT 0.0"), ("baseline_y", "REAL DEFAULT 0.0"), ("baseline_z", "REAL DEFAULT 0.0"), ("notes", "TEXT")]:
             if col_name not in existing_node_cols:
                 logger.info(f"Applying migration: Adding column '{col_name}' to nodes table")
                 conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_type};")
@@ -239,21 +239,21 @@ async def ingest_batch(batch: BatchTelemetry):
             await store_telemetry_point(conn, p)
         conn.commit()
 
-    # Broadcast last point in batch
-    last_pt = batch.points[-1]
-    await ws_manager.broadcast({
-        "type": "telemetry",
-        "node_id": batch.node_id,
-        "timestamp": last_pt.timestamp or now_str,
-        "x": last_pt.x,
-        "y": last_pt.y,
-        "z": last_pt.z,
-        "units": last_pt.units or "nT",
-        "temp": last_pt.temp,
-        "vbat": last_pt.vbat,
-        "sensor_model": last_pt.sensor_model or "RM3100",
-        "cycle_count": last_pt.cycle_count or 200
-    })
+    # Broadcast all points in batch via WebSockets
+    for p in batch.points:
+        await ws_manager.broadcast({
+            "type": "telemetry",
+            "node_id": batch.node_id,
+            "timestamp": p.timestamp or now_str,
+            "x": p.x,
+            "y": p.y,
+            "z": p.z,
+            "units": p.units or "nT",
+            "temp": p.temp,
+            "vbat": p.vbat,
+            "sensor_model": p.sensor_model or "RM3100",
+            "cycle_count": p.cycle_count or 200
+        })
     return {"status": "success", "node_id": batch.node_id, "inserted": len(batch.points)}
 
 @app.get("/api/v1/nodes")

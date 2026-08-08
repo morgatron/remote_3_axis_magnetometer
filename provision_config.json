@@ -1,0 +1,21 @@
+{
+  "port": "/dev/ttyACM0",
+  "baud": 921600,
+  "sensor": "RM3100",
+  "device_id": "",
+  "output_mode": "WIFI",
+  "wifi": {
+    "ssid": "NetComm 2927",
+    "password": "zakuystuhs",
+    "target_ip": "192.168.20.8"
+  },
+  "rm3100": {
+    "rate": "0x95",
+    "cycle_count": 200,
+    "downsample": 75
+  },
+  "flc100": {
+    "rate": "0x06",
+    "downsample": 1000
+  }
+}

@@ -37,6 +37,7 @@ private:
     uint16_t _cycleX;
     uint16_t _cycleY;
     uint16_t _cycleZ;
+    uint16_t _activeCycleX;
 
     // Lock-free ring buffer for ISR -> main loop sample transfer
     static const size_t RING_BUFFER_SIZE = 128;

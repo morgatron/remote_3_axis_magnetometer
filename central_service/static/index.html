@@ -451,7 +451,7 @@
             document.getElementById('selected-node-title').innerText = `Real-Time Telemetry: ${nodeId}`;
             renderNodeList();
 
-            if (!timeSeriesStore[nodeId] || timeSeriesStore[nodeId].length < 10) {
+            if (!timeSeriesStore[nodeId]) {
                 await fetchHistoryForNode(nodeId);
             } else {
                 refreshChartForNode();
@@ -466,7 +466,7 @@
                 
                 if (Array.isArray(rows) && rows.length > 0) {
                     const recent = rows.slice(-maxDataPoints);
-                    timeSeriesStore[nodeId] = recent.map(r => {
+                    const loaded = recent.map(r => {
                         const ts_str = r.timestamp_utc || r.timestamp;
                         const d = ts_str ? new Date(ts_str) : new Date();
                         const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString();
@@ -475,9 +475,15 @@
                         const z = r.z_nT !== undefined ? r.z_nT : r.z;
                         return { timeLabel, x, y, z };
                     });
+                    if (!timeSeriesStore[nodeId] || timeSeriesStore[nodeId].length < loaded.length) {
+                        timeSeriesStore[nodeId] = loaded;
+                    }
+                } else if (!timeSeriesStore[nodeId]) {
+                    timeSeriesStore[nodeId] = [];
                 }
             } catch (err) {
                 console.error(`Failed to fetch history for ${nodeId}`, err);
+                if (!timeSeriesStore[nodeId]) timeSeriesStore[nodeId] = [];
             }
             refreshChartForNode();
         }

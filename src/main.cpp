@@ -375,8 +375,12 @@ void loop() {
         }
     }
 
-    // WiFi UDP Command Listening
+    // WiFi UDP Command Listening & Low-Latency Batch Flushing
     if (wifiConnected) {
+        if (udpBatchLen > 0 && (millis() - lastUdpFlushMs >= 50)) {
+            flushUdpBatch();
+        }
+
         int packetSize = udp.parsePacket();
         if (packetSize) {
             targetIP = udp.remoteIP(); // Auto-discover desktop app's IP address
