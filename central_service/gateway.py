@@ -48,10 +48,28 @@ if ENABLE_BLE:
 
 # Import shared stream parser from repository root
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from stream_parser import parse_telemetry_line
+from stream_parser import parse_telemetry_line, parse_telemetry_batch
 
 # Thread-safe / Async-safe Telemetry Queue
 send_queue = queue.Queue(maxsize=10000)
+
+def parse_payload_batch(raw_payload: str, arrival_time: float = None):
+    """Parses multi-line CSV payload and applies relative delta-t back-calculation anchored to arrival_time."""
+    parsed_list = parse_telemetry_batch(raw_payload, arrival_wall_time=arrival_time)
+    results = []
+    for parsed in parsed_list:
+        results.append({
+            "node_id": parsed["node_id"],
+            "x": parsed["x"],
+            "y": parsed["y"],
+            "z": parsed["z"],
+            "status_flags": parsed["status_hex"],
+            "timestamp": parsed["timestamp_iso"],
+            "temp": parsed.get("temp"),
+            "vbat": parsed.get("vbat"),
+            "rssi": parsed.get("rssi")
+        })
+    return results
 
 def parse_csv_line(line: str):
     """Parses standard CSV line from ESP32 using shared stream_parser module."""
@@ -63,7 +81,10 @@ def parse_csv_line(line: str):
             "y": parsed["y"],
             "z": parsed["z"],
             "status_flags": parsed["status_hex"],
-            "timestamp": parsed["timestamp_iso"]
+            "timestamp": parsed["timestamp_iso"],
+            "temp": parsed.get("temp"),
+            "vbat": parsed.get("vbat"),
+            "rssi": parsed.get("rssi")
         }
     return None
 
@@ -116,13 +137,12 @@ def udp_listener_thread():
     while True:
         try:
             data, _ = sock.recvfrom(4096)
+            arrival_time = time.time()
             raw_str = data.decode("utf-8", errors="ignore")
-            for line in raw_str.splitlines():
-                line = line.strip()
-                if line:
-                    sample = parse_csv_line(line)
-                    if sample and not send_queue.full():
-                        send_queue.put(sample)
+            samples = parse_payload_batch(raw_str, arrival_time=arrival_time)
+            for sample in samples:
+                if not send_queue.full():
+                    send_queue.put(sample)
         except Exception as e:
             print(f"[Gateway UDP Error] {e}")
             time.sleep(0.5)

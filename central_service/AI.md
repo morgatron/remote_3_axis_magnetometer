@@ -28,6 +28,11 @@ Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy da
 4. **Server-Side Downsampling**:
    - Use `downsample_sec=60` (1-min) or `3600` (1-hour) on `/api/v1/data` to query multi-month datasets at high speeds.
 
+5. **Edge Arrival Timestamping & $\Delta t$ Relative Reconstruction**:
+   - Microcontrollers stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTCs or NTP client code.
+   - Upon arrival at `gateway.py`, telemetry packets are stamped with the gateway's system UTC wall clock.
+   - Multi-sample batches (e.g. after network drops or Store-and-Forward queue flushes) are processed via `parse_telemetry_batch()`, which anchors to the latest arrival time and uses relative microsecond $\Delta t$ back-calculation to reconstruct exact historical sample spacing without clock drift.
+
 ---
 
 ## File Structure

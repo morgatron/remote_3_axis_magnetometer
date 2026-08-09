@@ -274,6 +274,27 @@ def list_nodes():
         """)
         return [dict(row) for row in cursor.fetchall()]
 
+@app.post("/api/v1/nodes/update")
+@app.post("/api/nodes/update")
+def update_node(node: NodeUpdate):
+    """Update metadata for a node (e.g. lat/lon, elevation, baseline offsets, notes)."""
+    with get_db() as conn:
+        conn.execute("""
+        INSERT INTO nodes (node_id, name, lat, lon, elevation_m, baseline_x, baseline_y, baseline_z, notes, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(node_id) DO UPDATE SET
+            name = COALESCE(excluded.name, nodes.name),
+            lat = COALESCE(excluded.lat, nodes.lat),
+            lon = COALESCE(excluded.lon, nodes.lon),
+            elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
+            baseline_x = COALESCE(excluded.baseline_x, nodes.baseline_x),
+            baseline_y = COALESCE(excluded.baseline_y, nodes.baseline_y),
+            baseline_z = COALESCE(excluded.baseline_z, nodes.baseline_z),
+            notes = COALESCE(excluded.notes, nodes.notes)
+        """, (node.node_id, node.name, node.lat, node.lon, node.elevation_m, node.baseline_x, node.baseline_y, node.baseline_z, node.notes))
+        conn.commit()
+    return {"status": "success", "node_id": node.node_id}
+
 @app.get("/api/v1/data")
 @app.get("/api/data")
 def query_data(

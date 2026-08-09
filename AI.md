@@ -33,6 +33,11 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
 5. **PySide6 Desktop Application (`desktop_app/main.py`)**:
    - Provides real-time multi-axis time-series plotting, Welch PSD spectral analysis, device provisioning, and Gzip-compressed HDF5 (`.h5`) logging.
 
+6. **Edge Arrival Timestamping & $\Delta t$ Relative Reconstruction**:
+   - Field nodes stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTC chips or NTP client stacks.
+   - Upon packet arrival at the edge gateway (`gateway.py`), telemetry is anchored to the gateway's NTP-synchronized system UTC clock.
+   - For multi-sample batches (e.g. after network drops or Store-and-Forward queue flushes), `stream_parser.parse_telemetry_batch` uses relative microsecond $\Delta t$ back-calculation to reconstruct exact 1.000-second historical sample spacing without clock drift.
+
 ---
 
 ## Hardware Pinouts & Auto-Detection
