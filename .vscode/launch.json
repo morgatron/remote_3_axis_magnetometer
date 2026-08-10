@@ -16,6 +16,7 @@
             "projectEnvName": "esp32-c3-devkitm-1",
             "toolchainBinDir": "/home/morgan/.platformio/packages/toolchain-riscv32-esp/bin",
             "internalConsoleOptions": "openOnSessionStart",
+            "svdPath": "/home/morgan/.platformio/platforms/espressif32/misc/svd/esp32c3.svd",
             "preLaunchTask": {
                 "type": "PlatformIO",
                 "task": "Pre-Debug"
@@ -28,7 +29,8 @@
             "executable": "/home/morgan/storage/Insync/morgan.hedges@gmail.com/Google Drive/Gropbox/SMACT2026/remote_3_axis_magnetometer/.pio/build/esp32-c3-devkitm-1/firmware.elf",
             "projectEnvName": "esp32-c3-devkitm-1",
             "toolchainBinDir": "/home/morgan/.platformio/packages/toolchain-riscv32-esp/bin",
-            "internalConsoleOptions": "openOnSessionStart"
+            "internalConsoleOptions": "openOnSessionStart",
+            "svdPath": "/home/morgan/.platformio/platforms/espressif32/misc/svd/esp32c3.svd"
         },
         {
             "type": "platformio-debug",
@@ -38,6 +40,7 @@
             "projectEnvName": "esp32-c3-devkitm-1",
             "toolchainBinDir": "/home/morgan/.platformio/packages/toolchain-riscv32-esp/bin",
             "internalConsoleOptions": "openOnSessionStart",
+            "svdPath": "/home/morgan/.platformio/platforms/espressif32/misc/svd/esp32c3.svd",
             "loadMode": "manual"
         }
     ]

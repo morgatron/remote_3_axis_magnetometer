@@ -8,16 +8,29 @@ static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pTxCharacteristic = nullptr;
 static bool deviceConnected = false;
 
+#if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
+class ServerCallbacks: public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+        deviceConnected = true;
+    }
+
+    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+        deviceConnected = false;
+        NimBLEDevice::startAdvertising();
+    }
+};
+#else
 class ServerCallbacks: public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer) override {
         deviceConnected = true;
-    };
+    }
 
     void onDisconnect(NimBLEServer* pServer) override {
         deviceConnected = false;
         NimBLEDevice::startAdvertising();
     }
 };
+#endif
 
 BLEStream::BLEStream() : _initialized(false) {}
 
@@ -36,11 +49,17 @@ void BLEStream::begin(const String &deviceName) {
         NIMBLE_PROPERTY::NOTIFY
     );
 
+#if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION < 20000
     pService->start();
+#endif
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
+#if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
+    pAdvertising->enableScanResponse(true);
+#else
     pAdvertising->setScanResponse(true);
+#endif
     pAdvertising->start();
     _initialized = true;
 }

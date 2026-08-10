@@ -1,25 +1,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <Preferences.h>
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
-// Custom ESP32-C3 PCB Pinout
-#define SCK_PIN      6
-#define MOSI_PIN     7
-#define MISO_PIN     2
-#define DRDY_PIN     3
-#define CS_PIN       10
-#define LED_PIN      -1
-#else
-// Classic ESP32 Dev Module Pinout
-#define SCK_PIN      18
-#define MISO_PIN     19
-#define MOSI_PIN     23
-#define CS_PIN       5
-#define DRDY_PIN     4
-#define LED_PIN      2
-#endif
-
-#define RESET_PIN   -1
+#include <esp_mac.h>
+#include "board_config.h"
 
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
@@ -273,6 +256,8 @@ void setup() {
     Serial.println("\r\n==================================================");
     Serial.println(" FIRMWARE: Remote 3-Axis Magnetometer Acquisition System");
     Serial.println("==================================================");
+
+    initBoardPower();
 
     // Wait for internal oscillator and power-on-reset stabilization
     delay(250);

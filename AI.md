@@ -40,18 +40,36 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
 
 ---
 
-## Hardware Pinouts & Auto-Detection
+---
 
-### Pinout Reference
+## Hardware Management Architecture (`include/board_config.h` & `platformio.ini`)
 
-| Signal | ESP32 Dev Module (`esp32dev`) | ESP32-C3 PCB (`esp32-c3-devkitm-1`) |
-| :--- | :--- | :--- |
-| **SCK** | GPIO 18 | GPIO 6 |
-| **MISO** | GPIO 19 | GPIO 2 |
-| **MOSI** | GPIO 23 | GPIO 7 |
-| **CS** | GPIO 5 | GPIO 10 |
-| **DRDY** | GPIO 4 | GPIO 3 (Hardware interrupt) |
-| **Port** | `/dev/ttyUSB0` | `/dev/ttyACM0` |
+All hardware target boards are managed through a **centralized, single-source-of-truth configuration design**:
+
+1. **Centralized Board Header (`include/board_config.h`)**:
+   - Maps MCU preprocessor macros to physical board pinouts (Magnetometer SPI, LoRa SPI, status LEDs, and power rails).
+   - Provides `initBoardPower()` to control hardware power gating rails (e.g. driving Heltec Vext GPIO 36 `LOW` during setup).
+   - Abstracts hardware differences away from firmware business logic (`main.cpp` and `receiver_main.cpp`).
+
+2. **DRY PlatformIO Configuration (`platformio.ini`)**:
+   - Root `[env]` base section defines common parameters (`framework = arduino`, `monitor_speed = 921600`, upload flags, and native USB CDC defines).
+   - Target environments inherit from `[env]` and select their role via `build_src_filter`:
+     - **Field Sensor Node**: `build_src_filter = +<*> -<receiver/*>`
+     - **Receiver & Gateway Node**: `build_src_filter = +<receiver/*>`
+
+### Supported Hardware Pinout Reference Table
+
+| Target Hardware Board | PlatformIO Env (`Sensor` / `Receiver`) | Sensor SCK | Sensor MOSI | Sensor MISO | Sensor CS | Sensor DRDY | LoRa CS / DIO1 / RST / BUSY | Vext Rail |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **ESP32-C3 RISC-V PCB** | `esp32-c3-devkitm-1` / `esp32c3_receiver` | GPIO 6 | GPIO 7 | GPIO 2 | GPIO 10 | GPIO 3 | GPIO 5 / 4 / 14 / 15 | N/A |
+| **ESP32-C6 Wi-Fi 6 PCB** | `esp32-c6-devkitc-1` / `esp32c6_receiver` | GPIO 6 | GPIO 7 | GPIO 2 | GPIO 10 | GPIO 3 | GPIO 5 / 4 / 14 / 15 | N/A |
+| **Heltec V4 (ESP32-S3 + SX1262)** | `heltec_v4_sensor` / `heltec_v4_receiver` | GPIO 41 | GPIO 42 | GPIO 40 | GPIO 39 | GPIO 38 | GPIO 8 / 14 / 12 / 13 | GPIO 36 |
+| **Legacy ESP32 Dev (WROOM)** | `esp32dev` / `esp32dev_receiver` [Deprecated] | GPIO 18 | GPIO 23 | GPIO 19 | GPIO 5 | GPIO 4 | GPIO 5 / 4 / 14 / 15 | N/A |
+
+### How to Add a New Hardware Board
+To support a new board (e.g. ESP32-S3 DevKit or Raspberry Pi Pico 2 W):
+1. Add a `#elif defined(YOUR_BOARD)` block in [`include/board_config.h`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/include/board_config.h) defining SPI CS, SCK, MOSI, MISO, DRDY, and LoRa pins.
+2. Add sensor and receiver target environment blocks in [`platformio.ini`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/platformio.ini) with `-D YOUR_BOARD`.
 
 ---
 
@@ -78,7 +96,39 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
 
 ---
 
+## ESP32 Multi-Protocol Receiver & Data Relay Firmware (`src/receiver/`)
+
+An ESP32 configured as a dedicated field receiver/relay ingests telemetry from battery-powered remote sensors across multiple wireless radio interfaces concurrently and forwards data to the host computer / central server.
+
+### Key Receiver Features
+1. **Multi-Protocol Wireless Ingestion**:
+   - **ESP-NOW**: Ultra-low power, fast connectionless MAC-layer protocol (handles binary struct `SensorBinaryPacket` and string CSV payloads).
+   - **BLE / BLE Coded PHY**: Bluetooth 5 Long Range advertisement and Nordic UART Service observer.
+   - **WiFi UDP**: Listens on UDP port 9876 for field sensor broadcast packets.
+2. **Dual Egress Relay**:
+   - **USB Serial (CDC)**: Output formatted CSV stream at 921,600 baud directly to `gateway.py` or host PC.
+   - **WiFi Egress**: Forwards batched payloads to Central Server HTTP endpoint or target UDP IP.
+3. **Active Node Tracking**:
+   - In-memory Node Table (`NODES` command) tracks device IDs, MAC addresses, RSSI signal strength, packet counts, last-seen timestamps, battery voltages, and ambient temperatures.
+
+### Receiver CLI Commands
+| Command | Description |
+| :--- | :--- |
+| `HELP` / `STATUS` | Display receiver status, protocol packet counts, and network info |
+| `NODES` | Print real-time table of all active remote sensor nodes with RSSI & Vbat |
+| `MODE <SERIAL\|WIFI\|BOTH>` | Select egress relay destination (USB Serial, WiFi Network, or Dual Egress) |
+| `WIFI <ssid> <pass>` | Save egress router credentials and connect to WiFi |
+| `TARGET <ip> [port]` | Configure target Central Server IP and port for WiFi forwarding |
+| `CHANNEL <1-13>` | Set ESP-NOW WiFi radio channel |
+| `SAVE` | Persist current configuration to NVS Flash memory |
+| `REBOOT` | Restart receiver MCU |
+
+---
+
 ## Running & Testing
+
+> [!TIP]
+> For a step-by-step minimal testing setup guide (Sensor Node $\rightarrow$ Gateway Node $\rightarrow$ Central Server), see [`TESTING_SETUP.md`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/TESTING_SETUP.md).
 
 ### Conda Environment Setup
 ```bash
@@ -87,12 +137,22 @@ conda activate rm3100
 ```
 
 ### Firmware Build & Flash
-```bash
-# Classic ESP32 Dev Module
-pio run -e esp32dev -t upload --upload-port /dev/ttyUSB0
 
-# ESP32-C3 PCB
+```bash
+# 1. Field Sensor Node Firmware (ESP32-C3 PCB)
 pio run -e esp32-c3-devkitm-1 -t upload --upload-port /dev/ttyACM0
+
+# 2. Field Sensor Node Firmware (ESP32-C6 Wi-Fi 6 / 802.15.4)
+pio run -e esp32-c6-devkitc-1 -t upload --upload-port /dev/ttyACM0
+
+# 3. Field Sensor Node Firmware (Heltec V4 ESP32-S3 + SX1262 LoRa)
+pio run -e heltec_v4_sensor -t upload --upload-port /dev/ttyACM0
+
+# 4. Multi-Protocol Receiver & Gateway (ESP32-C6 Wi-Fi 6)
+pio run -e esp32c6_receiver -t upload --upload-port /dev/ttyACM1
+
+# 5. Multi-Protocol Receiver & Gateway (Heltec V4 ESP32-S3 + SX1262 LoRa)
+pio run -e heltec_v4_receiver -t upload --upload-port /dev/ttyACM1
 ```
 
 ### Central Data Server & Web GUI
@@ -110,6 +170,10 @@ python test/test_scaling_math.py
 # 2. Central Server API & Export Test
 python central_service/test_server.py
 
-# 3. Hardware Scaling Invariance Test (Requires connected ESP32)
+# 3. Receiver Payload & Timestamp Parser Test
+python test/test_receiver_parser.py
+
+# 4. Hardware Scaling Invariance Test (Requires connected ESP32)
 python test_cycle_count_invariance.py --port /dev/ttyUSB0
 ```
+

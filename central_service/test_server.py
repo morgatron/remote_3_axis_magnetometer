@@ -31,10 +31,11 @@ def start_test_server():
     env["DB_FILE"] = temp_db_path
     
     cmd = [
-        "/home/morgan/miniforge3/envs/rm3100/bin/python", "-m", "uvicorn",
+        sys.executable, "-m", "uvicorn",
         "server:app", "--host", "127.0.0.1", "--port", str(TEST_PORT)
     ]
-    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    cwd_dir = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.Popen(cmd, env=env, cwd=cwd_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     # Wait for server startup
     start_t = time.time()
