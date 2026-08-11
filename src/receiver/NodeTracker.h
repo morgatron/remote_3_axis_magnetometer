@@ -11,6 +11,7 @@ struct RemoteNodeInfo {
     uint8_t mac[6];
     uint32_t first_seen_ms;
     uint32_t last_seen_ms;
+    uint32_t last_sample_ts_ms;
     uint32_t packet_count;
     int rssi;
     float last_x;
@@ -28,8 +29,8 @@ public:
         memset(_nodes, 0, sizeof(_nodes));
     }
 
-    void recordPacket(const char* device_id, const uint8_t* mac, int rssi, 
-                      float x, float y, float z, float temp, float vbat, const char* protocol) {
+    bool recordPacket(const char* device_id, const uint8_t* mac, int rssi, 
+                      float x, float y, float z, float temp, float vbat, const char* protocol, uint32_t sample_ts_ms = 0) {
         uint32_t now = millis();
         int idx = findNodeIndex(device_id, mac);
         
@@ -52,8 +53,19 @@ public:
             _nodes[idx].active = true;
         }
 
-        // Update node metrics
         RemoteNodeInfo &node = _nodes[idx];
+        
+        // De-duplicate repeated wireless beacon scans of the exact same sample
+        if (sample_ts_ms > 0 && sample_ts_ms == node.last_sample_ts_ms) {
+            node.last_seen_ms = now;
+            node.rssi = rssi;
+            return false;
+        }
+        if (sample_ts_ms > 0) {
+            node.last_sample_ts_ms = sample_ts_ms;
+        }
+
+        // Update node metrics
         node.last_seen_ms = now;
         node.packet_count++;
         node.rssi = rssi;
@@ -63,6 +75,7 @@ public:
         if (temp != 0.0f) node.temp = temp;
         if (vbat != 0.0f) node.vbat = vbat;
         strncpy(node.protocol, protocol, sizeof(node.protocol) - 1);
+        return true;
     }
 
     void printNodeTable(Stream &out) {

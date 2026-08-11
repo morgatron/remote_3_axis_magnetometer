@@ -236,7 +236,7 @@ void OLEDDisplay::drawHeader(const char* title) {
 void OLEDDisplay::updateSensorScreen(const char* deviceId, const char* sensorName, float bMag_nT, uint32_t sampleCount, float vbat, const char* mode) {
     if (!_initialized) return;
     clear();
-    drawHeader(" MAGNETOMETER SENSOR");
+    drawHeader(" SENSOR NODE (TX)");
     
     char lineBuf[24];
     snprintf(lineBuf, sizeof(lineBuf), "ID: %s", deviceId);
@@ -248,7 +248,7 @@ void OLEDDisplay::updateSensorScreen(const char* deviceId, const char* sensorNam
     snprintf(lineBuf, sizeof(lineBuf), "|B|: %.1f nT", bMag_nT);
     drawString(0, 4, lineBuf);
 
-    snprintf(lineBuf, sizeof(lineBuf), "Pkts: %u", sampleCount);
+    snprintf(lineBuf, sizeof(lineBuf), "Tx Pkts: %u", sampleCount);
     drawString(0, 5, lineBuf);
 
     snprintf(lineBuf, sizeof(lineBuf), "Vbat: %.2fV  Mode:%s", vbat, mode);
@@ -260,13 +260,13 @@ void OLEDDisplay::updateSensorScreen(const char* deviceId, const char* sensorNam
 void OLEDDisplay::updateReceiverScreen(uint8_t activeNodes, uint32_t totalPackets, int lastRssi, const char* lastMac, const char* egressIp, const char* mode) {
     if (!_initialized) return;
     clear();
-    drawHeader(" GATEWAY RECEIVER");
+    drawHeader(" RECEIVER NODE (RX)");
 
     char lineBuf[24];
     snprintf(lineBuf, sizeof(lineBuf), "Active Nodes: %u", activeNodes);
     drawString(0, 1, lineBuf);
 
-    snprintf(lineBuf, sizeof(lineBuf), "Total Pkts: %u", totalPackets);
+    snprintf(lineBuf, sizeof(lineBuf), "Rx Pkts: %u", totalPackets);
     drawString(0, 2, lineBuf);
 
     snprintf(lineBuf, sizeof(lineBuf), "Last: %s", lastMac);

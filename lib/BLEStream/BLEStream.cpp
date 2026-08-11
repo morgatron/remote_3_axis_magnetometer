@@ -54,7 +54,6 @@ void BLEStream::begin(const String &deviceName) {
 #endif
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setMinInterval(32); // 20ms advertising interval
     pAdvertising->setMaxInterval(48); // 30ms advertising interval
 #if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
@@ -69,12 +68,6 @@ void BLEStream::begin(const String &deviceName) {
 void BLEStream::notify(const char *data) {
     if (!_initialized) return;
 
-    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-    if (pAdvertising) {
-        pAdvertising->setManufacturerData(std::string(data));
-        pAdvertising->refreshAdvertisingData();
-    }
-
     if (deviceConnected && pTxCharacteristic != nullptr) {
         pTxCharacteristic->setValue((const uint8_t*)data, strlen(data));
         pTxCharacteristic->notify();
@@ -86,10 +79,34 @@ void BLEStream::notifyBinary(const SensorBinaryPacket &pkt) {
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     if (pAdvertising) {
-        pAdvertising->setManufacturerData((const uint8_t*)&pkt, sizeof(pkt));
-        pAdvertising->refreshAdvertisingData();
+#if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
+        // NimBLE 2.x: Build a fresh advertisement data object each time to avoid
+        // setManufacturerData() appending to stale payload data.
+        NimBLEAdvertisementData advData;
+        advData.setManufacturerData((const uint8_t*)&pkt, sizeof(pkt));
+        pAdvertising->setAdvertisementData(advData);
+
+        if (!pAdvertising->isAdvertising()) {
+            pAdvertising->start();
+        } else {
+            pAdvertising->refreshAdvertisingData();
+        }
+#else
+        // NimBLE 1.x: No refreshAdvertisingData(); must stop/start to update payload.
+        // setManufacturerData() accepts std::string only.
+        if (pAdvertising->isAdvertising()) {
+            pAdvertising->stop();
+        }
+        std::string mfr((const char*)&pkt, sizeof(pkt));
+        NimBLEAdvertisementData advData;
+        advData.setManufacturerData(mfr);
+        pAdvertising->setAdvertisementData(advData);
+        pAdvertising->start();
+#endif
     }
 }
+
+
 
 bool BLEStream::isConnected() const {
     return deviceConnected;

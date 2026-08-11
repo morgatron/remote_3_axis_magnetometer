@@ -170,13 +170,14 @@ void setup() {
 void loop() {
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     static uint32_t lastReceiverOledMs = 0;
-    if (millis() - lastReceiverOledMs >= 500) {
+    if (millis() - lastReceiverOledMs >= 250) {
         lastReceiverOledMs = millis();
         const char* modeNames[] = {"SERIAL", "WIFI", "BOTH"};
         String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "192.168.4.1";
+        uint32_t totalRxCount = bleRxCount + espnowRxCount + udpRxCount + loraRxCount;
         oledDisplay.updateReceiverScreen(
             nodeTracker.getNodeCount(),
-            relayedPacketCount,
+            totalRxCount,
             nodeTracker.getLastRssi(),
             nodeTracker.getLastNodeId(),
             egressIp.c_str(),

@@ -169,8 +169,12 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
     int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
 
 
-    // Always output to USB Serial so debug information and data remain visible
-    Serial.print(line);
+    // Non-blocking Serial output (prevents USB CDC buffer stalls when host monitor is not attached)
+    if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
+        if (Serial.availableForWrite() >= len) {
+            Serial.print(line);
+        }
+    }
 
     if ((outputMode == MODE_WIFI || outputMode == MODE_BOTH) && wifiConnected) {
         if (udpBatchLen + len >= sizeof(udpBatchBuf) - 1) {
@@ -216,9 +220,10 @@ void adcSamplingTask(void *pvParameters) {
                 sensor->readAndPushSample();
             }
         } else {
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-            if (streaming && sensor != NULL) {
-                sensor->readAndPushSample();
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(13))) { // ~75 Hz fallback tick
+                if (streaming && sensor != NULL) {
+                    sensor->readAndPushSample();
+                }
             }
         }
     }
@@ -456,14 +461,14 @@ void loop() {
                 sendOutputSample(ts, x, y, z, status);
             } else {
                 static float sumX = 0, sumY = 0, sumZ = 0;
-                static uint16_t sampleCounter = 0;
+                static uint16_t decimationCounter = 0;
 
                 sumX += x;
                 sumY += y;
                 sumZ += z;
-                sampleCounter++;
+                decimationCounter++;
 
-                if (sampleCounter >= decimationFactor) {
+                if (decimationCounter >= decimationFactor) {
                     float avgX = sumX / (float)decimationFactor;
                     float avgY = sumY / (float)decimationFactor;
                     float avgZ = sumZ / (float)decimationFactor;
@@ -471,7 +476,7 @@ void loop() {
                     sumX = 0;
                     sumY = 0;
                     sumZ = 0;
-                    sampleCounter = 0;
+                    decimationCounter = 0;
 
                     sendOutputSample(ts, avgX, avgY, avgZ, status);
                 }
