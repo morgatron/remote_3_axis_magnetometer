@@ -20,9 +20,7 @@ public:
             WiFi.mode(WIFI_STA);
         }
         
-        esp_wifi_set_promiscuous(true);
-        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-        esp_wifi_set_promiscuous(false);
+        // Initialize ESP-NOW on active WiFi mode/channel
 
         if (esp_now_init() != ESP_OK) {
             Serial.println(F("[ESP-NOW ERROR] Failed to initialize ESP-NOW protocol!"));

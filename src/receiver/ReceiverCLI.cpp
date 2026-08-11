@@ -13,6 +13,7 @@ extern String targetServerIP;
 extern uint16_t targetServerPort;
 extern uint8_t espNowChannel;
 extern bool wifiRelayConnected;
+extern String apSSID;
 extern NodeTracker nodeTracker;
 
 ReceiverCLI::ReceiverCLI(SaveCallback saveCb) : _saveCallback(saveCb) {
@@ -103,31 +104,46 @@ void ReceiverCLI::handleCommand(const String &cmd) {
     } else if (upper.startsWith("WIFI ")) {
         String args = cmd.substring(5);
         args.trim();
-        int firstQuote = args.indexOf('"');
-        int secondQuote = args.indexOf('"', firstQuote + 1);
-        if (firstQuote >= 0 && secondQuote > firstQuote) {
-            wifiSSID = args.substring(firstQuote + 1, secondQuote);
-            wifiPass = args.substring(secondQuote + 1);
-            wifiPass.trim();
-        } else {
-            int lastSpace = args.lastIndexOf(' ');
-            if (lastSpace > 0) {
-                wifiSSID = args.substring(0, lastSpace);
-                wifiPass = args.substring(lastSpace + 1);
-                wifiSSID.trim(); wifiPass.trim();
-            } else {
-                wifiSSID = args;
-                wifiPass = "";
-            }
-        }
-        if (wifiSSID.length() > 0) {
-            Serial.printf("[CLI] Configured WiFi SSID: '%s'\r\n", wifiSSID.c_str());
+        String upperArgs = args;
+        upperArgs.toUpperCase();
+        if (upperArgs == "CLEAR" || upperArgs == "OFF") {
+            wifiSSID = "";
+            wifiPass = "";
             if (_saveCallback) _saveCallback();
-            Serial.println(F("[CLI] Rebooting to apply WiFi connection..."));
-            delay(500);
-            ESP.restart();
+            Serial.println(F("[CLI] External router WiFi credentials cleared. Operating in standalone SoftAP mode."));
+        } else if (upperArgs == "STATUS") {
+            Serial.printf("[CLI] SoftAP Active SSID: '%s' (IP: 192.168.4.1)\r\n", apSSID.c_str());
+            Serial.printf("[CLI] External Router STA Connected: %s\r\n", wifiRelayConnected ? "YES" : "NO");
+            if (wifiRelayConnected) {
+                Serial.printf("  STA IP: %s\r\n", WiFi.localIP().toString().c_str());
+            }
         } else {
-            Serial.println(F("[CLI ERROR] Usage: WIFI \"<ssid>\" <password> or WIFI <ssid> <password>"));
+            int firstQuote = args.indexOf('"');
+            int secondQuote = args.indexOf('"', firstQuote + 1);
+            if (firstQuote >= 0 && secondQuote > firstQuote) {
+                wifiSSID = args.substring(firstQuote + 1, secondQuote);
+                wifiPass = args.substring(secondQuote + 1);
+                wifiPass.trim();
+            } else {
+                int lastSpace = args.lastIndexOf(' ');
+                if (lastSpace > 0) {
+                    wifiSSID = args.substring(0, lastSpace);
+                    wifiPass = args.substring(lastSpace + 1);
+                    wifiSSID.trim(); wifiPass.trim();
+                } else {
+                    wifiSSID = args;
+                    wifiPass = "";
+                }
+            }
+            if (wifiSSID.length() > 0) {
+                Serial.printf("[CLI] Configured External WiFi SSID: '%s'\r\n", wifiSSID.c_str());
+                if (_saveCallback) _saveCallback();
+                Serial.println(F("[CLI] Rebooting to apply WiFi connection..."));
+                delay(500);
+                ESP.restart();
+            } else {
+                Serial.println(F("[CLI ERROR] Usage: WIFI \"<ssid>\" <password> or WIFI CLEAR"));
+            }
         }
     } else if (upper.startsWith("TARGET ")) {
         String args = cmd.substring(7);

@@ -78,7 +78,34 @@ pio device monitor -b 921600
 
 ---
 
-## 4. Supported Radio Protocols
+## 4. Standalone Field Access Point (SoftAP) Architecture
+
+The system supports **routerless field operation** using the Gateway Receiver's built-in Access Point:
+
+```
++------------------------------------+        Direct Wi-Fi UDP        +-----------------------------------+
+|     Remote Field Sensor Node       |  ----------------------------> |      Gateway Receiver Node        |
+|  SSID: MAG_GATEWAY_XXXX            |      (Port 9876 @ 1 Hz)        |  SoftAP IP:  192.168.4.1          |
+|  Assigned IP: 192.168.4.2           |                                |  SSID:       MAG_GATEWAY_XXXX    |
+|  Target IP:   192.168.4.1          |                                |  Mode:       WIFI_AP_STA         |
++------------------------------------+                                +-----------------------------------+
+                                                                                        |
+                                                                             USB Serial | (or External STA)
+                                                                                        v
+                                                                      +-----------------------------------+
+                                                                      |  Edge Relay / Central Data Server |
+                                                                      +-----------------------------------+
+```
+
+- **Routerless Field SoftAP**: On boot, the Gateway Receiver launches a 2.4GHz WPA2 Access Point (`MAG_GATEWAY_XXXX`, Password: `magnetometer123`) on `192.168.4.1` (Channel 1). Remote sensor nodes connect directly to the Gateway without requiring an external 3rd-party Wi-Fi router or cellular hotspot.
+- **Hybrid AP+STA Mode**: The Gateway Receiver runs in dual `WIFI_AP_STA` mode. It serves as the local Access Point for field sensors while maintaining an optional STA link to an external router (if configured via `WIFI "SSID" Pass`) for central server egress.
+- **Standalone CLI Control**:
+  - `WIFI CLEAR` / `WIFI OFF` (on Gateway): Clears external router credentials and locks the Gateway into standalone field SoftAP mode.
+  - `WIFI STATUS` (on Gateway): Prints active SoftAP SSID (`MAG_GATEWAY_XXXX`), SoftAP IP (`192.168.4.1`), and external STA connection status.
+
+---
+
+## 5. Supported Radio Protocols
 
 1. **Sub-GHz LoRa (Semtech SX1262)**:
    - Range: 2–10+ km (sub-GHz 868 / 915 MHz).
@@ -88,5 +115,5 @@ pio device monitor -b 921600
    - Minimal power consumption for battery nodes.
 3. **Bluetooth 5.3 LE / Coded PHY**:
    - Long Range (Coded PHY S=8) advertisement beacons & Nordic UART Service (NUS).
-4. **WiFi UDP**:
-   - Direct UDP packet streaming on port 9876 over local Wi-Fi networks.
+4. **WiFi UDP (SoftAP / Router STA)**:
+   - Direct UDP packet streaming on port 9876 over local Field SoftAP (`192.168.4.1`) or infrastructure Wi-Fi networks.

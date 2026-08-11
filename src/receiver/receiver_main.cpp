@@ -57,26 +57,58 @@ void loadReceiverSettings() {
     prefs.end();
 }
 
+String apSSID = "";
+String apPass = "magnetometer123";
+
+void setupSoftAP() {
+    WiFi.mode(WIFI_AP_STA);
+    delay(100);
+
+    uint8_t mac[6];
+    WiFi.softAPmacAddress(mac);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "MAG_GATEWAY_%02X%02X", mac[4], mac[5]);
+    apSSID = String(buf);
+    IPAddress apIP(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    WiFi.softAPConfig(apIP, gateway, subnet);
+    bool apSuccess = WiFi.softAP(apSSID.c_str(), apPass.c_str(), 1, 0, 8);
+
+    if (apSuccess) {
+        Serial.println(F("\r\n========================================================="));
+        Serial.printf(" [SOFTAP CREATED] Receiver Field Access Point Active!\r\n");
+        Serial.printf("   SSID:     %s\r\n", apSSID.c_str());
+        Serial.printf("   Password: %s\r\n", apPass.c_str());
+        Serial.printf("   AP IP:    192.168.4.1\r\n");
+        Serial.printf("   Channel:  1\r\n");
+        Serial.println(F("=========================================================\r\n"));
+    } else {
+        Serial.println(F("[SOFTAP ERROR] Failed to create SoftAP!"));
+    }
+}
+
 void connectEgressWiFi() {
+    setupSoftAP();
+
     if (wifiSSID.length() > 0) {
-        Serial.printf("[WIFI RELAY] Connecting to Egress Router: '%s'...\r\n", wifiSSID.c_str());
-        WiFi.mode(WIFI_AP_STA); // Hybrid AP+STA allows concurrent ESP-NOW & Router STA
+        Serial.printf("[WIFI RELAY] Connecting to External Egress Router: '%s'...\r\n", wifiSSID.c_str());
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
 
         unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - start < 10000)) {
+        while (WiFi.status() != WL_CONNECTED && (millis() - start < 8000)) {
             delay(500);
             Serial.print(".");
         }
 
         if (WiFi.status() == WL_CONNECTED) {
             wifiRelayConnected = true;
-            Serial.println(F("\r\n[WIFI RELAY SUCCESS] Connected to network!"));
-            Serial.print(F("  Local IP:   ")); Serial.println(WiFi.localIP());
-            Serial.print(F("  RSSI:       ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
+            Serial.println(F("\r\n[WIFI RELAY SUCCESS] Connected to External Router!"));
+            Serial.print(F("  Router Local IP: ")); Serial.println(WiFi.localIP());
+            Serial.print(F("  RSSI:            ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
         } else {
             wifiRelayConnected = false;
-            Serial.println(F("\r\n[WIFI RELAY NOTICE] Network connection timed out. Falling back to local reception."));
+            Serial.println(F("\r\n[WIFI RELAY NOTICE] External Router not reachable. Operating in standalone SoftAP mode."));
         }
     }
 }
@@ -118,10 +150,8 @@ void setup() {
     // 5. Initialize ESP-NOW Receiver
     ESPNowReceiver::begin(espNowChannel);
 
-    // 6. Initialize WiFi UDP Listener
-    if (wifiRelayConnected) {
-        UDPReceiver::begin(targetServerPort);
-    }
+    // 6. Initialize WiFi UDP Listener (SoftAP & Router STA)
+    UDPReceiver::begin(targetServerPort);
 
     // 7. Initialize BLE / BLE Coded PHY Receiver Scanner
     BLEReceiver::begin();
@@ -143,7 +173,7 @@ void loop() {
     if (millis() - lastReceiverOledMs >= 500) {
         lastReceiverOledMs = millis();
         const char* modeNames[] = {"SERIAL", "WIFI", "BOTH"};
-        String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "USB Serial";
+        String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "192.168.4.1";
         oledDisplay.updateReceiverScreen(
             nodeTracker.getNodeCount(),
             relayedPacketCount,
@@ -158,10 +188,8 @@ void loop() {
     // Process serial CLI commands
     receiverCLI.process();
 
-    // Process incoming UDP packets if connected to WiFi network
-    if (wifiRelayConnected) {
-        UDPReceiver::handlePackets();
-    }
+    // Process incoming UDP packets from SoftAP and Router STA
+    UDPReceiver::handlePackets();
 
     delay(2);
 }

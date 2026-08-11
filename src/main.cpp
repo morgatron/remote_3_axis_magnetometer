@@ -77,6 +77,8 @@ void connectWiFi() {
         Serial.print(wifiSSID);
         Serial.println("'...");
         
+        WiFi.disconnect(true);
+        delay(100);
         WiFi.mode(WIFI_STA);
         WiFi.setTxPower(WIFI_POWER_15dBm); // Cap TX power to 15dBm to prevent 3.3V power supply dips
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());

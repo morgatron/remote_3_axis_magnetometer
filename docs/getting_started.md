@@ -78,3 +78,16 @@ Open the Receiver Gateway CLI (`pio device monitor -b 921600`) and type:
 NODES
 ```
 You will see your active remote field sensor listed with MAC address, signal RSSI (dBm), battery voltage ($V_{bat}$), and total packet count.
+
+---
+
+## 4. Standalone Field Access Point (SoftAP) Provisioning
+
+For outdoor / field deployments without an external Wi-Fi router:
+
+1. **Gateway Receiver SoftAP**: Automatically broadcasts `MAG_GATEWAY_XXXX` (Password: `magnetometer123`) on `192.168.4.1`.
+2. **Provisioning Command**:
+   ```bash
+   python provision_node.py --port /dev/ttyACM0 --sensor MOCK --mode BOTH --ssid "MAG_GATEWAY_XXXX" --pass magnetometer123 --target 192.168.4.1
+   ```
+3. **Automatic Reconnect**: The sensor node associates directly with the Gateway's SoftAP (`192.168.4.2`), streaming 1 Hz telemetry to `192.168.4.1:9876`.
