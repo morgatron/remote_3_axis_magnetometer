@@ -2,6 +2,7 @@
 #define BLE_STREAM_H
 
 #include <Arduino.h>
+#include "TelemetryPacket.h"
 
 /**
  * @brief Lightweight Bluetooth 5.0 LE / Long Range (Coded PHY) Streaming Driver.
@@ -17,10 +18,16 @@ public:
     void begin(const String &deviceName);
     
     /**
-     * @brief Transmit data notification to connected BLE Central.
+     * @brief Transmit data notification to connected BLE Central and broadcast in Manufacturer Data.
      * @param data Null-terminated CSV line string.
      */
     void notify(const char *data);
+
+    /**
+     * @brief Broadcast binary telemetry packet via BLE Manufacturer Data.
+     * @param pkt SensorBinaryPacket struct.
+     */
+    void notifyBinary(const SensorBinaryPacket &pkt);
     
     /**
      * @brief Check if a central client is connected.
@@ -35,3 +42,4 @@ private:
 extern BLEStream bleStream;
 
 #endif // BLE_STREAM_H
+

@@ -43,9 +43,9 @@ class BLEReceiverCallbacks: public NimBLEScanCallbacks {
             if (pkt.device_id[0] != '\0') {
                 strncpy(item.node_id, pkt.device_id, sizeof(item.node_id) - 1);
             }
-            item.timestamp_us = pkt.timestamp_us;
+            item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
             item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
-            item.status = pkt.status; item.temp = pkt.temp; item.vbat = pkt.vbat_mv / 1000.0f;
+            item.status = pkt.status; item.temp = 0.0f; item.vbat = 0.0f;
 
             snprintf(item.line, sizeof(item.line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
                      item.node_id, (unsigned long long)item.timestamp_us,
@@ -114,9 +114,9 @@ class BLEReceiverCallbacks: public NimBLEAdvertisedDeviceCallbacks {
             if (pkt.device_id[0] != '\0') {
                 strncpy(item.node_id, pkt.device_id, sizeof(item.node_id) - 1);
             }
-            item.timestamp_us = pkt.timestamp_us;
+            item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
             item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
-            item.status = pkt.status; item.temp = pkt.temp; item.vbat = pkt.vbat_mv / 1000.0f;
+            item.status = pkt.status; item.temp = 0.0f; item.vbat = 0.0f;
 
             snprintf(item.line, sizeof(item.line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
                      item.node_id, (unsigned long long)item.timestamp_us,
@@ -160,10 +160,11 @@ public:
         NimBLEDevice::init("ESP32_Receiver_Node");
         NimBLEScan* pScan = NimBLEDevice::getScan();
 #if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
-        pScan->setScanCallbacks(new BLEReceiverCallbacks());
+        pScan->setScanCallbacks(new BLEReceiverCallbacks(), true);
 #else
         pScan->setAdvertisedDeviceCallbacks(new BLEReceiverCallbacks(), true);
 #endif
+        pScan->setDuplicateFilter(false);
         pScan->setActiveScan(true);
         pScan->setInterval(100);
         pScan->setWindow(99);

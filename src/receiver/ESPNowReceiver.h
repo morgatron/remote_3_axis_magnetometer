@@ -71,13 +71,13 @@ private:
                 snprintf(item.node_id, sizeof(item.node_id), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
             }
 
-            item.timestamp_us = pkt.timestamp_us;
+            item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
             item.x = pkt.x_nT;
             item.y = pkt.y_nT;
             item.z = pkt.z_nT;
             item.status = pkt.status;
-            item.temp = pkt.temp;
-            item.vbat = pkt.vbat_mv / 1000.0f;
+            item.temp = 0.0f;
+            item.vbat = 0.0f;
 
             snprintf(item.line, sizeof(item.line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
                      item.node_id, (unsigned long long)item.timestamp_us,

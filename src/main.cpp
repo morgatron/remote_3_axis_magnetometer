@@ -186,6 +186,15 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
     }
 
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
+        SensorBinaryPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
+        pkt.timestamp_ms = (uint32_t)(ts / 1000ULL);
+        pkt.x_nT = x;
+        pkt.y_nT = y;
+        pkt.z_nT = z;
+        pkt.status = (uint16_t)(status & 0xFFFF);
+        bleStream.notifyBinary(pkt);
         bleStream.notify(line);
     }
 }

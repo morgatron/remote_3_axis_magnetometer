@@ -55,6 +55,8 @@ void BLEStream::begin(const String &deviceName) {
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setMinInterval(32); // 20ms advertising interval
+    pAdvertising->setMaxInterval(48); // 30ms advertising interval
 #if defined(NIMBLE_CPP_VERSION) && NIMBLE_CPP_VERSION >= 20000
     pAdvertising->enableScanResponse(true);
 #else
@@ -65,9 +67,27 @@ void BLEStream::begin(const String &deviceName) {
 }
 
 void BLEStream::notify(const char *data) {
-    if (_initialized && deviceConnected && pTxCharacteristic != nullptr) {
+    if (!_initialized) return;
+
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    if (pAdvertising) {
+        pAdvertising->setManufacturerData(std::string(data));
+        pAdvertising->refreshAdvertisingData();
+    }
+
+    if (deviceConnected && pTxCharacteristic != nullptr) {
         pTxCharacteristic->setValue((const uint8_t*)data, strlen(data));
         pTxCharacteristic->notify();
+    }
+}
+
+void BLEStream::notifyBinary(const SensorBinaryPacket &pkt) {
+    if (!_initialized) return;
+
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    if (pAdvertising) {
+        pAdvertising->setManufacturerData((const uint8_t*)&pkt, sizeof(pkt));
+        pAdvertising->refreshAdvertisingData();
     }
 }
 
@@ -76,3 +96,4 @@ bool BLEStream::isConnected() const {
 }
 
 BLEStream bleStream;
+
