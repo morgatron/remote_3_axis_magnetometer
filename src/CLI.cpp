@@ -1,6 +1,7 @@
 #include "CLI.h"
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
+#include "MockSensor.h"
 #include "BLEStream.h"
 #include <WiFi.h>
 
@@ -83,13 +84,11 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("SENSOR ")) {
         String sub = cmd.substring(7);
         sub.trim();
-        sub.toUpperCase();
         extern uint8_t sensorTypeConfig;
         extern Magnetometer* sensor;
         extern RM3100 sensorRM3100;
         extern FLC100_ADS131 sensorFLC100;
-        extern void saveSettings();
-
+        extern MockSensor sensorMock;
         uint8_t newType = sensorTypeConfig;
         if (sub == "RM3100" || sub == "0") {
             newType = 0;
@@ -99,6 +98,10 @@ void CLI::handleCommand(String cmd) {
             newType = 1;
             sensor = &sensorFLC100;
             _current_rate = 0x06; // ADS131 default rate 1 kSPS
+        } else if (sub == "MOCK" || sub == "2") {
+            newType = 2;
+            sensor = &sensorMock;
+            _current_rate = 0x95; // Synthetic Mock default rate 75 Hz
         }
         sensorTypeConfig = newType;
         _sensor = sensor;
@@ -107,7 +110,7 @@ void CLI::handleCommand(String cmd) {
         Serial.println(_sensor->getSensorName());
 
         if (!sensor->begin()) {
-            Serial.println("Warning: Selected sensor failed SPI initialization!");
+            Serial.println("Warning: Selected sensor failed initialization!");
         } else {
             sensor->setContinuousMode(true, _current_rate);
             Serial.println("Sensor initialized and continuous mode started.");

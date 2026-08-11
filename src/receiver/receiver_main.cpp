@@ -10,6 +10,7 @@
 #include "LoRaReceiver.h"
 #include "RelayEgress.h"
 #include "ReceiverCLI.h"
+#include "OLEDDisplay.h"
 
 // Global Receiver State Variables
 QueueHandle_t telemetryQueue = NULL;
@@ -59,8 +60,6 @@ void loadReceiverSettings() {
 void connectEgressWiFi() {
     if (wifiSSID.length() > 0) {
         Serial.printf("[WIFI RELAY] Connecting to Egress Router: '%s'...\r\n", wifiSSID.c_str());
-        WiFi.disconnect(true);
-        delay(100);
         WiFi.mode(WIFI_AP_STA); // Hybrid AP+STA allows concurrent ESP-NOW & Router STA
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
 
@@ -132,9 +131,30 @@ void setup() {
 
     // 9. Start Interactive CLI
     receiverCLI.begin();
+
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    oledDisplay.begin(17, 18, 21, 36);
+#endif
 }
 
 void loop() {
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    static uint32_t lastReceiverOledMs = 0;
+    if (millis() - lastReceiverOledMs >= 500) {
+        lastReceiverOledMs = millis();
+        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH"};
+        String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "USB Serial";
+        oledDisplay.updateReceiverScreen(
+            nodeTracker.getNodeCount(),
+            relayedPacketCount,
+            nodeTracker.getLastRssi(),
+            nodeTracker.getLastNodeId(),
+            egressIp.c_str(),
+            modeNames[egressModeConfig % 3]
+        );
+    }
+#endif
+
     // Process serial CLI commands
     receiverCLI.process();
 

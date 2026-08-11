@@ -2,6 +2,7 @@
 #define NODE_TRACKER_H
 
 #include <Arduino.h>
+#include <WiFi.h>
 
 #define MAX_TRACKED_NODES 64
 
@@ -104,6 +105,32 @@ public:
     }
 
     int getNodeCount() const { return _nodeCount; }
+
+    int getLastRssi() const {
+        if (_nodeCount == 0) return (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+        int latestIdx = 0;
+        uint32_t latestTime = 0;
+        for (int i = 0; i < _nodeCount; i++) {
+            if (_nodes[i].active && _nodes[i].last_seen_ms >= latestTime) {
+                latestTime = _nodes[i].last_seen_ms;
+                latestIdx = i;
+            }
+        }
+        return _nodes[latestIdx].rssi;
+    }
+
+    const char* getLastNodeId() const {
+        if (_nodeCount == 0) return "NONE";
+        int latestIdx = 0;
+        uint32_t latestTime = 0;
+        for (int i = 0; i < _nodeCount; i++) {
+            if (_nodes[i].active && _nodes[i].last_seen_ms >= latestTime) {
+                latestTime = _nodes[i].last_seen_ms;
+                latestIdx = i;
+            }
+        }
+        return _nodes[latestIdx].node_id;
+    }
 
 private:
     RemoteNodeInfo _nodes[MAX_TRACKED_NODES];

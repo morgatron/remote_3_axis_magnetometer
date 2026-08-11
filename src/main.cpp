@@ -6,11 +6,14 @@
 
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
+#include "MockSensor.h"
+#include "OLEDDisplay.h"
 
 RM3100 sensorRM3100(CS_PIN, DRDY_PIN);
 FLC100_ADS131 sensorFLC100(CS_PIN, DRDY_PIN, RESET_PIN);
+MockSensor sensorMock;
 
-uint8_t sensorTypeConfig = 1; // 0 = RM3100, 1 = FLC100-ADS131E08
+uint8_t sensorTypeConfig = 1; // 0 = RM3100, 1 = FLC100-ADS131E08, 2 = Mock Sensor
 const uint8_t DEFAULT_RATE = 0x95;
 
 #include "CLI.h"
@@ -74,8 +77,6 @@ void connectWiFi() {
         Serial.print(wifiSSID);
         Serial.println("'...");
         
-        WiFi.disconnect(true);
-        delay(100);
         WiFi.mode(WIFI_STA);
         WiFi.setTxPower(WIFI_POWER_15dBm); // Cap TX power to 15dBm to prevent 3.3V power supply dips
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
@@ -136,12 +137,15 @@ void loadSettings() {
 
     if (sensorTypeConfig == 0) {
         sensor = &sensorRM3100;
-    } else {
+    } else if (sensorTypeConfig == 1) {
         sensor = &sensorFLC100;
+    } else if (sensorTypeConfig == 2) {
+        sensor = &sensorMock;
     }
 
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
         bleStream.begin(deviceID);
+        delay(150); // Allow NimBLE BTDM controller memory allocation to complete cleanly before Wi-Fi init
     }
 
     if (outputMode == MODE_WIFI || outputMode == MODE_BOTH) {
@@ -153,7 +157,12 @@ void loadSettings() {
     }
 }
 
+volatile uint32_t sampleCounter = 0;
+float lastBmag_nT = 0.0f;
+
 void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
+    sampleCounter++;
+    lastBmag_nT = sqrtf(x * x + y * y + z * z);
     char line[160];
     int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
 
@@ -190,9 +199,16 @@ TaskHandle_t adcTaskHandle = NULL;
 
 void adcSamplingTask(void *pvParameters) {
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (streaming && sensor != NULL) {
-            sensor->readAndPushSample();
+        if (sensorTypeConfig == 2) {
+            vTaskDelay(pdMS_TO_TICKS(13)); // ~75 Hz tick for MockSensor
+            if (streaming && sensor != NULL) {
+                sensor->readAndPushSample();
+            }
+        } else {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            if (streaming && sensor != NULL) {
+                sensor->readAndPushSample();
+            }
         }
     }
 }
@@ -245,6 +261,13 @@ void recoverSensor() {
 
 
 void setup() {
+    initBoardPower();
+
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    oledDisplay.begin(17, 18, 21, 36);
+    oledDisplay.updateSensorScreen("BOOTING...", "INITIALIZING", 0.0f, 0, 3.70f, "INIT");
+#endif
+
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
     Serial.setTxTimeoutMs(0);
 #endif
@@ -257,57 +280,62 @@ void setup() {
     Serial.println(" FIRMWARE: Remote 3-Axis Magnetometer Acquisition System");
     Serial.println("==================================================");
 
-    initBoardPower();
-
     // Wait for internal oscillator and power-on-reset stabilization
     delay(250);
     
     loadSettings();
 
-    Serial.println("Initializing SPI Bus...");
-    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-    pinMode(DRDY_PIN, INPUT_PULLUP);
+    if (sensorTypeConfig == 2) {
+        sensor = &sensorMock;
+        sensor->begin();
+        Serial.println("[MOCK MODE] Explicit Synthetic Sensor Mode Active (Range Testing)");
+        Serial.println("Status Header: 0x80MOCK");
+    } else {
+        Serial.println("Initializing SPI Bus...");
+        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
+        pinMode(DRDY_PIN, INPUT_PULLUP);
 
-    Serial.println("Auto-probing sensor hardware...");
-    bool found = false;
-    
-    // Probe RM3100 first (RM3100 REVID register 0x36 MUST equal 0x22)
-    if (sensorRM3100.begin()) {
-        sensor = &sensorRM3100;
-        sensorTypeConfig = 0;
-        found = true;
-        Serial.println("Auto-detected sensor: RM3100");
-    } else if (sensorFLC100.begin()) {
-        sensor = &sensorFLC100;
-        sensorTypeConfig = 1;
-        found = true;
-        Serial.println("Auto-detected sensor: FLC100-ADS131E08");
-    }
-
-    if (found) {
-        saveSettings();
-    }
-
-    while (!found) {
-        delay(1000);
-        Serial.print("Failed to find sensor! Retrying... (Send 'SENSOR RM3100' or 'SENSOR FLC100')\r\n");
-        serialCLI.update();
-        if (sensor->begin()) {
+        Serial.println("Auto-probing physical sensor hardware...");
+        bool found = false;
+        
+        if (sensorRM3100.begin()) {
+            sensor = &sensorRM3100;
+            sensorTypeConfig = 0;
             found = true;
+            Serial.println("Auto-detected sensor: RM3100");
+        } else if (sensorFLC100.begin()) {
+            sensor = &sensorFLC100;
+            sensorTypeConfig = 1;
+            found = true;
+            Serial.println("Auto-detected sensor: FLC100-ADS131E08");
         }
+
+        if (found) {
+            saveSettings();
+        }
+
+        while (!found) {
+            delay(1000);
+            Serial.print("[SENSOR ERROR] Physical sensor hardware probe failed! Check SPI wiring.\r\n");
+            Serial.print("[HINT] Send CLI command 'SENSOR MOCK' to enable synthetic range testing.\r\n");
+            serialCLI.update();
+            if (sensor->begin()) {
+                found = true;
+            }
+        }
+
+        // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
+        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
     }
 
-    // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
-    attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
-
-    Serial.print("Sensor Found: ");
+    Serial.print("Active Sensor: ");
     Serial.println(sensor->getSensorName());
     Serial.println(sensor->getStatusString());
 
     // Sensor specific setup
     if (sensorTypeConfig == 0) {
         static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
-    } else {
+    } else if (sensorTypeConfig == 1) {
         // Set calibration: VREF = 2.4V (standard for 3.3V systems), Sensitivity = 20.0 uV/nT, Gain = 1
         static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
     }
@@ -333,6 +361,22 @@ void setup() {
 }
 
 void loop() {
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    static uint32_t lastOledUpdateMs = 0;
+    if (millis() - lastOledUpdateMs >= 500) {
+        lastOledUpdateMs = millis();
+        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH", "BLE"};
+        oledDisplay.updateSensorScreen(
+            deviceID.c_str(),
+            sensor ? sensor->getSensorName().c_str() : "NONE",
+            lastBmag_nT,
+            sampleCounter,
+            3.70f,
+            modeNames[outputMode % 4]
+        );
+    }
+#endif
+
     // Non-blocking LED blink
 #if LED_PIN >= 0
     static unsigned long lastBlinkTime = 0;

@@ -1,4 +1,5 @@
 #include "ReceiverCLI.h"
+#include <WiFi.h>
 
 extern volatile uint32_t espnowRxCount;
 extern volatile uint32_t bleRxCount;
@@ -60,7 +61,7 @@ void ReceiverCLI::printStatus() {
     Serial.printf(" Uptime:               %.1f sec\r\n", millis() / 1000.0f);
     Serial.printf(" Egress Mode:          %s\r\n", 
         (egressModeConfig == 0) ? "SERIAL (USB CDC)" : (egressModeConfig == 1) ? "WIFI" : "BOTH (Serial + WiFi)");
-    Serial.printf(" WiFi Router:          %s (%s)\r\n", wifiSSID.c_str(), wifiRelayConnected ? "CONNECTED" : "DISCONNECTED");
+    Serial.printf(" WiFi Router:          %s (%s, Local IP: %s)\r\n", wifiSSID.c_str(), wifiRelayConnected ? "CONNECTED" : "DISCONNECTED", WiFi.localIP().toString().c_str());
     Serial.printf(" Target Server IP:     %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
     Serial.printf(" ESP-NOW Channel:      %d\r\n", espNowChannel);
     Serial.println(F("------------------------------------------"));
@@ -100,18 +101,33 @@ void ReceiverCLI::handleCommand(const String &cmd) {
         }
         if (_saveCallback) _saveCallback();
     } else if (upper.startsWith("WIFI ")) {
-        int spaceIdx = cmd.indexOf(' ', 5);
-        if (spaceIdx > 0) {
-            wifiSSID = cmd.substring(5, spaceIdx);
-            wifiPass = cmd.substring(spaceIdx + 1);
-            wifiSSID.trim(); wifiPass.trim();
+        String args = cmd.substring(5);
+        args.trim();
+        int firstQuote = args.indexOf('"');
+        int secondQuote = args.indexOf('"', firstQuote + 1);
+        if (firstQuote >= 0 && secondQuote > firstQuote) {
+            wifiSSID = args.substring(firstQuote + 1, secondQuote);
+            wifiPass = args.substring(secondQuote + 1);
+            wifiPass.trim();
+        } else {
+            int lastSpace = args.lastIndexOf(' ');
+            if (lastSpace > 0) {
+                wifiSSID = args.substring(0, lastSpace);
+                wifiPass = args.substring(lastSpace + 1);
+                wifiSSID.trim(); wifiPass.trim();
+            } else {
+                wifiSSID = args;
+                wifiPass = "";
+            }
+        }
+        if (wifiSSID.length() > 0) {
             Serial.printf("[CLI] Configured WiFi SSID: '%s'\r\n", wifiSSID.c_str());
             if (_saveCallback) _saveCallback();
             Serial.println(F("[CLI] Rebooting to apply WiFi connection..."));
             delay(500);
             ESP.restart();
         } else {
-            Serial.println(F("[CLI ERROR] Usage: WIFI <ssid> <password>"));
+            Serial.println(F("[CLI ERROR] Usage: WIFI \"<ssid>\" <password> or WIFI <ssid> <password>"));
         }
     } else if (upper.startsWith("TARGET ")) {
         String args = cmd.substring(7);

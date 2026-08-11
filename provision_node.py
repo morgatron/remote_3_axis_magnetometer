@@ -130,7 +130,7 @@ def provision(args):
     target_ip = args.target if args.target is not None else cfg["wifi"]["target_ip"]
 
     # Profile selection
-    if sensor_type == "RM3100":
+    if sensor_type in ["RM3100", "MOCK"]:
         rate = args.rate or cfg["rm3100"]["rate"]
         cycle_count = args.cycle if args.cycle is not None else cfg["rm3100"]["cycle_count"]
         downsample = args.downsample if args.downsample is not None else cfg["rm3100"]["downsample"]
@@ -227,7 +227,7 @@ def main():
     )
     parser.add_argument("--port", type=str, help="Serial port (e.g. /dev/ttyACM0 or /dev/ttyUSB0)")
     parser.add_argument("--baud", type=int, help="Baud rate (default: 921600)")
-    parser.add_argument("--sensor", type=str, choices=["RM3100", "FLC100"], help="Sensor model (RM3100 or FLC100)")
+    parser.add_argument("--sensor", type=str, choices=["RM3100", "FLC100", "MOCK"], help="Sensor model (RM3100, FLC100, or MOCK)")
     parser.add_argument("--ssid", type=str, help="WiFi SSID network name")
     parser.add_argument("--pass", dest="pass_word", type=str, help="WiFi network WPA2 password")
     parser.add_argument("--target", type=str, help="Target UDP server IP (default: 255.255.255.255 broadcast)")

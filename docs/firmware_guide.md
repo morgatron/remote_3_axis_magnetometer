@@ -71,7 +71,7 @@ pio device monitor -b 921600
 | `HELP` / `STATUS` | Query Device ID, sensor model, rate code, and hardware status | `STATUS` |
 | `STREAM ON` / `OFF` | Enable / disable continuous telemetry stream | `STREAM ON` |
 | `ID <name>` | Configure custom Device ID / Node name (saves to NVS Flash) | `ID NODE_ALPHA` |
-| `SENSOR <FLC100\|RM3100>` | Force active sensor model and reboot | `SENSOR RM3100` |
+| `SENSOR <RM3100\|FLC100\|MOCK>` | Set active sensor driver (`MOCK` = Range testing with synthetic telemetry and status `0x80MOCK`) | `SENSOR MOCK` |
 | `RATE <hex>` | Set rate code (`0x95` = 75 Hz, `0x94` = 150 Hz, `0x93` = 300 Hz, `0x92` = 600 Hz) | `RATE 95` |
 | `CYCLE <int>` | Set RM3100 oscillation cycle count | `CYCLE 200` |
 | `MODE <SERIAL\|WIFI\|BLE\|BOTH>` | Route stream to USB Serial, WiFi UDP, BLE Long Range, or both | `MODE BOTH` |

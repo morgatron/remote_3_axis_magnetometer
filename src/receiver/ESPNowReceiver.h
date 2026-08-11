@@ -15,9 +15,11 @@ extern volatile uint32_t espnowRxCount;
 class ESPNowReceiver {
 public:
     static void begin(uint8_t channel = 1) {
-        WiFi.mode(WIFI_STA);
+        // Set WiFi channel for ESP-NOW listener without resetting WiFi mode if already in WIFI_AP_STA or WIFI_STA
+        if (WiFi.getMode() == WIFI_OFF) {
+            WiFi.mode(WIFI_STA);
+        }
         
-        // Set WiFi channel for ESP-NOW listener
         esp_wifi_set_promiscuous(true);
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
         esp_wifi_set_promiscuous(false);
