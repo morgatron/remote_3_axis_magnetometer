@@ -192,6 +192,14 @@ void OLEDDisplay::update() {
     sendData(_buffer, sizeof(_buffer));
 }
 
+void OLEDDisplay::displayOff() {
+    if (_initialized) sendCommand(0xAE);
+}
+
+void OLEDDisplay::displayOn() {
+    if (_initialized) sendCommand(0xAF);
+}
+
 void OLEDDisplay::drawChar(uint8_t x, uint8_t page, char c) {
     if (x > 122 || page > 7) return;
     if (c < 32 || c > 122) c = '?';

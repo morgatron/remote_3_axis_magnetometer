@@ -34,4 +34,20 @@ typedef struct __attribute__((packed)) {
     uint16_t status;         // Hardware status word
 } SensorBinaryPacket;
 
+typedef struct __attribute__((packed)) {
+    int32_t x_nT;
+    int32_t y_nT;
+    int32_t z_nT;
+} CompactSample;
+
+typedef struct __attribute__((packed)) {
+    char          device_id[8];         // Null-terminated identifier (e.g. "NODE_3A8")
+    uint32_t      start_ts_ms;          // Timestamp of first sample in batch
+    uint16_t      sample_interval_ms;   // Time between samples in ms (e.g. 1000 ms = 1 Hz)
+    uint8_t       sample_count;         // Number of samples in batch (up to 10)
+    uint16_t      status;               // Status word
+    uint16_t      vbat_mv;              // Battery voltage in mV
+    CompactSample samples[10];          // Array of up to 10 compact samples (120 bytes)
+} SensorBatchPacket;
+
 #endif // TELEMETRY_PACKET_H

@@ -86,13 +86,48 @@ To support a new board (e.g. ESP32-S3 DevKit or Raspberry Pi Pico 2 W):
 
 | Command | Description |
 | :--- | :--- |
-| `HELP` / `STATUS` | Display CLI help / Query Device ID, sensor model, rate code, and status |
+| `HELP` / `STATUS` | Display CLI help / Query Device ID, sensor model, rate code, BLE batch size, and status |
 | `STREAM ON` / `OFF` | Enable / disable continuous telemetry stream |
 | `ID <name>` | Configure custom Device ID / Node name (saves to NVS Flash) |
-| `SENSOR <FLC100\|RM3100>` | Force active sensor model and reboot |
+| `SENSOR <FLC100\|RM3100\|MOCK>` | Set active sensor model (`MOCK` = synthetic range test telemetry) |
 | `RATE <hex>` | Set rate code (`0x95` = 75 Hz, `0x94` = 150 Hz, `0x93` = 300 Hz, `0x92` = 600 Hz) |
 | `CYCLE <int>` | Set RM3100 oscillation cycle count (e.g. `CYCLE 200`) |
+| `BATCH <1-10>` | Set BLE burst size (`1` = instant 1 Hz, `10` = 10s low-power mode; saved to NVS) |
 | `MODE <SERIAL\|WIFI\|BLE\|BOTH>` | Route stream to USB Serial, WiFi UDP, BLE Long Range, or both |
+
+---
+
+## Low-Power LE Coded PHY Batching & Hardware ACK Architecture (Primary Mode)
+
+> [!IMPORTANT]
+> **Canonical Primary Protocol Constraint**: The **Low-Power Bluetooth 5.0 LE Coded PHY Batching Protocol with Hardware ACKs and Disconnect Ring Buffering** is the canonical primary operational mode for field sensor nodes. Future edits MUST preserve this low-power ACK architecture.
+
+1. **BLE 5.0 LE Coded PHY (Long Range S=8)**:
+   - Extended Advertising using **Coded PHY S=8 (125 kbps)** provides **+12 dB sensitivity gain** (~4x range multiplier over standard BLE) at **+15 dBm Max Power**.
+
+2. **Configurable Batch Bursting (`BATCH <1-10>`)**:
+   - The BLE radio remains **100% OFF for 9.7 seconds** out of every 10 seconds (`BATCH 10`).
+   - At burst time, `pAdvertising->start(0, 30)` powers on the radio for **300 ms** (30 x 10ms units) to broadcast a 139-byte Extended Advertising payload (`SensorBatchPacket`) containing up to 10 compact 3-axis samples over Coded PHY S=8.
+   - **Transmission-Complete Auto-Stop**: When the 300ms burst completes, the `onStopped` hardware callback fires, setting `g_lastBatchAcked = true` and powering **OFF** the radio until the next 10-second window.
+   - **RF Duty Cycle**: Reduces active RF transmission duty cycle to **< 0.5%**, extending battery life to **35–45 days** on a 1000 mAh LiPo.
+
+3. **Hardware `AUX_SCAN_REQ` ACKs & 10-Minute Disconnect Ring Buffer**:
+   - **Zero-Power Hardware ACKs**: Uses native Bluetooth 5.0 `AUX_SCAN_REQ` hardware scan request frames sent by the gateway upon receiving a burst (`onScanRequest` and `onStopped` callbacks).
+   - **10-Minute Offline Buffer**: If the gateway goes out of range or offline, the sensor node retains up to **600 samples (10 Minutes of data)** in SRAM (~7.2 KB).
+   - **Catch-up Flushing**: Once the gateway is back in range, the sensor node receives hardware ACKs and rapidly flushes the backlog in consecutive 300ms bursts until `unackedCount` returns to 0.
+   - **Sensor Reboot Recovery**: Upon sensor reset, uptime timestamps restart near 0 ms. The Receiver `NodeTracker` detects `start_ts_ms < node.last_sample_ts_ms`, resetting `last_batch_start_ts_ms = 0xFFFFFFFF` to accept post-reset bursts continuously without stale timestamp deadlocks.
+   - **Canonical Node Prefix Filtering**: Rejects non-sensor BLE devices by enforcing `NODE_*`, `MOCK_*`, and `MAG_*` device ID prefixes in `isValidBatchPacket` and `isValidSensorPacket`.
+   - **Receiver OLED Telemetry Refresh**: Automatically refreshes `lastOledActivityMs = millis()` whenever valid telemetry packets arrive, keeping the OLED screen awake and updating while telemetry flows.
+
+4. **Dynamic Frequency Scaling (DFS) Power Management**:
+   - Configured with `min_freq = 20MHz`, `max_freq = 160MHz`, and `light_sleep_enable = false`.
+   - **Why Light Sleep was disabled**: Automatic Light Sleep powers down the main 80 MHz APB bus clock and PLL. Re-locking the PLL incurs **1.5–3.0 ms of wake latency**, causing severe `DRDY` interrupt jitter and **sample loss** at 75 Hz sampling.
+   - Keeping the APB clock powered ON (`light_sleep_enable = false`) guarantees **sub-microsecond (< 1 µs) interrupt latency with 0% sample loss**, while DFS throttles idle CPU power to 20 MHz (~3.5 mA system current).
+
+5. **Low-Power Gateway Receiver Optimizations**:
+   - **80 MHz CPU Scaling**: CPU frequency reduced from 240 MHz to **80 MHz** (`setCpuFrequencyMhz(80)`), saving ~28 mA.
+   - **30-Second OLED Auto-Sleep**: Display controller sleeps after 30s of inactivity (~20 mA savings); wakes instantly via the **PRG / USER button (GPIO 0)** or Serial CLI input.
+   - **Smart Wi-Fi Off**: Automatically turns off Wi-Fi radio when operating in USB Serial Egress mode (`MODE SERIAL`), saving ~80 mA.
 
 ---
 
@@ -128,7 +163,9 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 ## Running & Testing
 
 > [!TIP]
-> For a step-by-step minimal testing setup guide (Sensor Node $\rightarrow$ Gateway Node $\rightarrow$ Central Server), see [`TESTING_SETUP.md`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/TESTING_SETUP.md).
+> For step-by-step testing guides:
+> - **Low-Power BLE Coded PHY Mock Testing**: See [`docs/simple_ble_testing_setup.md`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/docs/simple_ble_testing_setup.md).
+> - **Full System Hardware Pipeline Setup**: See [`TESTING_SETUP.md`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/TESTING_SETUP.md).
 
 ### Conda Environment Setup
 ```bash
@@ -164,16 +201,18 @@ python server.py
 
 ### Run Automated Test Suite
 ```bash
-# 1. Math Invariance Unit Test
-python test/test_scaling_math.py
+# 1. Binary Struct Serialization & Math Unit Tests (PC Host)
+python3 -m unittest test/test_batch_serialization.py
+python3 -m unittest test/test_receiver_parser.py
+python3 test/test_scaling_math.py
 
 # 2. Central Server API & Export Test
-python central_service/test_server.py
+python3 central_service/test_server.py
 
-# 3. Receiver Payload & Timestamp Parser Test
-python test/test_receiver_parser.py
+# 3. Standalone Hardware Self-Tests
+python3 test/test_sensor_standalone.py --port /dev/ttyACM1
+python3 test/test_receiver_standalone.py --port /dev/ttyACM0
 
-# 4. Hardware Scaling Invariance Test (Requires connected ESP32)
-python test_cycle_count_invariance.py --port /dev/ttyUSB0
+# 4. End-to-End Multi-Device Integration Test (Sensor + Receiver)
+python3 test/test_integration_sensor_receiver.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0
 ```
-

@@ -2,7 +2,7 @@
 #define BLE_STREAM_H
 
 #include <Arduino.h>
-#include "TelemetryPacket.h"
+#include "../../include/TelemetryPacket.h"
 
 /**
  * @brief Lightweight Bluetooth 5.0 LE / Long Range (Coded PHY) Streaming Driver.
@@ -29,6 +29,27 @@ public:
      */
     void notifyBinary(const SensorBinaryPacket &pkt);
     
+    /**
+     * @brief Broadcast 10-sample batch burst via Extended Advertising Coded PHY.
+     * @param batch SensorBatchPacket struct.
+     */
+    void notifyBatchBinary(const SensorBatchPacket &batch);
+    
+    /**
+     * @brief Check if gateway receiver sent a hardware AUX_SCAN_REQ acknowledgment for the last batch.
+     */
+    bool isBatchAcked() const;
+
+    /**
+     * @brief Reset batch ACK flag before next batch transmission.
+     */
+    void clearBatchAck();
+
+    /**
+     * @brief Stop active BLE advertising instance.
+     */
+    void stopAdvertising();
+
     /**
      * @brief Check if a central client is connected.
      * @return true if connected.

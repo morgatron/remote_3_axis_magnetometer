@@ -56,6 +56,7 @@ def decode_sensor_packet(raw: bytes):
     try:
         device_id_raw, ts_ms, x, y, z, status = struct.unpack(PACKET_FMT, data)
     except struct.error:
+        print("Invalid packetL ", data)
         return None
 
     # Decode device_id (null-terminated ASCII)

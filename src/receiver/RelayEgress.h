@@ -48,6 +48,8 @@ private:
         for (;;) {
             if (xQueueReceive(telemetryQueue, &item, pdMS_TO_TICKS(50)) == pdTRUE) {
                 relayedPacketCount++;
+                extern uint32_t lastOledActivityMs;
+                lastOledActivityMs = millis(); // Refresh OLED screen activity timer on valid packet arrival
 
                 // 1. Serial Egress (USB CDC output to host PC / gateway.py)
                 if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH) {

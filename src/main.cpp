@@ -2,12 +2,30 @@
 #include <SPI.h>
 #include <Preferences.h>
 #include <esp_mac.h>
+#include <esp_pm.h>
 #include "board_config.h"
 
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
 #include "MockSensor.h"
 #include "OLEDDisplay.h"
+
+void configurePowerManagement() {
+#if defined(ESP_PLATFORM)
+    esp_pm_config_t pm_config;
+    memset(&pm_config, 0, sizeof(pm_config));
+    pm_config.max_freq_mhz = 160;
+    pm_config.min_freq_mhz = 20;
+    pm_config.light_sleep_enable = false; // APB clock kept ON to ensure zero DRDY interrupt latency & 0% sample loss
+
+    esp_err_t err = esp_pm_configure(&pm_config);
+    if (err == ESP_OK) {
+        Serial.println(F("[POWER] DFS Enabled (20MHz-160MHz, APB ON, 0% sample loss)."));
+    } else {
+        Serial.printf("[POWER] Power management config info: 0x%X\n", err);
+    }
+#endif
+}
 
 RM3100 sensorRM3100(CS_PIN, DRDY_PIN);
 FLC100_ADS131 sensorFLC100(CS_PIN, DRDY_PIN, RESET_PIN);
@@ -36,7 +54,8 @@ uint16_t udpListenPort = 9876;
 #include "BLEStream.h"
 
 enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3 };
-uint8_t outputMode = MODE_SERIAL;
+uint8_t outputMode = MODE_BOTH; // Default: MODE_BOTH (Serial & BLE Coded PHY telemetry active)
+uint8_t batchSizeConfig = 10; // Default: 10 samples per Coded PHY burst (range 1-10)
 String wifiSSID = "";
 String wifiPass = "";
 bool wifiConnected = false;
@@ -49,6 +68,7 @@ void saveSettings() {
     prefs.putUShort("downsample", current_downsample);
     prefs.putUChar("sensor_type", sensorTypeConfig);
     prefs.putUChar("mode", outputMode);
+    prefs.putUChar("batch_size", batchSizeConfig);
     prefs.putString("ssid", wifiSSID);
     prefs.putString("pass", wifiPass);
     prefs.putString("target", targetIP.toString());
@@ -76,13 +96,13 @@ void connectWiFi() {
         Serial.print("[WIFI DEBUG] Initiating connection to SSID: '");
         Serial.print(wifiSSID);
         Serial.println("'...");
-        
+
         WiFi.disconnect(true);
         delay(100);
         WiFi.mode(WIFI_STA);
         WiFi.setTxPower(WIFI_POWER_15dBm); // Cap TX power to 15dBm to prevent 3.3V power supply dips
         WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
-        
+
         unsigned long start = millis();
         while (WiFi.status() != WL_CONNECTED && (millis() - start < 12000)) {
             delay(500);
@@ -121,7 +141,9 @@ void loadSettings() {
     current_rate = prefs.getUChar("rate", DEFAULT_RATE);
     current_downsample = prefs.getUShort("downsample", 1);
     sensorTypeConfig = prefs.getUChar("sensor_type", 1);
-    outputMode = prefs.getUChar("mode", MODE_SERIAL);
+    outputMode = prefs.getUChar("mode", MODE_BOTH);
+    batchSizeConfig = prefs.getUChar("batch_size", 10);
+    if (batchSizeConfig < 1 || batchSizeConfig > 10) batchSizeConfig = 10;
     wifiSSID = prefs.getString("ssid", "");
     wifiPass = prefs.getString("pass", "");
     String tIP = prefs.getString("target", "255.255.255.255");
@@ -162,13 +184,128 @@ void loadSettings() {
 volatile uint32_t sampleCounter = 0;
 float lastBmag_nT = 0.0f;
 
+void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len);
+
 void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
     sampleCounter++;
     lastBmag_nT = sqrtf(x * x + y * y + z * z);
     char line[160];
     int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
+    sendOutputSample(deviceID, ts, x, y, z, status, line, (size_t)len);
+}
 
 
+#define DISCONNECT_BUFFER_SIZE 600 // 600 samples = 10 minutes of disconnect storage at 1 Hz
+
+struct BufferedSample {
+    uint32_t ts_ms;
+    int32_t  x_nT;
+    int32_t  y_nT;
+    int32_t  z_nT;
+};
+
+static BufferedSample ringBuffer[DISCONNECT_BUFFER_SIZE];
+static uint16_t ringHead = 0;        // Next write position
+static uint16_t ringTail = 0;        // Oldest un-ACKed sample position
+static uint16_t unackedCount = 0;    // Number of un-ACKed samples in buffer
+static uint16_t lastSentCount = 0;   // Number of samples in current in-flight batch
+static uint32_t lastBurstTxMs = 0;
+static bool isTxActive = false;
+static uint32_t txStartMs = 0;
+static uint8_t txRetryCount = 0;
+
+void checkBleAckTask() {
+    if (isTxActive) {
+        if (bleStream.isBatchAcked()) {
+            bleStream.stopAdvertising();
+            isTxActive = false;
+            txRetryCount = 0;
+            if (lastSentCount > 0) {
+                ringTail = (ringTail + lastSentCount) % DISCONNECT_BUFFER_SIZE;
+                if (unackedCount >= lastSentCount) {
+                    unackedCount -= lastSentCount;
+                } else {
+                    unackedCount = 0;
+                }
+                lastSentCount = 0;
+            }
+        } else if (millis() - txStartMs >= 1500) {
+            // Burst timeout (receiver offline or missed hardware ACK)
+            bleStream.stopAdvertising();
+            isTxActive = false;
+            txRetryCount++;
+
+            // If burst failed to receive ACK after 2 retries, advance ringTail to prevent indefinite queue stalls
+            if (txRetryCount >= 2) {
+                if (lastSentCount > 0) {
+                    ringTail = (ringTail + lastSentCount) % DISCONNECT_BUFFER_SIZE;
+                    if (unackedCount >= lastSentCount) {
+                        unackedCount -= lastSentCount;
+                    } else {
+                        unackedCount = 0;
+                    }
+                    lastSentCount = 0;
+                }
+                txRetryCount = 0;
+            }
+        }
+    }
+}
+
+void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
+    // 1. Insert new 1 Hz sample into 10-minute circular buffer
+    ringBuffer[ringHead].ts_ms = (uint32_t)(ts / 1000ULL);
+    ringBuffer[ringHead].x_nT = (int32_t)x;
+    ringBuffer[ringHead].y_nT = (int32_t)y;
+    ringBuffer[ringHead].z_nT = (int32_t)z;
+    ringHead = (ringHead + 1) % DISCONNECT_BUFFER_SIZE;
+
+    if (unackedCount < DISCONNECT_BUFFER_SIZE) {
+        unackedCount++;
+    } else {
+        // Buffer full (>10 mins offline): advance tail to drop oldest sample
+        ringTail = (ringTail + 1) % DISCONNECT_BUFFER_SIZE;
+    }
+
+    // 2. Check ACK/timeout status of in-flight burst
+    checkBleAckTask();
+
+    // 3. Transmit batch ONLY when batchSizeConfig new samples buffered (e.g. 10s for BATCH 10) OR catch-up flushing offline backlog
+    if (!isTxActive) {
+        uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 10) ? batchSizeConfig : 10;
+        uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
+
+        if (unackedCount >= targetBatchSize || (unackedCount > 0 && millis() - lastBurstTxMs >= minBurstIntervalMs)) {
+            SensorBatchPacket batch;
+            memset(&batch, 0, sizeof(batch));
+            strncpy(batch.device_id, deviceID.c_str(), sizeof(batch.device_id) - 1);
+            batch.start_ts_ms = ringBuffer[ringTail].ts_ms;
+            batch.sample_interval_ms = 1000;
+            batch.status = (uint16_t)(status & 0xFFFF);
+            batch.vbat_mv = 3300;
+
+            uint8_t countToSend = (unackedCount >= targetBatchSize) ? targetBatchSize : (uint8_t)unackedCount;
+            batch.sample_count = countToSend;
+
+            for (uint8_t i = 0; i < countToSend; i++) {
+                uint16_t idx = (ringTail + i) % DISCONNECT_BUFFER_SIZE;
+                batch.samples[i].x_nT = ringBuffer[idx].x_nT;
+                batch.samples[i].y_nT = ringBuffer[idx].y_nT;
+                batch.samples[i].z_nT = ringBuffer[idx].z_nT;
+            }
+
+            bleStream.clearBatchAck();
+            Serial.print("DEBUG: notifyBatchBinary: "); Serial.println(ringTail);
+            bleStream.notifyBatchBinary(batch);
+            lastSentCount = countToSend;
+            lastBurstTxMs = millis();
+            txStartMs = millis();
+            isTxActive = true;
+        }
+    }
+}
+
+void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len) {
     // Non-blocking Serial output (prevents USB CDC buffer stalls when host monitor is not attached)
     if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
         if (Serial.availableForWrite() >= len) {
@@ -190,16 +327,7 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
     }
 
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
-        SensorBinaryPacket pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
-        pkt.timestamp_ms = (uint32_t)(ts / 1000ULL);
-        pkt.x_nT = x;
-        pkt.y_nT = y;
-        pkt.z_nT = z;
-        pkt.status = (uint16_t)(status & 0xFFFF);
-        bleStream.notifyBinary(pkt);
-        bleStream.notify(line);
+        processBleTelemetry(deviceID, ts, x, y, z, status, line);
     }
 }
 
@@ -291,14 +419,14 @@ void setup() {
     // Timeout waiting for Serial so board boots even without open Serial Monitor
     unsigned long startWait = millis();
     while (!Serial && (millis() - startWait < 3000)) delay(10);
-    
+
     Serial.println("\r\n==================================================");
     Serial.println(" FIRMWARE: Remote 3-Axis Magnetometer Acquisition System");
     Serial.println("==================================================");
 
     // Wait for internal oscillator and power-on-reset stabilization
     delay(250);
-    
+
     loadSettings();
 
     if (sensorTypeConfig == 2) {
@@ -313,7 +441,7 @@ void setup() {
 
         Serial.println("Auto-probing physical sensor hardware...");
         bool found = false;
-        
+
         if (sensorRM3100.begin()) {
             sensor = &sensorRM3100;
             sensorTypeConfig = 0;
@@ -355,7 +483,7 @@ void setup() {
         // Set calibration: VREF = 2.4V (standard for 3.3V systems), Sensitivity = 20.0 uV/nT, Gain = 1
         static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
     }
-    
+
     // Resume continuous mode with saved rate
     sensor->setContinuousMode(true, current_rate);
 
@@ -370,13 +498,22 @@ void setup() {
     Serial.println(deviceID);
     Serial.println("device_id,timestamp_us,x,y,z,status");
     serialCLI.printHelp();
-    
+
 #if LED_PIN >= 0
     pinMode(LED_PIN, OUTPUT);
 #endif
+
+    if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
+        bleStream.begin(deviceID);
+    }
+
+    // Enable Automatic Tickless Light Sleep and Dynamic Frequency Scaling
+    configurePowerManagement();
 }
 
 void loop() {
+    checkBleAckTask();
+
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     static uint32_t lastOledUpdateMs = 0;
     if (millis() - lastOledUpdateMs >= 500) {
@@ -398,7 +535,7 @@ void loop() {
     static unsigned long lastBlinkTime = 0;
     static bool ledState = false;
     unsigned long currentMillis = millis();
-    
+
     if (currentMillis - lastBlinkTime >= 1000) {
         lastBlinkTime = currentMillis;
         ledState = !ledState;
@@ -412,7 +549,7 @@ void loop() {
     // Hardware Watchdog: Detect DRDY interrupt stall due to physical bumps or power glitches
     static uint32_t lastWdCheckMs = 0;
     uint32_t nowWdMs = millis();
-    if (streaming && sensor != NULL && (nowWdMs - lastWdCheckMs >= 500)) {
+    if (streaming && sensor != NULL && sensorTypeConfig != 2 && (nowWdMs - lastWdCheckMs >= 500)) {
         lastWdCheckMs = nowWdMs;
         uint64_t nowUs = esp_timer_get_time();
         if (lastDrdyTimeUs > 0 && (nowUs - lastDrdyTimeUs > 500000ULL)) {

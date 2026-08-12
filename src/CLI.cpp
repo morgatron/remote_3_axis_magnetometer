@@ -32,6 +32,7 @@ void CLI::printHelp() {
     Serial.println("STREAM ON/OFF - Enable/Disable data streaming");
     Serial.println("RATE <hex>    - Set rate code (saved)");
     Serial.println("CYCLE <int>   - Set cycle count (RM3100 specific)");
+    Serial.println("BATCH <1-10>  - Set samples per BLE burst (1 = instant 1Hz, 10 = low power)");
     Serial.println("STATUS        - Show current status");
     Serial.println("-----------------------");
 }
@@ -45,6 +46,16 @@ void CLI::handleCommand(String cmd) {
 
     if (cmd == "HELP") {
         printHelp();
+    } else if (cmd.startsWith("BATCH ")) {
+        uint8_t count = (uint8_t)cmd.substring(6).toInt();
+        if (count >= 1 && count <= 10) {
+            extern uint8_t batchSizeConfig;
+            batchSizeConfig = count;
+            if (_saveCallback) _saveCallback();
+            Serial.printf("BLE Batch Burst Size set to %d samples per burst.\r\n", batchSizeConfig);
+        } else {
+            Serial.println("Usage: BATCH <1-10> (Set samples per Coded PHY Extended Advertising burst)");
+        }
     } else if (cmd == "STREAM ON") {
         _streaming = true;
         if (_saveCallback) _saveCallback();
@@ -118,10 +129,12 @@ void CLI::handleCommand(String cmd) {
         if (_saveCallback) _saveCallback();
     } else if (cmd == "STATUS") {
         extern String deviceID;
+        extern uint8_t batchSizeConfig;
         Serial.print("Device ID: "); Serial.println(deviceID);
         Serial.print("Streaming: "); Serial.println(_streaming ? "ON" : "OFF");
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
         Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
+        Serial.print("BLE Batch Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
         Serial.println(_sensor->getStatusString());
     } else if (cmd.startsWith("ID ")) {
         String newID = cmd.substring(3);

@@ -88,7 +88,16 @@ void setupSoftAP() {
     }
 }
 
+uint32_t lastOledActivityMs = 0;
+bool oledScreenActive = true;
+
 void connectEgressWiFi() {
+    if (egressModeConfig == MODE_EGRESS_SERIAL) {
+        WiFi.mode(WIFI_OFF);
+        Serial.println(F("[POWER] Egress mode is SERIAL. Wi-Fi radio turned OFF (~80mA saved)."));
+        return;
+    }
+
     setupSoftAP();
 
     if (wifiSSID.length() > 0) {
@@ -116,6 +125,12 @@ void connectEgressWiFi() {
 ReceiverCLI receiverCLI(saveReceiverSettings);
 
 void setup() {
+#if defined(ESP_PLATFORM)
+    setCpuFrequencyMhz(80); // Scale CPU frequency down to 80 MHz to save ~28 mA
+#endif
+    pinMode(0, INPUT_PULLUP); // PRG / USER button on Heltec V4 for OLED wake
+    lastOledActivityMs = millis();
+
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
     Serial.setTxTimeoutMs(0);
 #endif
@@ -127,6 +142,7 @@ void setup() {
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));
     Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP"));
     Serial.println(F(" Egress Targets: USB Serial CDC + WiFi HTTP/UDP Central"));
+    Serial.println(F(" Power Mode: Low-Power Receiver (80 MHz CPU, OLED 30s Timeout)"));
     Serial.println(F("========================================================="));
 
     loadReceiverSettings();
@@ -168,25 +184,51 @@ void setup() {
 }
 
 void loop() {
+    // Check USER/PRG Button Press (GPIO 0) to wake OLED screen
+    static bool lastBtnState = HIGH;
+    bool btnState = digitalRead(0);
+    if (btnState == LOW && lastBtnState == HIGH) {
+        lastOledActivityMs = millis();
+        if (!oledScreenActive) {
+            oledDisplay.displayOn();
+            oledScreenActive = true;
+        }
+    }
+    lastBtnState = btnState;
+
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     static uint32_t lastReceiverOledMs = 0;
     if (millis() - lastReceiverOledMs >= 250) {
         lastReceiverOledMs = millis();
-        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH"};
-        String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "192.168.4.1";
-        uint32_t totalRxCount = bleRxCount + espnowRxCount + udpRxCount + loraRxCount;
-        oledDisplay.updateReceiverScreen(
-            nodeTracker.getNodeCount(),
-            totalRxCount,
-            nodeTracker.getLastRssi(),
-            nodeTracker.getLastNodeId(),
-            egressIp.c_str(),
-            modeNames[egressModeConfig % 3]
-        );
+        if (millis() - lastOledActivityMs > 30000) {
+            if (oledScreenActive) {
+                oledDisplay.displayOff();
+                oledScreenActive = false;
+            }
+        } else {
+            if (!oledScreenActive) {
+                oledDisplay.displayOn();
+                oledScreenActive = true;
+            }
+            const char* modeNames[] = {"SERIAL", "WIFI", "BOTH"};
+            String egressIp = wifiRelayConnected ? WiFi.localIP().toString() : "192.168.4.1";
+            uint32_t totalRxCount = bleRxCount + espnowRxCount + udpRxCount + loraRxCount;
+            oledDisplay.updateReceiverScreen(
+                nodeTracker.getNodeCount(),
+                totalRxCount,
+                nodeTracker.getLastRssi(),
+                nodeTracker.getLastNodeId(),
+                egressIp.c_str(),
+                modeNames[egressModeConfig % 3]
+            );
+        }
     }
 #endif
 
     // Process serial CLI commands
+    if (Serial.available() > 0) {
+        lastOledActivityMs = millis();
+    }
     receiverCLI.process();
 
     // Process incoming UDP packets from SoftAP and Router STA

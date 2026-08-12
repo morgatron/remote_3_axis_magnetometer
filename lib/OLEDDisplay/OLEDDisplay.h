@@ -21,6 +21,8 @@ public:
     
     void clear();
     void update();
+    void displayOff();
+    void displayOn();
     
     void drawString(uint8_t col, uint8_t line, const char* str);
     void drawHeader(const char* title);

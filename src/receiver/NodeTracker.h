@@ -12,6 +12,8 @@ struct RemoteNodeInfo {
     uint32_t first_seen_ms;
     uint32_t last_seen_ms;
     uint32_t last_sample_ts_ms;
+    uint32_t last_batch_start_ts_ms;
+    uint8_t  last_batch_sample_count;
     uint32_t packet_count;
     int rssi;
     float last_x;
@@ -29,11 +31,11 @@ public:
         memset(_nodes, 0, sizeof(_nodes));
     }
 
-    bool recordPacket(const char* device_id, const uint8_t* mac, int rssi, 
+    bool recordPacket(const char* device_id, const uint8_t* mac, int rssi,
                       float x, float y, float z, float temp, float vbat, const char* protocol, uint32_t sample_ts_ms = 0) {
         uint32_t now = millis();
         int idx = findNodeIndex(device_id, mac);
-        
+
         if (idx < 0) {
             // Allocate new node entry
             if (_nodeCount < MAX_TRACKED_NODES) {
@@ -42,7 +44,7 @@ public:
                 // Evict oldest inactive node if table is full
                 idx = findOldestNodeIndex();
             }
-            
+
             memset(&_nodes[idx], 0, sizeof(RemoteNodeInfo));
             strncpy(_nodes[idx].node_id, device_id, sizeof(_nodes[idx].node_id) - 1);
             if (mac) {
@@ -54,7 +56,7 @@ public:
         }
 
         RemoteNodeInfo &node = _nodes[idx];
-        
+
         // De-duplicate repeated wireless beacon scans of the exact same sample
         if (sample_ts_ms > 0 && sample_ts_ms == node.last_sample_ts_ms) {
             node.last_seen_ms = now;
@@ -78,6 +80,54 @@ public:
         return true;
     }
 
+    bool recordBatchSeen(const char* device_id, const uint8_t* mac, int rssi, uint32_t start_ts_ms, uint8_t sample_count, float vbat = 0.0f) {
+        uint32_t now = millis();
+        int idx = findNodeIndex(device_id, mac);
+        Serial.print("Node idx: "); Serial.println(idx);
+
+        if (idx < 0) {
+            if (_nodeCount < MAX_TRACKED_NODES) {
+                idx = _nodeCount++;
+            } else {
+                idx = findOldestNodeIndex();
+            }
+            memset(&_nodes[idx], 0, sizeof(RemoteNodeInfo));
+            strncpy(_nodes[idx].node_id, device_id, sizeof(_nodes[idx].node_id) - 1);
+            if (mac) memcpy(_nodes[idx].mac, mac, 6);
+            _nodes[idx].first_seen_ms = now;
+            _nodes[idx].active = true;
+        }
+
+        RemoteNodeInfo &node = _nodes[idx];
+
+        // Handle sensor node reboot (timestamp reset/backward jump)
+        if (node.last_sample_ts_ms > 0 && start_ts_ms < node.last_batch_start_ts_ms) {
+            // Any backward jump in timestamp indicates a sensor node reboot/reset!
+            node.last_sample_ts_ms = 0;
+            node.last_batch_start_ts_ms = 0;
+        }
+
+        // De-duplicate repeated wireless scans of the exact same batch burst
+        if (start_ts_ms > 0 && start_ts_ms == node.last_batch_start_ts_ms && sample_count == node.last_batch_sample_count) {
+            node.last_seen_ms = now;
+            node.rssi = rssi;
+            return false; // Already processed this batch!
+        }
+        //Serial.print("new batch numsamples, time: "); Serial.print(sample_count); Serial.print(" "); Serial.println(start_ts_ms);
+        //Serial.print("last batch numsamples, time: "); Serial.print(node.last_batch_sample_count); Serial.print(" "); Serial.println(node.last_batch_start_ts_ms);
+        //Serial.print("last sample ts, last seen ts: "); Serial.print(node.last_sample_ts_ms); Serial.print(" "); Serial.println(node.last_batch_start_ts_ms);
+
+        node.last_batch_start_ts_ms = start_ts_ms;
+        node.last_batch_sample_count = sample_count;
+        node.last_sample_ts_ms = start_ts_ms + (sample_count > 0 ? (sample_count - 1) * 1000 : 0);
+        node.last_seen_ms = now;
+        node.packet_count += sample_count;
+        node.rssi = rssi;
+        if (vbat > 0.0f) node.vbat = vbat;
+        strncpy(node.protocol, "BLE", sizeof(node.protocol) - 1);
+        return true; // New batch payload
+    }
+
     void printNodeTable(Stream &out) {
         out.println(F("\r\n=============================================================================================="));
         out.println(F("                               ACTIVE REMOTE SENSOR NODES TABLE                               "));
@@ -92,7 +142,7 @@ public:
             if (!_nodes[i].active) continue;
             activeCount++;
             float ageSec = (now - _nodes[i].last_seen_ms) / 1000.0f;
-            
+
             char macStr[18];
             snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
                      _nodes[i].mac[0], _nodes[i].mac[1], _nodes[i].mac[2],
