@@ -3,7 +3,8 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
-#include "../../include/TelemetryPacket.h"
+#include "ITelemetryReceiver.h"
+#include "TelemetryPacket.h"
 #include "NodeTracker.h"
 
 extern QueueHandle_t telemetryQueue;
@@ -32,7 +33,7 @@ inline bool isValidBatchPacket(const SensorBatchPacket &batch) {
 }
 
 /**
- * @brief NimBLE 2.x Scan Callbacks for processing incoming Coded PHY extended advertising bursts.
+ * @brief NimBLE Scan Callbacks for processing incoming Coded PHY extended advertising bursts.
  */
 class BLEReceiverCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
@@ -75,7 +76,6 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                     item.temp = 0.0f;
                     item.vbat = (float)batch.vbat_mv / 1000.0f;
 
-                    // De-duplicate repeated wireless scan results of the exact same batch payload
                     if (!nodeTracker.recordBatchSeen(item.node_id, item.mac, item.rssi, batch.start_ts_ms, batch.sample_count, item.vbat)) {
                         return; // Already processed duplicate scan
                     }
@@ -88,10 +88,7 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                         item.z = (float)batch.samples[i].z_nT;
 
                         bleRxCount++;
-                        snprintf(item.line, sizeof(item.line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
-                                 item.node_id, (unsigned long long)item.timestamp_us,
-                                 item.x, item.y, item.z, (unsigned int)(item.status & 0xFFFFFF),
-                                 item.temp, item.vbat, item.rssi);
+                        item.formatCsvLine();
                         if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);
                     }
                     return;
@@ -101,7 +98,7 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
 
         // 2. Fallback check for single SensorBinaryPacket
         if (mlen >= sizeof(SensorBinaryPacket)) {
-            for (size_t offset = 0; offset <= mlen - sizeof(SensorBinaryPacket); offset++) {
+            for (size_t offset = 0; offset <= mlen - sizeof(SensorBatchPacket); offset++) {
                 SensorBinaryPacket pkt;
                 memcpy(&pkt, mptr + offset, sizeof(pkt));
                 if (isValidSensorPacket(pkt)) {
@@ -115,11 +112,7 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                     bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "BLE", pkt.timestamp_ms);
                     if (isNewSample) {
                         bleRxCount++;
-                        snprintf(item.line, sizeof(item.line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
-                                 item.node_id, (unsigned long long)item.timestamp_us,
-                                 item.x, item.y, item.z, (unsigned int)(item.status & 0xFFFFFF),
-                                 item.temp, item.vbat, item.rssi);
-
+                        item.formatCsvLine();
                         if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);
                     }
                     break;
@@ -129,9 +122,9 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
     }
 };
 
-class BLEReceiver {
+class BLEReceiver : public ITelemetryReceiver {
 public:
-    static void begin() {
+    void begin() override {
         NimBLEDevice::init("MAG_GATEWAY_RECEIVER");
         NimBLEScan* pScan = NimBLEDevice::getScan();
         pScan->setScanCallbacks(new BLEReceiverCallbacks());
@@ -140,6 +133,11 @@ public:
         pScan->setInterval(100);
         pScan->setWindow(99);
         pScan->start(0, false);
+        Serial.println(F("[BLE RECEIVER SUCCESS] Active LE Coded PHY scanning enabled."));
+    }
+
+    const char* getName() const override {
+        return "BLE";
     }
 };
 

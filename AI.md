@@ -43,6 +43,11 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
    - Automatically handles FIFO eviction during prolonged outages, batch packaging for Coded PHY BLE Extended Advertising bursts, and hardware `AUX_SCAN_REQ` ACK confirmation flushes.
    - Standardized across all target boards on **NimBLE-Arduino 2.2.0** for BLE 5.0 Long Range Coded PHY support.
 
+8. **Unified Multi-Protocol Receiver Interface (`src/receiver/ITelemetryReceiver.h`)**:
+   - Abstracts all physical receiver drivers (`BLEReceiver`, `ESPNowReceiver`, `UDPReceiver`, `LoRaReceiver`) behind a polymorphic `ITelemetryReceiver` interface.
+   - Decouples receiver initialization (`begin()`) and non-blocking polling (`poll()`) from the main loop thread, ensuring zero-blocking execution (< 25 $\mu$s per tick).
+   - Centralizes CSV formatting (`formatCsvLine()`) and string parsing (`parseCsvLine()`) directly inside `TelemetryItem` to eliminate code duplication across protocols.
+
 ---
 
 ---

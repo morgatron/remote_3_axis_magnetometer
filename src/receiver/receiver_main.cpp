@@ -30,9 +30,6 @@ uint16_t targetServerPort = 9876;
 uint8_t espNowChannel = 1;
 bool wifiRelayConnected = false;
 
-WiFiUDP UDPReceiver::_udp;
-uint16_t UDPReceiver::_port = 9876;
-
 Preferences prefs;
 
 void saveReceiverSettings() {
@@ -122,6 +119,13 @@ void connectEgressWiFi() {
     }
 }
 
+static BLEReceiver bleRcvr;
+static ESPNowReceiver espnowRcvr;
+static UDPReceiver udpRcvr;
+static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN);
+
+static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr, &loraRcvr };
+
 ReceiverCLI receiverCLI(saveReceiverSettings);
 
 void setup() {
@@ -140,7 +144,7 @@ void setup() {
 
     Serial.println(F("\r\n========================================================="));
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));
-    Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP"));
+    Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP, LoRa"));
     Serial.println(F(" Egress Targets: USB Serial CDC + WiFi HTTP/UDP Central"));
     Serial.println(F(" Power Mode: Low-Power Receiver (80 MHz CPU, OLED 30s Timeout)"));
     Serial.println(F("========================================================="));
@@ -163,19 +167,12 @@ void setup() {
     // 4. Connect to Egress Router if credentials exist
     connectEgressWiFi();
 
-    // 5. Initialize ESP-NOW Receiver
-    ESPNowReceiver::begin(espNowChannel);
+    // 5. Initialize All Multi-Protocol Receivers (BLE, ESP-NOW, UDP, LoRa)
+    for (auto* rcvr : receivers) {
+        rcvr->begin();
+    }
 
-    // 6. Initialize WiFi UDP Listener (SoftAP & Router STA)
-    UDPReceiver::begin(targetServerPort);
-
-    // 7. Initialize BLE / BLE Coded PHY Receiver Scanner
-    BLEReceiver::begin();
-
-    // 8. Initialize Sub-GHz SX1262 LoRa Receiver
-    LoRaReceiver::begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN);
-
-    // 9. Start Interactive CLI
+    // 6. Start Interactive CLI
     receiverCLI.begin();
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
@@ -231,8 +228,10 @@ void loop() {
     }
     receiverCLI.process();
 
-    // Process incoming UDP packets from SoftAP and Router STA
-    UDPReceiver::handlePackets();
+    // Poll all active multi-protocol receivers (UDP socket, LoRa SPI, etc.)
+    for (auto* rcvr : receivers) {
+        rcvr->poll();
+    }
 
     delay(2);
 }
