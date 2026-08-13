@@ -198,7 +198,7 @@ void loop() {
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     static uint32_t lastReceiverOledMs = 0;
-    if (millis() - lastReceiverOledMs >= 250) {
+    if (millis() - lastReceiverOledMs >= 500) {
         lastReceiverOledMs = millis();
         if (millis() - lastOledActivityMs > 30000) {
             if (oledScreenActive) {

@@ -4,6 +4,7 @@
 #include <esp_mac.h>
 #include <esp_pm.h>
 #include "board_config.h"
+#include "TelemetryRingBuffer.h"
 
 #include "RM3100.h"
 #include "FLC100_ADS131.h"
@@ -195,20 +196,8 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
 }
 
 
-#define DISCONNECT_BUFFER_SIZE 600 // 600 samples = 10 minutes of disconnect storage at 1 Hz
-
-struct BufferedSample {
-    uint32_t ts_ms;
-    int32_t  x_nT;
-    int32_t  y_nT;
-    int32_t  z_nT;
-};
-
-static BufferedSample ringBuffer[DISCONNECT_BUFFER_SIZE];
-static uint16_t ringHead = 0;        // Next write position
-static uint16_t ringTail = 0;        // Oldest un-ACKed sample position
-static uint16_t unackedCount = 0;    // Number of un-ACKed samples in buffer
-static uint16_t lastSentCount = 0;   // Number of samples in current in-flight batch
+static TelemetryRingBuffer telemetryRingBuffer;
+static uint8_t lastSentCount = 0;
 static uint32_t lastBurstTxMs = 0;
 static bool isTxActive = false;
 static uint32_t txStartMs = 0;
@@ -220,32 +209,18 @@ void checkBleAckTask() {
             bleStream.stopAdvertising();
             isTxActive = false;
             txRetryCount = 0;
-            if (lastSentCount > 0) {
-                ringTail = (ringTail + lastSentCount) % DISCONNECT_BUFFER_SIZE;
-                if (unackedCount >= lastSentCount) {
-                    unackedCount -= lastSentCount;
-                } else {
-                    unackedCount = 0;
-                }
-                lastSentCount = 0;
-            }
+            telemetryRingBuffer.confirmAck(lastSentCount);
+            lastSentCount = 0;
         } else if (millis() - txStartMs >= 1500) {
             // Burst timeout (receiver offline or missed hardware ACK)
             bleStream.stopAdvertising();
             isTxActive = false;
             txRetryCount++;
 
-            // If burst failed to receive ACK after 2 retries, advance ringTail to prevent indefinite queue stalls
+            // If burst failed to receive ACK after 2 retries, advance ring tail to prevent indefinite queue stalls
             if (txRetryCount >= 2) {
-                if (lastSentCount > 0) {
-                    ringTail = (ringTail + lastSentCount) % DISCONNECT_BUFFER_SIZE;
-                    if (unackedCount >= lastSentCount) {
-                        unackedCount -= lastSentCount;
-                    } else {
-                        unackedCount = 0;
-                    }
-                    lastSentCount = 0;
-                }
+                telemetryRingBuffer.confirmAck(lastSentCount);
+                lastSentCount = 0;
                 txRetryCount = 0;
             }
         }
@@ -253,54 +228,33 @@ void checkBleAckTask() {
 }
 
 void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
-    // 1. Insert new 1 Hz sample into 10-minute circular buffer
-    ringBuffer[ringHead].ts_ms = (uint32_t)(ts / 1000ULL);
-    ringBuffer[ringHead].x_nT = (int32_t)x;
-    ringBuffer[ringHead].y_nT = (int32_t)y;
-    ringBuffer[ringHead].z_nT = (int32_t)z;
-    ringHead = (ringHead + 1) % DISCONNECT_BUFFER_SIZE;
-
-    if (unackedCount < DISCONNECT_BUFFER_SIZE) {
-        unackedCount++;
-    } else {
-        // Buffer full (>10 mins offline): advance tail to drop oldest sample
-        ringTail = (ringTail + 1) % DISCONNECT_BUFFER_SIZE;
-    }
+    // 1. Insert new sample into 10-minute circular buffer
+    uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
+    telemetryRingBuffer.push(ts_ms, (int32_t)x, (int32_t)y, (int32_t)z);
 
     // 2. Check ACK/timeout status of in-flight burst
     checkBleAckTask();
 
-    // 3. Transmit batch ONLY when batchSizeConfig new samples buffered (e.g. 10s for BATCH 10) OR catch-up flushing offline backlog
+    // 3. Transmit batch ONLY when target batch size is reached OR catch-up flushing offline backlog
     if (!isTxActive) {
         uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 10) ? batchSizeConfig : 10;
         uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
+        uint16_t unacked = telemetryRingBuffer.getUnackedCount();
 
-        if (unackedCount >= targetBatchSize || (unackedCount > 0 && millis() - lastBurstTxMs >= minBurstIntervalMs)) {
+        if (unacked >= targetBatchSize || (unacked > 0 && millis() - lastBurstTxMs >= minBurstIntervalMs)) {
             SensorBatchPacket batch;
-            memset(&batch, 0, sizeof(batch));
-            strncpy(batch.device_id, deviceID.c_str(), sizeof(batch.device_id) - 1);
-            batch.start_ts_ms = ringBuffer[ringTail].ts_ms;
-            batch.sample_interval_ms = 1000;
-            batch.status = (uint16_t)(status & 0xFFFF);
-            batch.vbat_mv = 3300;
+            uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
+            if (countToSend > 0) {
+                batch.status = (uint16_t)(status & 0xFFFF);
+                batch.vbat_mv = 3300;
 
-            uint8_t countToSend = (unackedCount >= targetBatchSize) ? targetBatchSize : (uint8_t)unackedCount;
-            batch.sample_count = countToSend;
-
-            for (uint8_t i = 0; i < countToSend; i++) {
-                uint16_t idx = (ringTail + i) % DISCONNECT_BUFFER_SIZE;
-                batch.samples[i].x_nT = ringBuffer[idx].x_nT;
-                batch.samples[i].y_nT = ringBuffer[idx].y_nT;
-                batch.samples[i].z_nT = ringBuffer[idx].z_nT;
+                bleStream.clearBatchAck();
+                bleStream.notifyBatchBinary(batch);
+                lastSentCount = countToSend;
+                lastBurstTxMs = millis();
+                txStartMs = millis();
+                isTxActive = true;
             }
-
-            bleStream.clearBatchAck();
-            Serial.print("DEBUG: notifyBatchBinary: "); Serial.println(ringTail);
-            bleStream.notifyBatchBinary(batch);
-            lastSentCount = countToSend;
-            lastBurstTxMs = millis();
-            txStartMs = millis();
-            isTxActive = true;
         }
     }
 }

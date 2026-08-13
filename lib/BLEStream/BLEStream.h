@@ -4,6 +4,13 @@
 #include <Arduino.h>
 #include "../../include/TelemetryPacket.h"
 
+namespace BLEConfig {
+    constexpr uint16_t ADV_MIN_INTERVAL_UNITS = 80;   // 50 ms (80 * 0.625ms)
+    constexpr uint16_t ADV_MAX_INTERVAL_UNITS = 160;  // 100 ms (160 * 0.625ms)
+    constexpr uint32_t BURST_DURATION_MS      = 1000; // 1.0s awake window for transmission & ACKs
+    constexpr int8_t   TX_POWER_DBM           = 15;   // +15 dBm max power
+}
+
 /**
  * @brief Lightweight Bluetooth 5.0 LE / Long Range (Coded PHY) Streaming Driver.
  */
@@ -18,7 +25,7 @@ public:
     void begin(const String &deviceName);
     
     /**
-     * @brief Transmit data notification to connected BLE Central and broadcast in Manufacturer Data.
+     * @brief Transmit data notification to connected BLE Central.
      * @param data Null-terminated CSV line string.
      */
     void notify(const char *data);
@@ -63,4 +70,3 @@ private:
 extern BLEStream bleStream;
 
 #endif // BLE_STREAM_H
-

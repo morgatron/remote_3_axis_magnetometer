@@ -38,6 +38,11 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
    - Upon packet arrival at the edge gateway (`gateway.py`), telemetry is anchored to the gateway's NTP-synchronized system UTC clock.
    - For multi-sample batches (e.g. after network drops or Store-and-Forward queue flushes), `stream_parser.parse_telemetry_batch` uses relative microsecond $\Delta t$ back-calculation to reconstruct exact 1.000-second historical sample spacing without clock drift.
 
+7. **Modular Telemetry Ring Buffer (`include/TelemetryRingBuffer.h`)**:
+   - Encapsulates 10-minute (600-sample) disconnect backlog storage into a thread-safe, self-contained C++ class.
+   - Automatically handles FIFO eviction during prolonged outages, batch packaging for Coded PHY BLE Extended Advertising bursts, and hardware `AUX_SCAN_REQ` ACK confirmation flushes.
+   - Standardized across all target boards on **NimBLE-Arduino 2.2.0** for BLE 5.0 Long Range Coded PHY support.
+
 ---
 
 ---
