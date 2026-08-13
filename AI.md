@@ -200,6 +200,9 @@ pio run -e esp32c6_receiver -t upload --upload-port /dev/ttyACM1
 
 # 5. Multi-Protocol Receiver & Gateway (Heltec V4 ESP32-S3 + SX1262 LoRa)
 pio run -e heltec_v4_receiver -t upload --upload-port /dev/ttyACM1
+
+# 6. Automated Heltec V4 LoRa Setup & Over-The-Air Test Tool (AU915 Band)
+python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0
 ```
 
 ### Central Data Server & Web GUI

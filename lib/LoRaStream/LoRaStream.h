@@ -6,18 +6,19 @@
 
 /**
  * @brief SX1262 LoRa Radio Configuration Struct
+ * Default configured for AU915 Band (Australia 915.0 - 928.0 MHz)
  */
 struct LoRaConfig {
-    float frequency;        // 915.0 MHz (US/AU) or 868.0 MHz (EU)
-    float bandwidth;        // 125.0, 250.0, or 500.0 kHz
-    uint8_t spreadingFactor;// SF7 to SF12
+    float frequency;        // 915.0 MHz (AU915 / US915) or 923.0 MHz (AS923 / AU923)
+    float bandwidth;        // 125.0, 250.0, or 500.0 kHz (500 kHz for high throughput)
+    uint8_t spreadingFactor;// SF7 to SF12 (SF7 for lowest latency & max telemetry bandwidth)
     uint8_t codingRate;     // 5 (4/5) to 8 (4/8)
     int8_t power;           // Output power in dBm (+22 max for SX1262)
     uint16_t preambleLength;// Preamble symbols (default 8)
 };
 
 /**
- * @brief Lightweight SX1262 Sub-GHz LoRa Transceiver Driver.
+ * @brief Lightweight SX1262 Sub-GHz LoRa Transceiver Driver (RadioLib Integration).
  */
 class LoRaStream {
 public:
@@ -28,12 +29,12 @@ public:
      * @param cs Pin CS
      * @param irq Pin DIO1
      * @param rst Pin RESET
-     * @param gpio Pin BUSY
+     * @param busy Pin BUSY
      * @param spiBus Pointer to dedicated SPIClass instance
-     * @param cfg Radio frequency & spreading factor configuration
+     * @param cfg Radio frequency & spreading factor configuration (Default: AU915 Band @ 915.0 MHz)
      * @return true if SX1262 initialization succeeds
      */
-    bool begin(int cs, int irq, int rst, int gpio, SPIClass *spiBus = nullptr, LoRaConfig cfg = {915.0f, 500.0f, 7, 5, 22, 8});
+    bool begin(int cs, int irq, int rst, int busy, SPIClass *spiBus = nullptr, LoRaConfig cfg = {915.0f, 500.0f, 7, 5, 22, 8});
 
     /**
      * @brief Transmit telemetry binary packet or string payload over LoRa.
@@ -65,6 +66,7 @@ private:
     int _cs, _irq, _rst, _busy;
     SPIClass *_spi;
     LoRaConfig _config;
+    void *_radio; // Opaque pointer to RadioLib SX1262 instance
 };
 
 extern LoRaStream loraStream;
