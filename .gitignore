@@ -3,4 +3,5 @@
 *.h5
 *.tmp
 *.npy
+*.db
 wifi.cfg

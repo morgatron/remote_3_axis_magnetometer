@@ -288,18 +288,34 @@
                 </div>
             </div>
 
-            <!-- Right Side: Live Timeseries Chart -->
+            <!-- Right Side: Live & Historical Timeseries Chart -->
             <div class="panel">
                 <div class="panel-header">
-                    <span class="panel-title" id="selected-node-title">Real-Time Telemetry</span>
+                    <span class="panel-title" id="selected-node-title">Telemetry Viewer</span>
                     <div class="chart-controls">
-                        <!-- Field Component Selector -->
+                        <!-- Time Range Selector -->
+                        <select id="time-range-selector" onchange="onTimeRangeChange()">
+                            <option value="live">Live Stream (Real-Time)</option>
+                            <option value="1h">Last 1 Hour (10s Avg)</option>
+                            <option value="6h">Last 6 Hours (1m Avg)</option>
+                            <option value="24h">Last 24 Hours (1m Avg)</option>
+                            <option value="7d">Last 7 Days (1h Avg)</option>
+                        </select>
+                        <!-- Field Component & Multi-Node Overlay Selector -->
                         <select id="field-selector" onchange="updateChartSeries()">
-                            <option value="all">3-Axis Vectors (X, Y, Z)</option>
-                            <option value="mag">Total Magnitude (|B|)</option>
-                            <option value="x">X Axis Only</option>
-                            <option value="y">Y Axis Only</option>
-                            <option value="z">Z Axis Only</option>
+                            <optgroup label="Single Node View">
+                                <option value="all">3-Axis Vectors (X, Y, Z)</option>
+                                <option value="mag">Total Magnitude (|B|)</option>
+                                <option value="rssi">Signal Strength (RSSI dBm)</option>
+                                <option value="x">X Axis Only</option>
+                                <option value="y">Y Axis Only</option>
+                                <option value="z">Z Axis Only</option>
+                            </optgroup>
+                            <optgroup label="Multi-Node Overlay Comparison">
+                                <option value="overlay_mag">Overlay: All Nodes (|B| Magnitude)</option>
+                                <option value="overlay_bz">Overlay: All Nodes (Bz Field)</option>
+                                <option value="overlay_rssi">Overlay: All Nodes (RSSI Signal)</option>
+                            </optgroup>
                         </select>
                     </div>
                 </div>
@@ -323,9 +339,9 @@
                     <label>Format</label>
                     <select id="export-format">
                         <option value="csv">CSV File (.csv)</option>
+                        <option value="json">JSON Array (.json)</option>
                         <option value="parquet">Apache Parquet (.parquet)</option>
-                        <option value="npz">NumPy Compressed (.npz)</option>
-                        <option value="json">JSON</option>
+                        <option value="npz">NumPy Compressed Archive (.npz)</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -355,7 +371,13 @@
         let chart = null;
         const maxDataPoints = 60;
 
-        let timeSeriesStore = {}; // Stores nT points: { nodeId: [{timeLabel, x, y, z}, ...] }
+        let timeSeriesStore = {}; // Stores nT points: { nodeId: [{timeLabel, x, y, z, rssi}, ...] }
+        let historicalStore = {}; // Historical store: { nodeId: [{timeLabel, x, y, z, rssi}, ...] }
+
+        const NODE_COLORS = [
+            '#38bdf8', '#a855f7', '#22c55e', '#ef4444', '#f59e0b',
+            '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16'
+        ];
 
         function initChart() {
             const ctx = document.getElementById('realtimeChart').getContext('2d');
@@ -367,7 +389,8 @@
                         { label: 'Bx (nT)', borderColor: '#38bdf8', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                         { label: 'By (nT)', borderColor: '#a855f7', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                         { label: 'Bz (nT)', borderColor: '#22c55e', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
-                        { label: 'Magnitude (nT)', borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
+                        { label: 'Magnitude (nT)', borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                        { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
                     ]
                 },
                 options: {
@@ -393,13 +416,158 @@
             });
         }
 
+        async function onTimeRangeChange() {
+            const range = document.getElementById('time-range-selector').value;
+            if (range === 'live') {
+                document.getElementById('selected-node-title').innerText = selectedNodeId ? `Real-Time Telemetry: ${selectedNodeId}` : 'Telemetry Viewer';
+                refreshChartForNode();
+                return;
+            }
+
+            // Calculate start time ISO string
+            const now = new Date();
+            let startTime = new Date();
+            let downsampleSec = 0;
+
+            if (range === '1h') { startTime.setHours(now.getHours() - 1); downsampleSec = 10; }
+            else if (range === '6h') { startTime.setHours(now.getHours() - 6); downsampleSec = 60; }
+            else if (range === '24h') { startTime.setHours(now.getHours() - 24); downsampleSec = 60; }
+            else if (range === '7d') { startTime.setDate(now.getDate() - 7); downsampleSec = 3600; }
+
+            const mode = document.getElementById('field-selector').value;
+            if (mode.startsWith('overlay_')) {
+                await fetchHistoricalAllNodes(startTime.toISOString(), downsampleSec);
+            } else if (selectedNodeId) {
+                await fetchHistoricalSingleNode(selectedNodeId, startTime.toISOString(), downsampleSec);
+            }
+        }
+
+        async function fetchHistoricalSingleNode(nodeId, startIso, downsampleSec) {
+            try {
+                let url = `${apiBaseUrl}/api/v1/data?node_id=${nodeId}&format=json`;
+                if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
+                if (downsampleSec > 0) url += `&downsample_sec=${downsampleSec}`;
+
+                const res = await fetch(url);
+                const body = await res.json();
+                const rows = Array.isArray(body) ? body : (body.data || []);
+
+                historicalStore[nodeId] = rows.map(r => {
+                    const ts_str = r.timestamp_utc || r.timestamp;
+                    const d = ts_str ? new Date(ts_str) : new Date();
+                    const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    return {
+                        timeLabel,
+                        x: r.x_nT !== undefined ? r.x_nT : r.x,
+                        y: r.y_nT !== undefined ? r.y_nT : r.y,
+                        z: r.z_nT !== undefined ? r.z_nT : r.z,
+                        rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi
+                    };
+                });
+
+                document.getElementById('selected-node-title').innerText = `Historical (${document.getElementById('time-range-selector').value.toUpperCase()}): ${nodeId}`;
+                refreshChartForNode();
+            } catch (err) {
+                console.error(`Failed to fetch historical data for ${nodeId}`, err);
+            }
+        }
+
+        async function fetchHistoricalAllNodes(startIso, downsampleSec) {
+            const nodes = Object.keys(nodesData);
+            for (const nid of nodes) {
+                let url = `${apiBaseUrl}/api/v1/data?node_id=${nid}&format=json`;
+                if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
+                if (downsampleSec > 0) url += `&downsample_sec=${downsampleSec}`;
+                try {
+                    const res = await fetch(url);
+                    const body = await res.json();
+                    const rows = Array.isArray(body) ? body : (body.data || []);
+                    historicalStore[nid] = rows.map(r => {
+                        const ts_str = r.timestamp_utc || r.timestamp;
+                        const d = ts_str ? new Date(ts_str) : new Date();
+                        const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        return {
+                            timeLabel,
+                            x: r.x_nT !== undefined ? r.x_nT : r.x,
+                            y: r.y_nT !== undefined ? r.y_nT : r.y,
+                            z: r.z_nT !== undefined ? r.z_nT : r.z,
+                            rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi
+                        };
+                    });
+                } catch (e) {
+                    console.error(e);
+                }
+            }
+            updateChartSeries();
+        }
+
         function updateChartSeries() {
             const mode = document.getElementById('field-selector').value;
+            const timeRange = document.getElementById('time-range-selector').value;
+
+            if (mode.startsWith('overlay_')) {
+                // Multi-Node Overlay Mode
+                document.getElementById('selected-node-title').innerText = `Multi-Node Overlay Comparison (${mode.replace('overlay_', '').toUpperCase()})`;
+                
+                const activeNodes = Object.keys(nodesData);
+                const isHistorical = timeRange !== 'live';
+                const storeToUse = isHistorical ? historicalStore : timeSeriesStore;
+
+                // Build union of labels
+                let maxLabels = [];
+                activeNodes.forEach(nid => {
+                    const pts = storeToUse[nid] || [];
+                    if (pts.length > maxLabels.length) {
+                        maxLabels = pts.map(p => p.timeLabel);
+                    }
+                });
+
+                chart.data.labels = maxLabels;
+                chart.data.datasets = activeNodes.map((nid, idx) => {
+                    const color = NODE_COLORS[idx % NODE_COLORS.length];
+                    const pts = storeToUse[nid] || [];
+                    let datasetData = [];
+
+                    if (mode === 'overlay_mag') {
+                        datasetData = pts.map(s => Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z));
+                    } else if (mode === 'overlay_bz') {
+                        datasetData = pts.map(s => s.z);
+                    } else if (mode === 'overlay_rssi') {
+                        datasetData = pts.map(s => s.rssi !== undefined && s.rssi !== null ? s.rssi : null);
+                    }
+
+                    return {
+                        label: `${nid} (${mode.replace('overlay_', '').toUpperCase()})`,
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        pointRadius: 2,
+                        data: datasetData,
+                        hidden: false
+                    };
+                });
+                chart.update();
+                return;
+            }
+
+            // Single Node Standard Mode: restore default 5 datasets if replaced by overlay
+            if (chart.data.datasets.length !== 5 || !chart.data.datasets[0].label.startsWith('Bx')) {
+                chart.data.datasets = [
+                    { label: 'Bx (nT)', borderColor: '#38bdf8', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
+                    { label: 'By (nT)', borderColor: '#a855f7', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
+                    { label: 'Bz (nT)', borderColor: '#22c55e', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
+                    { label: 'Magnitude (nT)', borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                    { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
+                ];
+            }
+
             chart.data.datasets[0].hidden = (mode !== 'all' && mode !== 'x');
             chart.data.datasets[1].hidden = (mode !== 'all' && mode !== 'y');
             chart.data.datasets[2].hidden = (mode !== 'all' && mode !== 'z');
             chart.data.datasets[3].hidden = (mode !== 'mag');
-            chart.update();
+            chart.data.datasets[4].hidden = (mode !== 'rssi');
+            
+            refreshChartForNode();
         }
 
         function renderNodeList() {
@@ -435,7 +603,7 @@
                         </div>
                         <div class="node-metrics">
                             <span>|B|: <span class="metric-val">${mag} nT</span></span>
-                            <span>Temp: <span class="metric-val">${n.temp !== undefined && n.temp !== null ? n.temp + '°C' : 'N/A'}</span></span>
+                            <span>RSSI: <span class="metric-val">${n.rssi !== undefined && n.rssi !== null ? n.rssi + ' dBm' : 'N/A'}</span></span>
                         </div>
                     </div>
                 `;
@@ -448,10 +616,16 @@
 
         async function selectNode(nodeId) {
             selectedNodeId = nodeId;
-            document.getElementById('selected-node-title').innerText = `Real-Time Telemetry: ${nodeId}`;
+            const mode = document.getElementById('field-selector').value;
+            if (!mode.startsWith('overlay_')) {
+                document.getElementById('selected-node-title').innerText = `Telemetry Viewer: ${nodeId}`;
+            }
             renderNodeList();
 
-            if (!timeSeriesStore[nodeId]) {
+            const range = document.getElementById('time-range-selector').value;
+            if (range !== 'live') {
+                await onTimeRangeChange();
+            } else if (!timeSeriesStore[nodeId]) {
                 await fetchHistoryForNode(nodeId);
             } else {
                 refreshChartForNode();
@@ -473,7 +647,8 @@
                         const x = r.x_nT !== undefined ? r.x_nT : r.x;
                         const y = r.y_nT !== undefined ? r.y_nT : r.y;
                         const z = r.z_nT !== undefined ? r.z_nT : r.z;
-                        return { timeLabel, x, y, z };
+                        const rssi = r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi;
+                        return { timeLabel, x, y, z, rssi };
                     });
                     if (!timeSeriesStore[nodeId] || timeSeriesStore[nodeId].length < loaded.length) {
                         timeSeriesStore[nodeId] = loaded;
@@ -489,16 +664,31 @@
         }
 
         function refreshChartForNode() {
-            if (!selectedNodeId || !timeSeriesStore[selectedNodeId]) return;
-            const series = timeSeriesStore[selectedNodeId];
+            const mode = document.getElementById('field-selector').value;
+            if (mode.startsWith('overlay_')) return;
 
-            chart.data.labels = series.map(s => s.timeLabel);
-            chart.data.datasets[0].data = series.map(s => s.x);
-            chart.data.datasets[1].data = series.map(s => s.y);
-            chart.data.datasets[2].data = series.map(s => s.z);
-            chart.data.datasets[3].data = series.map(s => Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z));
+            const range = document.getElementById('time-range-selector').value;
+            const isHistorical = range !== 'live';
 
-            updateChartSeries();
+            if (!selectedNodeId) return;
+            const storeToUse = isHistorical ? historicalStore : timeSeriesStore;
+            const series = storeToUse[selectedNodeId] || [];
+
+            if (chart.data.datasets.length === 5 && chart.data.datasets[0].label.startsWith('Bx')) {
+                chart.data.labels = series.map(s => s.timeLabel);
+                chart.data.datasets[0].data = series.map(s => s.x);
+                chart.data.datasets[1].data = series.map(s => s.y);
+                chart.data.datasets[2].data = series.map(s => s.z);
+                chart.data.datasets[3].data = series.map(s => Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z));
+                chart.data.datasets[4].data = series.map(s => s.rssi !== undefined && s.rssi !== null ? s.rssi : null);
+
+                chart.data.datasets[0].hidden = (mode !== 'all' && mode !== 'x');
+                chart.data.datasets[1].hidden = (mode !== 'all' && mode !== 'y');
+                chart.data.datasets[2].hidden = (mode !== 'all' && mode !== 'z');
+                chart.data.datasets[3].hidden = (mode !== 'mag');
+                chart.data.datasets[4].hidden = (mode !== 'rssi');
+                chart.update();
+            }
         }
 
         function pushTelemetryData(pt) {
@@ -513,6 +703,7 @@
                 z: pt.z,
                 temp: pt.temp,
                 vbat: pt.vbat,
+                rssi: pt.rssi,
                 last_seen: pt.timestamp || new Date().toISOString()
             };
 
@@ -523,7 +714,8 @@
                 timeLabel: timeLabel,
                 x: pt.x,
                 y: pt.y,
-                z: pt.z
+                z: pt.z,
+                rssi: pt.rssi
             });
 
             if (timeSeriesStore[nodeId].length > maxDataPoints) {

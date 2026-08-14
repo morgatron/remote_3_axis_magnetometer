@@ -1,0 +1,12 @@
+{
+  "port": "/dev/ttyACM0",
+  "baud": 921600,
+  "output_mode": "SERIAL",
+  "espnow_channel": 1,
+  "wifi": {
+    "ssid": "",
+    "password": "",
+    "target_ip": "255.255.255.255",
+    "target_port": 9876
+  }
+}

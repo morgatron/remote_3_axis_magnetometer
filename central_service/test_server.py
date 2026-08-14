@@ -163,6 +163,54 @@ def test_downsampling():
     assert abs(data[0]["x_nT"] - 20029.5) < 1.0
     print("[PASS] Server-side downsampling test passed.")
 
+def test_api_key_auth():
+    print("[TEST SETUP] Starting authenticated test server with API_KEY...")
+    env = os.environ.copy()
+    env["DB_FILE"] = temp_db_path
+    env["API_KEY"] = "secret_key_98765"
+    auth_port = 8898
+    auth_url = f"http://127.0.0.1:{auth_port}"
+    
+    cmd = [
+        sys.executable, "-m", "uvicorn",
+        "server:app", "--host", "127.0.0.1", "--port", str(auth_port)
+    ]
+    cwd_dir = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.Popen(cmd, env=env, cwd=cwd_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    try:
+        start_t = time.time()
+        while time.time() - start_t < 10:
+            try:
+                r = requests.get(f"{auth_url}/health", timeout=1)
+                if r.status_code == 200:
+                    break
+            except Exception:
+                time.sleep(0.2)
+
+        payload = {"node_id": "AUTH_NODE", "points": [{"node_id": "AUTH_NODE", "x": 10.0, "y": 20.0, "z": 30.0}]}
+        
+        # 1. Unauthenticated request -> should fail with 401
+        r_unauth = requests.post(f"{auth_url}/api/v1/telemetry/batch", json=payload)
+        assert r_unauth.status_code == 401
+        
+        # 2. Invalid API Key -> should fail with 401
+        r_wrong = requests.post(f"{auth_url}/api/v1/telemetry/batch", json=payload, headers={"X-API-Key": "wrong_key"})
+        assert r_wrong.status_code == 401
+        
+        # 3. Valid API Key -> should succeed with 201
+        r_valid = requests.post(f"{auth_url}/api/v1/telemetry/batch", json=payload, headers={"X-API-Key": "secret_key_98765"})
+        assert r_valid.status_code == 201
+
+        # 4. GET requests should remain open for read-only UI viewing
+        r_get = requests.get(f"{auth_url}/api/v1/nodes")
+        assert r_get.status_code == 200
+
+        print("[PASS] X-API-Key authentication test passed.")
+    finally:
+        proc.terminate()
+        proc.wait()
+
 def cleanup(proc):
     if proc:
         proc.terminate()
@@ -181,6 +229,7 @@ if __name__ == "__main__":
         test_list_nodes()
         test_data_export_formats()
         test_downsampling()
+        test_api_key_auth()
         print("\nALL CENTRAL SERVER TESTS PASSED SUCCESSFULLY!")
     finally:
         cleanup(proc)

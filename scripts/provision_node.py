@@ -33,25 +33,31 @@ except ImportError:
 
 
 def load_wifi_cfg_fallback():
-    """Parses legacy wifi.cfg file if available."""
-    wifi_cfg_path = os.path.join(os.path.dirname(__file__), "wifi.cfg")
+    """Parses legacy wifi.cfg file if available in root or scripts directory."""
+    paths = [
+        os.path.join(os.path.dirname(__file__), "..", "wifi.cfg"),
+        os.path.join(os.path.dirname(__file__), "wifi.cfg")
+    ]
     ssid, pwd = "", ""
-    if os.path.exists(wifi_cfg_path):
-        try:
-            with open(wifi_cfg_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("SSID:"):
-                        ssid = line.split(":", 1)[1].strip()
-                    elif line.startswith("PWD:"):
-                        pwd = line.split(":", 1)[1].strip()
-        except Exception:
-            pass
+    for wifi_cfg_path in paths:
+        if os.path.exists(wifi_cfg_path):
+            try:
+                with open(wifi_cfg_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("SSID:"):
+                            ssid = line.split(":", 1)[1].strip()
+                        elif line.startswith("PWD:"):
+                            pwd = line.split(":", 1)[1].strip()
+                if ssid:
+                    break
+            except Exception:
+                pass
     return ssid, pwd
 
 
-def load_config(config_path="provision_config.json"):
-    """Loads configuration JSON file, applying defaults and fallback wifi.cfg."""
+def load_config(config_path="provision_config.json", user_specified=False):
+    """Loads configuration JSON file, searching relative path, root directory, or scripts dir."""
     defaults = {
         "port": "/dev/ttyACM0",
         "baud": 921600,
@@ -74,9 +80,19 @@ def load_config(config_path="provision_config.json"):
         }
     }
 
-    if os.path.exists(config_path):
+    resolved_path = config_path
+    if not os.path.exists(resolved_path):
+        root_path = os.path.join(os.path.dirname(__file__), "..", config_path)
+        if os.path.exists(root_path):
+            resolved_path = root_path
+
+    if user_specified and not os.path.exists(resolved_path):
+        print(f"[ERROR] Specified configuration file '{config_path}' was not found!")
+        sys.exit(1)
+
+    if os.path.exists(resolved_path):
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(resolved_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 # Deep merge top-level and nested dicts
                 for key in ["port", "baud", "sensor", "device_id", "output_mode"]:
@@ -90,6 +106,8 @@ def load_config(config_path="provision_config.json"):
                     defaults["flc100"].update(data["flc100"])
         except Exception as e:
             print(f"[CONFIG WARNING] Could not read {config_path}: {e}")
+            if user_specified:
+                sys.exit(1)
 
     # Fallback to wifi.cfg if SSID is still empty
     if not defaults["wifi"]["ssid"]:
@@ -116,7 +134,8 @@ def send_cli_cmd(ser, cmd: str, delay_sec=0.4):
 
 
 def provision(args):
-    cfg = load_config(args.config)
+    user_specified = (args.config != "provision_config.json") or ("--config" in sys.argv) or ("-c" in sys.argv)
+    cfg = load_config(args.config, user_specified=user_specified)
 
     # Command line argument overrides
     port = args.port or cfg["port"]
@@ -142,6 +161,7 @@ def provision(args):
     print("\n" + "=" * 70)
     print(" REMOTE NODE PROVISIONING SUMMARY")
     print("=" * 70)
+    print(f"  Config Source:   {args.config}" + (" (custom file)" if user_specified else " (default)"))
     print(f"  Target Port:     {port} @ {baud} baud")
     print(f"  Sensor Model:    {sensor_type}")
     if sensor_type == "RM3100":
@@ -160,7 +180,7 @@ def provision(args):
 
     if not ssid:
         print("[PROVISION WARNING] WiFi SSID is empty! The node will not be able to connect to WiFi.")
-        print("                  Provide --ssid <SSID> or update provision_config.json / wifi.cfg.\n")
+        print("                  Provide --ssid <SSID> or update config JSON / wifi.cfg.\n")
 
     print(f"Connecting to ESP32 on {port}...")
     try:
@@ -222,9 +242,33 @@ def provision(args):
 
 
 def main():
+    if len(sys.argv) == 1:
+        print("\n[NOTICE] No arguments provided. Printing available CLI options below:\n")
+        # Instantiate parser to print full help
+        parser = argparse.ArgumentParser(
+            description="Provision ESP32 magnetometer nodes for remote 1 Hz WiFi streaming."
+        )
+        parser.add_argument("-d", "--default-config", action="store_true", help="Use default configuration file (provision_config.json)")
+        parser.add_argument("-c", "--config", type=str, default="provision_config.json", help="Path to JSON configuration file (default: provision_config.json)")
+        parser.add_argument("--port", type=str, help="Serial port (e.g. /dev/ttyACM0 or /dev/ttyUSB0)")
+        parser.add_argument("--baud", type=int, help="Baud rate (default: 921600)")
+        parser.add_argument("--sensor", type=str, choices=["RM3100", "FLC100", "MOCK"], help="Sensor model (RM3100, FLC100, or MOCK)")
+        parser.add_argument("--ssid", type=str, help="WiFi SSID network name")
+        parser.add_argument("--pass", dest="pass_word", type=str, help="WiFi network WPA2 password")
+        parser.add_argument("--target", type=str, help="Target UDP server IP (default: 255.255.255.255 broadcast)")
+        parser.add_argument("--mode", type=str, choices=["WIFI", "SERIAL", "BLE", "BOTH"], help="Output stream mode")
+        parser.add_argument("--rate", type=str, help="Rate code (e.g., 0x95 for 75Hz RM3100)")
+        parser.add_argument("--cycle", type=int, help="RM3100 cycle count (default: 200)")
+        parser.add_argument("--downsample", type=int, help="Downsample ratio (75 for RM3100, 1000 for FLC100)")
+        parser.add_argument("--id", type=str, help="Custom Device ID / Node name")
+        parser.print_help()
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(
         description="Provision ESP32 magnetometer nodes for remote 1 Hz WiFi streaming."
     )
+    parser.add_argument("-d", "--default-config", action="store_true", help="Use default configuration file (provision_config.json)")
+    parser.add_argument("-c", "--config", type=str, default="provision_config.json", help="Path to JSON configuration file (default: provision_config.json)")
     parser.add_argument("--port", type=str, help="Serial port (e.g. /dev/ttyACM0 or /dev/ttyUSB0)")
     parser.add_argument("--baud", type=int, help="Baud rate (default: 921600)")
     parser.add_argument("--sensor", type=str, choices=["RM3100", "FLC100", "MOCK"], help="Sensor model (RM3100, FLC100, or MOCK)")
@@ -236,7 +280,6 @@ def main():
     parser.add_argument("--cycle", type=int, help="RM3100 cycle count (default: 200)")
     parser.add_argument("--downsample", type=int, help="Downsample ratio (75 for RM3100, 1000 for FLC100)")
     parser.add_argument("--id", type=str, help="Custom Device ID / Node name")
-    parser.add_argument("--config", type=str, default="provision_config.json", help="Path to config JSON file")
 
     args = parser.parse_args()
     provision(args)

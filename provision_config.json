@@ -3,7 +3,7 @@
   "baud": 921600,
   "sensor": "RM3100",
   "device_id": "",
-  "output_mode": "WIFI",
+  "output_mode": "BLE",
   "wifi": {
     "ssid": "NetComm 2927",
     "password": "zakuystuhs",

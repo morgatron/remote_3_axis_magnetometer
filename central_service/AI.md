@@ -35,12 +35,38 @@ Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy da
 
 ---
 
+## Open-Internet Security & API Key Authentication
+
+To secure the server against unauthorized open-internet data injection:
+
+1. **Server Configuration**: Set `export API_KEY="your_secret_key"` before launching `server.py`.
+   - All state mutation endpoints (`POST /api/v1/telemetry`, `POST /api/v1/telemetry/batch`, `POST /api/v1/nodes/update`) automatically require `X-API-Key: your_secret_key` in the request header.
+   - If `API_KEY` is omitted or empty, authentication is disabled for local offline testing.
+   - Read-only endpoints (`GET /`, `GET /health`, `GET /api/v1/nodes`, `GET /api/v1/data`) remain open so dashboards can display telemetry without authentication.
+
+2. **Gateway Configuration**: Set matching `export API_KEY="your_secret_key"` before running `gateway.py`:
+   ```bash
+   export API_KEY="your_secret_key"
+   export CENTRAL_SERVER_URL="http://192.168.1.100:8000"
+   python gateway.py
+   ```
+
+---
+
+## Web GUI Dashboard Features (`static/index.html`)
+
+- **Signal Strength (RSSI) Plotting**: Real-time signal strength (in $\text{dBm}$) is stored in the database, displayed on each node card, and selectable in the field dropdown.
+- **Historical Time-Range Selector**: Select **Live Stream**, **Last 1 Hour** (10s avg), **Last 6 Hours** (1m avg), **Last 24 Hours** (1m avg), or **Last 7 Days** (1h avg) to analyze database trends directly in the browser.
+- **Multi-Node Overlay Plotting**: Select **Overlay: All Nodes** ($|B|$, $B_z$, or $\text{RSSI}$) to plot multiple field nodes simultaneously on a single chart with distinct color-coded lines for spatial gradient comparison.
+
+---
+
 ## File Structure
 
 ```
 central_service/
 ├── server.py                 # Single-file FastAPI + SQLite backend server & WebSocket hub
-├── gateway.py            # Unified UDP, BLE, and Serial store-and-forward edge gateway
+├── gateway.py                # Unified UDP, BLE, and Serial store-and-forward edge gateway
 ├── static/
 │   └── index.html            # Real-time web GUI monitoring dashboard
 ├── client_example.py         # Future-proof Python script loading data into Pandas/NumPy/Parquet
@@ -58,6 +84,9 @@ central_service/
 ```bash
 cd central_service
 pip install -r requirements.txt
+
+# Optional: Enable API key security for open-internet exposure
+export API_KEY="my_secret_key_123"
 python server.py
 ```
 Open `http://localhost:8000` (or `http://<pi-ip>:8000`) in your web browser.
@@ -65,5 +94,6 @@ Open `http://localhost:8000` (or `http://<pi-ip>:8000`) in your web browser.
 ### 2. Run Edge Gateway (on Edge Pi / Field Gateway)
 ```bash
 export CENTRAL_SERVER_URL="http://192.168.1.100:8000"
+export API_KEY="my_secret_key_123"
 python gateway.py
 ```

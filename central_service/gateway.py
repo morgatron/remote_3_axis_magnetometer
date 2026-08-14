@@ -17,6 +17,7 @@ Features:
 import os
 import sys
 import time
+import math
 import socket
 import json
 import queue
@@ -24,16 +25,22 @@ import asyncio
 import threading
 import requests
 
+# Ensure line-buffered stdout for real-time console & log output
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 # Environment Configuration
 CENTRAL_SERVER_URL = os.getenv("CENTRAL_SERVER_URL", "http://localhost:8000")
+API_KEY = os.getenv("API_KEY", None)
 ENABLE_UDP = os.getenv("ENABLE_UDP", "true").lower() == "true"
 UDP_PORT = int(os.getenv("UDP_PORT", "9876"))
 
-ENABLE_SERIAL = os.getenv("ENABLE_SERIAL", "false").lower() == "true"
+ENABLE_SERIAL = os.getenv("ENABLE_SERIAL", "true").lower() == "true"
 SERIAL_PORT = os.getenv("SERIAL_PORT", None)
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "921600"))
 
-ENABLE_BLE = os.getenv("ENABLE_BLE", "true").lower() == "true"
+# BLE disabled by default (Coded PHY Extended Advertising cannot be scanned by standard host PC Bluetooth adapters)
+ENABLE_BLE = os.getenv("ENABLE_BLE", "false").lower() == "true"
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
@@ -91,7 +98,13 @@ def parse_csv_line(line: str):
 def forwarder_worker():
     """Flushes queued telemetry from all interfaces to the Central Data Server."""
     print(f"[Gateway Forwarder] Worker active. Target: {CENTRAL_SERVER_URL}")
+    if API_KEY:
+        print("[Gateway Forwarder] X-API-Key authentication header configured.")
     
+    headers = {"Content-Type": "application/json"}
+    if API_KEY and API_KEY.strip():
+        headers["X-API-Key"] = API_KEY.strip()
+
     while True:
         try:
             if not send_queue.empty():
@@ -111,7 +124,7 @@ def forwarder_worker():
                 for nid, node_batch in batches_by_node.items():
                     payload = {"node_id": nid, "points": node_batch}
                     try:
-                        resp = requests.post(f"{CENTRAL_SERVER_URL}/api/v1/telemetry/batch", json=payload, timeout=3.0)
+                        resp = requests.post(f"{CENTRAL_SERVER_URL}/api/v1/telemetry/batch", json=payload, headers=headers, timeout=3.0)
                         if resp.status_code != 201:
                             print(f"[Gateway Warning] HTTP {resp.status_code} from central server: {resp.text}")
                             for s in node_batch:
@@ -132,7 +145,13 @@ def forwarder_worker():
 def udp_listener_thread():
     print(f"[Gateway UDP] Listening for telemetry on 0.0.0.0:{UDP_PORT}...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except Exception:
+        pass
     sock.bind(("0.0.0.0", UDP_PORT))
+    sock.settimeout(2.0)  # 2.0 second socket timeout to prevent socket read stalling
     
     while True:
         try:
@@ -143,24 +162,48 @@ def udp_listener_thread():
             for sample in samples:
                 if not send_queue.full():
                     send_queue.put(sample)
+        except socket.timeout:
+            continue
         except Exception as e:
             print(f"[Gateway UDP Error] {e}")
             time.sleep(0.5)
 
 # --- 2. Serial / USB Listener ---
 def serial_listener_thread(port, baud):
-    try:
-        import serial
-        print(f"[Gateway Serial] Opening {port} at {baud} baud...")
-        ser = serial.Serial(port, baud, timeout=1.0)
-        while True:
-            line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if line:
-                sample = parse_csv_line(line)
-                if sample and not send_queue.full():
-                    send_queue.put(sample)
-    except Exception as e:
-        print(f"[Gateway Serial Error] {e}")
+    import serial
+    import serial.tools.list_ports
+
+    rx_count = 0
+    while True:
+        target_port = port
+        if not target_port:
+            # Auto-detect available ESP32 USB CDC / ACM / USB serial ports
+            acm_ports = sorted([p.device for p in serial.tools.list_ports.comports() if 'ACM' in p.device or 'USB' in p.device])
+            if acm_ports:
+                target_port = acm_ports[0]
+            else:
+                target_port = "/dev/ttyACM0"
+
+        try:
+            print(f"[Gateway Serial] Opening {target_port} at {baud} baud...")
+            ser = serial.Serial(target_port, baud, timeout=1.0)
+            ser.dtr = True
+            ser.rts = True
+            print(f"[Gateway Serial Connected] Active on {target_port}")
+
+            while True:
+                line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if line:
+                    sample = parse_csv_line(line)
+                    if sample:
+                        rx_count += 1
+                        if rx_count % 10 == 1:
+                            print(f"[Gateway Serial RX #{rx_count}] {sample['node_id']} -> |B| = {math.sqrt(sample['x']**2 + sample['y']**2 + sample['z']**2):.1f} nT (RSSI: {sample.get('rssi')} dBm)")
+                        if not send_queue.full():
+                            send_queue.put(sample)
+        except Exception as e:
+            print(f"[Gateway Serial Disconnected] {target_port}: {e}. Retrying in 2.0s...")
+            time.sleep(2.0)
 
 # --- 3. BLE Listener (Async) ---
 async def ble_listener_loop():
@@ -224,8 +267,7 @@ if __name__ == "__main__":
 
     # Start Serial Listener
     if ENABLE_SERIAL or SERIAL_PORT:
-        port = SERIAL_PORT or "/dev/ttyUSB0"
-        t_ser = threading.Thread(target=serial_listener_thread, args=(port, SERIAL_BAUD), daemon=True)
+        t_ser = threading.Thread(target=serial_listener_thread, args=(SERIAL_PORT, SERIAL_BAUD), daemon=True)
         t_ser.start()
 
     # Start BLE Listener

@@ -201,16 +201,48 @@ pio run -e esp32c6_receiver -t upload --upload-port /dev/ttyACM1
 # 5. Multi-Protocol Receiver & Gateway (Heltec V4 ESP32-S3 + SX1262 LoRa)
 pio run -e heltec_v4_receiver -t upload --upload-port /dev/ttyACM1
 
-# 6. Automated Heltec V4 LoRa Setup & Over-The-Air Test Tool (AU915 Band)
+# 6. Provision Field Sensor Node via Serial CLI
+python3 scripts/provision_node.py -c provision_config.json --port /dev/ttyACM1
+
+# 7. Provision Gateway Receiver Node via Serial CLI
+python3 scripts/provision_receiver.py -c provision_receiver_config.json --port /dev/ttyACM0
+
+# 8. Automated Heltec V4 LoRa Setup & Over-The-Air Test Tool (AU915 Band)
 python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0
 ```
 
 ### Central Data Server & Web GUI
+
 ```bash
 cd central_service
+
+# Optional: Set API_KEY for secure open-internet deployment
+export API_KEY="my_secret_key_123"
 python server.py
 # Open http://localhost:8000
 ```
+
+#### API Key Authentication Setup
+
+To secure the server against unauthorized open-internet data injection:
+
+1. **Server Configuration**: Set `export API_KEY="your_secret_key"` before launching `server.py`.
+   - When `API_KEY` is set, all state-mutating requests (`POST /api/v1/telemetry`, `POST /api/v1/telemetry/batch`, `POST /api/v1/nodes/update`) require the HTTP header `X-API-Key: your_secret_key`.
+   - If `API_KEY` is not set or empty, authentication is disabled for local offline debugging.
+   - Read-only endpoints (`GET /`, `GET /health`, `GET /api/v1/nodes`, `GET /api/v1/data`) remain open so dashboards can display telemetry without authentication.
+
+2. **Gateway Configuration**: Set matching `export API_KEY="your_secret_key"` before running `gateway.py`:
+   ```bash
+   export API_KEY="your_secret_key"
+   export CENTRAL_SERVER_URL="http://localhost:8000"
+   python3 central_service/gateway.py
+   ```
+
+#### Web GUI Features
+
+- **Signal Strength (RSSI) Plotting**: Real-time signal strength (in $\text{dBm}$) is stored in the database, displayed on each node card, and selectable in the field dropdown.
+- **Historical Time-Range Selector**: Choose between **Live Stream**, **Last 1 Hour** (10s avg), **Last 6 Hours** (1m avg), **Last 24 Hours** (1m avg), or **Last 7 Days** (1h avg) to analyze database trends directly in the browser.
+- **Multi-Node Overlay Plotting**: Select **Overlay: All Nodes** ($|B|$, $B_z$, or $\text{RSSI}$) to plot multiple field nodes simultaneously on a single chart with distinct color-coded lines for spatial gradient comparison.
 
 ### Run Automated Test Suite
 ```bash

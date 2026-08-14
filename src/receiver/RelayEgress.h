@@ -32,9 +32,9 @@ public:
             NULL,
             2,
             NULL,
-            1
+            tskNO_AFFINITY
         );
-        Serial.println(F("[RELAY EGRESS SUCCESS] FreeRTOS Egress Relay Task Spawned on Core 1"));
+        Serial.println(F("[RELAY EGRESS SUCCESS] FreeRTOS Egress Relay Task Spawned"));
     }
 
 private:

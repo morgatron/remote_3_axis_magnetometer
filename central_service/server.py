@@ -7,8 +7,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Union
 
-from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import numpy as np
@@ -19,6 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("central_server")
 
 DB_FILE = os.getenv("DB_FILE", "magnetometer.db")
+API_KEY = os.getenv("API_KEY", None)
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)
@@ -114,6 +115,19 @@ app = FastAPI(
     description="Future-proof, lightweight time-series server for distributed 3-axis magnetometers.",
     version="1.0.0"
 )
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if API_KEY and API_KEY.strip():
+        # Validate X-API-Key header on all state mutation methods (POST, PUT, DELETE, PATCH)
+        if request.method in ["POST", "PUT", "DELETE", "PATCH"]:
+            key = request.headers.get("X-API-Key")
+            if not key or key.strip() != API_KEY.strip():
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: Invalid or missing X-API-Key header"}
+                )
+    return await call_next(request)
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(STATIC_DIR):
@@ -220,6 +234,7 @@ async def ingest_sample(point: TelemetryPoint):
         "units": point.units or "nT",
         "temp": point.temp,
         "vbat": point.vbat,
+        "rssi": point.rssi,
         "sensor_model": point.sensor_model or "RM3100",
         "cycle_count": point.cycle_count or 200
     })
@@ -251,6 +266,7 @@ async def ingest_batch(batch: BatchTelemetry):
             "units": p.units or "nT",
             "temp": p.temp,
             "vbat": p.vbat,
+            "rssi": p.rssi,
             "sensor_model": p.sensor_model or "RM3100",
             "cycle_count": p.cycle_count or 200
         })

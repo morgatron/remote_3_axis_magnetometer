@@ -83,7 +83,6 @@ public:
     bool recordBatchSeen(const char* device_id, const uint8_t* mac, int rssi, uint32_t start_ts_ms, uint8_t sample_count, float vbat = 0.0f) {
         uint32_t now = millis();
         int idx = findNodeIndex(device_id, mac);
-        Serial.print("Node idx: "); Serial.println(idx);
 
         if (idx < 0) {
             if (_nodeCount < MAX_TRACKED_NODES) {
