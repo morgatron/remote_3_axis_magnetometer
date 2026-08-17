@@ -66,21 +66,42 @@ fi
 echo -e "\n${BLUE}[2/5] Setting up Python virtual environment...${NC}"
 cd "$SCRIPT_DIR"
 
+# Ensure venv is created and owned by the actual user, not root
 if [ ! -d ".venv" ]; then
-    echo "Creating Python virtual environment in ${SCRIPT_DIR}/.venv ..."
-    python3 -m venv .venv
+    echo "Creating Python virtual environment in ${SCRIPT_DIR}/.venv (User: ${CURRENT_USER})..."
+    if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
+        sudo -u "$SUDO_USER" python3 -m venv .venv
+    else
+        python3 -m venv .venv
+    fi
 fi
 
 echo "Installing / updating Python dependencies..."
-"${SCRIPT_DIR}/.venv/bin/pip" install --upgrade pip -q
-"${SCRIPT_DIR}/.venv/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt" -q
+if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
+    sudo -u "$SUDO_USER" "${SCRIPT_DIR}/.venv/bin/pip" install --upgrade pip -q
+    sudo -u "$SUDO_USER" "${SCRIPT_DIR}/.venv/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt" -q
+else
+    "${SCRIPT_DIR}/.venv/bin/pip" install --upgrade pip -q
+    "${SCRIPT_DIR}/.venv/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt" -q
+fi
+
+# Explicitly ensure executable bits and user ownership
+chmod -R u+rwX,go+rX "${SCRIPT_DIR}/.venv"
+chmod +x "${SCRIPT_DIR}/.venv/bin/"* 2>/dev/null || true
+if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
+    chown -R "${SUDO_USER}:${SUDO_USER}" "${SCRIPT_DIR}"
+fi
 
 # Step 3: Environment Configuration (.env)
 echo -e "\n${BLUE}[3/5] Checking configuration file (.env)...${NC}"
 if [ ! -f "${SCRIPT_DIR}/.env" ]; then
     echo "Creating .env from .env.example ..."
     cp "${SCRIPT_DIR}/.env.example" "${SCRIPT_DIR}/.env"
-    echo -e "${GREEN}[+] Generated default .env${NC}"
+    if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
+        chown "${SUDO_USER}:${SUDO_USER}" "${SCRIPT_DIR}/.env"
+    fi
+    chmod 600 "${SCRIPT_DIR}/.env"
+    echo -e "${GREEN}[+] Generated default .env (permissions set to 0600)${NC}"
 else
     echo -e "${GREEN}[+] Existing .env configuration preserved.${NC}"
 fi
@@ -182,6 +203,14 @@ SyslogIdentifier=magnetometer-gateway
 [Install]
 WantedBy=multi-user.target
 EOF"
+
+    # Ensure all files and executables are owned and runnable by the service user
+    if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
+        chown -R "${SUDO_USER}:${SUDO_USER}" "${SCRIPT_DIR}"
+    fi
+    chmod -R u+rwX,go+rX "${SCRIPT_DIR}/.venv"
+    chmod +x "${SCRIPT_DIR}/.venv/bin/"* 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/server.py" "${SCRIPT_DIR}/gateway.py" 2>/dev/null || true
 
     echo "Reloading systemd daemon and enabling services..."
     $SUDO_CMD systemctl daemon-reload
