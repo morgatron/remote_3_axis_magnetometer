@@ -1,7 +1,29 @@
+# PlatformIO & Build artifacts
 .pio
-*.pyc
-*.h5
+.vscode/
+
+# Python & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+env/
+venv/
+
+# Temporary, Test & Data Artifacts
 *.tmp
+*.h5
 *.npy
+*.parquet
+*.npz
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Sensitive & Local Configuration Files
 wifi.cfg
+.env
+.env.*

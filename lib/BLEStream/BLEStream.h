@@ -2,7 +2,7 @@
 #define BLE_STREAM_H
 
 #include <Arduino.h>
-#include "../../include/TelemetryPacket.h"
+#include "TelemetryPacket.h"
 
 namespace BLEConfig {
     constexpr uint16_t ADV_MIN_INTERVAL_UNITS = 80;   // 50 ms (80 * 0.625ms)

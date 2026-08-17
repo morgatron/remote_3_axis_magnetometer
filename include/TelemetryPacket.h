@@ -18,7 +18,42 @@ struct TelemetryItem {
     float vbat;             // Battery voltage V
     uint32_t status;        // Hardware status code
     uint64_t timestamp_us;  // Sensor uptime in us
-    char protocol[12];      // Protocol source ("ESP-NOW", "BLE", "WIFI_UDP")
+    char protocol[16];      // Protocol source ("ESP-NOW", "BLE", "WIFI_UDP", "LORA")
+
+    /**
+     * @brief Formats current item attributes into standard 9-column CSV string in line buffer.
+     */
+    void formatCsvLine() {
+        snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
+                 node_id[0] != '\0' ? node_id : "UNKNOWN",
+                 (unsigned long long)timestamp_us,
+                 x, y, z,
+                 (unsigned int)(status & 0xFFFFFF),
+                 temp, vbat, rssi);
+    }
+
+    /**
+     * @brief Parses standard 6-column or 8-column ASCII CSV string into TelemetryItem attributes.
+     * Format: device_id,timestamp_us,x_nT,y_nT,z_nT,status_hex[,temp,vbat]
+     */
+    static bool parseCsvLine(const char* csvLine, TelemetryItem &outItem) {
+        if (!csvLine || strlen(csvLine) < 10) return false;
+        char devBuf[32] = {0};
+        unsigned long long ts = 0;
+        float x = 0, y = 0, z = 0;
+        unsigned int st = 0;
+        float temp = 0.0f, vbat = 0.0f;
+
+        int scanned = sscanf(csvLine, "%31[^,],%llu,%f,%f,%f,%x,%f,%f", devBuf, &ts, &x, &y, &z, &st, &temp, &vbat);
+        if (scanned >= 5) {
+            strncpy(outItem.node_id, devBuf, sizeof(outItem.node_id) - 1);
+            outItem.timestamp_us = ts;
+            outItem.x = x; outItem.y = y; outItem.z = z;
+            outItem.status = st; outItem.temp = temp; outItem.vbat = vbat;
+            return true;
+        }
+        return false;
+    }
 };
 
 /**
