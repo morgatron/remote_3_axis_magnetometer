@@ -4,10 +4,40 @@ services:
   magnetometer_server:
     build: .
     container_name: magnetometer_server
-    restart: always
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    env_file:
+      - path: .env
+        required: false
     environment:
       - DB_FILE=/app/data/magnetometer.db
+      - HOST=0.0.0.0
+      - PORT=8000
+      - API_KEY=${API_KEY:-}
+
+  # Optional edge gateway receiver (runs on host network to capture UDP packets from ESP32 nodes)
+  magnetometer_gateway:
+    build: .
+    container_name: magnetometer_gateway
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "gateway.py"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - CENTRAL_SERVER_URL=http://localhost:8000
+      - API_KEY=${API_KEY:-}
+      - ENABLE_UDP=true
+      - UDP_PORT=9876
+      - ENABLE_SERIAL=false
+      - ENABLE_BLE=false
+    depends_on:
+      - magnetometer_server
+    profiles:
+      - gateway
+      - all
+

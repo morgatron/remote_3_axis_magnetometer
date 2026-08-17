@@ -65,35 +65,53 @@ To secure the server against unauthorized open-internet data injection:
 
 ```
 central_service/
-├── server.py                 # Single-file FastAPI + SQLite backend server & WebSocket hub
+├── install.sh                # Automated one-click installer for Raspberry Pi 4 & Linux Laptops
+├── manage.sh                 # Unified operations CLI (status, start, stop, restart, logs, backup, export)
+├── remote_access.sh          # Residential NAT assistant (Tailscale, Cloudflare Tunnels, CGNAT check)
+├── server.py                 # FastAPI + SQLite backend server & WebSocket hub (.env supported)
 ├── gateway.py                # Unified UDP, BLE, and Serial store-and-forward edge gateway
+├── stream_parser.py          # Shared parsing logic for MCU telemetry lines & microsecond delta-t batches
 ├── static/
 │   └── index.html            # Real-time web GUI monitoring dashboard
+├── systemd/                  # Systemd service templates for 24/7 background operation
+│   ├── magnetometer-server.service
+│   └── magnetometer-gateway.service
+├── .env.example              # Environment variables template (ports, paths, API keys)
 ├── client_example.py         # Future-proof Python script loading data into Pandas/NumPy/Parquet
+├── test_server.py            # Automated end-to-end HTTP test suite
 ├── test_simulator.py         # Multi-node simulator for testing 1 Hz telemetry & magnetic transients
 ├── requirements.txt          # Python dependencies
-├── docker-compose.yml        # Optional single-container Docker deployment configuration
-└── Dockerfile                # Lightweight Python container setup
+├── docker-compose.yml        # Docker Compose configuration (server + gateway profiles)
+└── Dockerfile                # Lightweight Python container setup with healthcheck
 ```
 
 ---
 
-## Quick Start
+## Quick Start & Deployment
 
-### 1. Run Central Server (Raspberry Pi / Linux / PC)
+### Method 1: Automated Installer (Raspberry Pi 4 / Laptop) - Recommended
 ```bash
 cd central_service
-pip install -r requirements.txt
-
-# Optional: Enable API key security for open-internet exposure
-export API_KEY="my_secret_key_123"
-python server.py
+sudo ./install.sh
 ```
-Open `http://localhost:8000` (or `http://<pi-ip>:8000`) in your web browser.
+This automatically sets up Python virtual environments, systemd auto-restart services, laptop lid-close behavior, and SD card safety.
 
-### 2. Run Edge Gateway (on Edge Pi / Field Gateway)
+### Method 2: Management Script (`manage.sh`)
 ```bash
-export CENTRAL_SERVER_URL="http://192.168.1.100:8000"
-export API_KEY="my_secret_key_123"
-python gateway.py
+./manage.sh status     # Check health, database size, memory, and telemetry count
+./manage.sh logs       # Live stream logs
+./manage.sh backup     # Safe online SQLite backup
+./manage.sh export csv # Quick CLI export
 ```
+
+### Method 3: Running Behind Residential NAT / CGNAT
+```bash
+./remote_access.sh     # Interactive assistant for Cloudflare Tunnels (Recommended) & NAT diagnostics
+```
+
+### Method 4: Docker Compose
+```bash
+docker compose up -d                  # Server only
+docker compose --profile all up -d    # Server + UDP Gateway
+```
+

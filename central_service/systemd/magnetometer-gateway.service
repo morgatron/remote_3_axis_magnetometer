@@ -1,0 +1,22 @@
+[Unit]
+Description=Magnetometer Edge Gateway (UDP/Serial/BLE Stream Ingestion)
+After=network-online.target magnetometer-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%WORKING_DIR%
+EnvironmentFile=-%WORKING_DIR%/.env
+ExecStart=%WORKING_DIR%/.venv/bin/python %WORKING_DIR%/gateway.py
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+# Standard Output & Error to journald (view with journalctl -u magnetometer-gateway -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=magnetometer-gateway
+
+[Install]
+WantedBy=multi-user.target

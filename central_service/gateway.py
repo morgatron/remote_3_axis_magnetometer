@@ -29,6 +29,22 @@ import requests
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
+# Try loading local .env file if present
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(env_path):
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+    except Exception:
+        pass
+
 # Environment Configuration
 CENTRAL_SERVER_URL = os.getenv("CENTRAL_SERVER_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY", None)
@@ -53,9 +69,14 @@ if ENABLE_BLE:
     except ImportError:
         print("[Gateway Notice] 'bleak' package not found. BLE listener will be disabled (install via 'pip install bleak').")
 
-# Import shared stream parser from repository root
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from stream_parser import parse_telemetry_line, parse_telemetry_batch
+# Import shared stream parser from local folder or repository root
+sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+try:
+    from stream_parser import parse_telemetry_line, parse_telemetry_batch
+except ImportError as e:
+    print(f"[Gateway Fatal] Could not import 'stream_parser': {e}")
+    sys.exit(1)
 
 # Thread-safe / Async-safe Telemetry Queue
 send_queue = queue.Queue(maxsize=10000)

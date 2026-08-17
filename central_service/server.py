@@ -14,14 +14,38 @@ from pydantic import BaseModel, Field
 import numpy as np
 import pandas as pd
 
+# Try loading local .env file if present
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(env_path):
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+    except Exception:
+        pass
+
 # Configure Logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("central_server")
 
 DB_FILE = os.getenv("DB_FILE", "magnetometer.db")
 API_KEY = os.getenv("API_KEY", None)
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
 
 def get_db():
+    db_dir = os.path.dirname(DB_FILE)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
@@ -448,4 +472,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    logger.info("=" * 60)
+    logger.info("  Magnetometer Central Data Server")
+    logger.info("=" * 60)
+    logger.info(f"  Listening on:   http://{HOST}:{PORT}")
+    logger.info(f"  Web Dashboard:  http://{HOST}:{PORT}/")
+    logger.info(f"  API Docs:       http://{HOST}:{PORT}/docs")
+    logger.info(f"  Database Path:  {os.path.abspath(DB_FILE)}")
+    logger.info(f"  Security:       {'API Key Authentication ENABLED' if API_KEY else 'Open Access (Local / Dev mode)'}")
+    logger.info("=" * 60)
+    uvicorn.run("server:app", host=HOST, port=PORT, reload=False)
