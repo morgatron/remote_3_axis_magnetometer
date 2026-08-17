@@ -22,7 +22,24 @@ This system is designed for high-resolution, battery-powered remote magnetic fie
    - Using the Web GUI (`http://localhost:8000`)
    - REST API v1 reference & WebSockets streaming
    - Data exports: CSV, Apache Parquet (`.parquet`), NumPy (`.npz`), JSON
-4. [**Desktop Application Guide**](desktop_app_guide.md)
+4. [**Server Hardware & Deployment Guide (Raspberry Pi 4 / Laptop)**](SERVER_SETUP_GUIDE.md)
+   - Automated 1-click installer (`install.sh`)
+   - Laptop lid-close sleep prevention & Wi-Fi power-save disabling
+   - Raspberry Pi 4 SD card wear protection (WAL mode, log2ram, USB boot)
+   - Operations management with `manage.sh` (status, live logs, online backups)
+   - Single-command Docker Compose deployment
+5. [**Residential NAT & Remote Access Guide**](NAT_AND_REMOTE_ACCESS.md)
+   - Interactive NAT configuration assistant (`remote_access.sh`)
+   - Tailscale Mesh VPN (Zero-config WireGuard, CGNAT bypass)
+   - Cloudflare Tunnels (Public access & custom domain with free SSL)
+   - Router Port Forwarding & Dynamic DNS (DuckDNS)
+   - CGNAT diagnostic tests
+6. [**Secrets Management & System Security Guide**](SECRETS_AND_SECURITY.md)
+   - Storing server `API_KEY` with restricted file permissions (`0600`)
+   - Cloudflare Tunnel token security & systemd storage
+   - ESP32 dynamic NVS provisioning & hardware flash encryption
+   - Git hygiene and credential leak prevention
+7. [**Desktop Application Guide**](desktop_app_guide.md)
    - Running the PySide6 Desktop Application (`desktop_app/main.py`)
    - Real-time time-series plotting & Welch PSD spectral analysis
    - Device dynamic NVS provisioning & Gzip HDF5 (`.h5`) logging

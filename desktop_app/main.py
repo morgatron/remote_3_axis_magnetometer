@@ -1,67 +1,71 @@
+#!/usr/bin/env python3
+"""
+Remote 3-Axis Magnetometer Desktop Visualization Application
+
+Modular architecture orchestrating PyQtGraph plotting, PSD analysis,
+HDF5 streaming data acquisition, and ESP32 node provisioning.
+"""
+
 import sys
 import json
 import os
 import time
-import struct
-from datetime import datetime
 import numpy as np
-import h5py
-from scipy import signal
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QComboBox, QLabel, 
-                             QTabWidget, QStatusBar, QLineEdit, QCheckBox, QFrame,
-                             QFileDialog, QSpinBox, QMessageBox, QGroupBox, QStackedWidget,
-                             QDialog, QFormLayout)
-from PySide6.QtCore import Slot, Qt, QTimer
-import pyqtgraph as pg
+                             QTabWidget, QStatusBar, QCheckBox, QMessageBox)
+from PySide6.QtCore import Slot, QTimer
 import serial.tools.list_ports
+
+from core.data_buffer import DataBuffer
+from core.hdf5_recorder import Hdf5Recorder
+from widgets.time_series_plot import TimeSeriesPlot
+from widgets.psd_plot import PsdPlot
+from widgets.stats_panel import StatsPanel
+from widgets.acquisition_sidebar import AcquisitionSidebar
+from widgets.provision_dialog import ProvisionDialog
 from serial_worker import SerialWorker
 from udp_worker import UdpWorker
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("3-Axis Magnetometer Visualizer")
+        self.resize(1020, 720)
 
-        self.setWindowTitle("RM3100 Magnetometer Visualizer")
-        self.resize(1000, 700)
-
-        # Data buffers
-        self.max_samples = 2000
-        self.time_buffer = np.zeros(self.max_samples)
-        self.x_buffer = np.zeros(self.max_samples)
-        self.y_buffer = np.zeros(self.max_samples)
-        self.z_buffer = np.zeros(self.max_samples)
-        self.ptr = 0  # Write pointer
-        # Recording state
-        self.is_recording = False
-        self.recorded_samples = 0
-        self.log_file = None
-        self.record_duration = 60.0
-        self.record_start_time = 0.0
-        self.record_timer = QTimer()
-        self.record_timer.timeout.connect(self.update_recording_timer)
-
-        self.init_ui()
-        self.load_config()
+        # Core Data Storage & State
+        self.data_buffer = DataBuffer(max_samples=2000)
+        self.recorder = None
         self.serial_thread = None
-        
+        self.discovered_nodes = set(["All Nodes"])
+        self.detected_sensor = "RM3100"
+        self.active_cycle_count = 200
+
+        # Recording timer for auto-stop
+        self.record_timer = QTimer()
+        self.record_timer.timeout.connect(self._update_recording_timer)
+
+        self._init_ui()
+        self._load_config()
+
         # Timer for Auto-PSD
         self.psd_timer = QTimer()
-        self.psd_timer.timeout.connect(self.update_psd)
-        self.psd_timer.start(1000) # Check every second
+        self.psd_timer.timeout.connect(self._update_psd)
+        self.psd_timer.start(1000)
 
-    def init_ui(self):
+    def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # Connection Panel
+        # 1. Connection & Node Toolbar
         conn_layout = QHBoxLayout()
+        conn_layout.addWidget(QLabel("Port:"))
         self.port_combo = QComboBox()
         self.refresh_ports()
-        conn_layout.addWidget(QLabel("Port:"))
         conn_layout.addWidget(self.port_combo)
 
         self.connect_btn = QPushButton("Connect")
@@ -71,23 +75,22 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_ports)
         conn_layout.addWidget(refresh_btn)
-        
+
         conn_layout.addSpacing(15)
         conn_layout.addWidget(QLabel("Active Node:"))
         self.node_combo = QComboBox()
         self.node_combo.addItem("All Nodes")
-        self.discovered_nodes = set(["All Nodes"])
         conn_layout.addWidget(self.node_combo)
 
         provision_btn = QPushButton("Provision Node...")
-        provision_btn.setToolTip("Configure WiFi, streaming output mode, target server IP, and Device ID for remote deployment")
+        provision_btn.setToolTip("Configure WiFi, streaming mode, target IP, and Device ID for remote deployment")
         provision_btn.clicked.connect(self.open_provision_dialog)
         conn_layout.addWidget(provision_btn)
-        
+
         conn_layout.addStretch()
         main_layout.addLayout(conn_layout)
 
-        # Control Panel
+        # 2. Control Toolbar
         ctrl_layout = QHBoxLayout()
         self.stream_btn = QPushButton("Stream ON")
         self.stream_btn.clicked.connect(lambda: self.send_mcu_command("STREAM ON"))
@@ -103,14 +106,14 @@ class MainWindow(QMainWindow):
         self.sensor_type_combo.addItem("Auto-Detect", "AUTO")
         self.sensor_type_combo.addItem("PNI RM3100 (Digital SPI)", "RM3100")
         self.sensor_type_combo.addItem("FLC100-ADS131E08 (24-bit Analog)", "FLC100")
-        self.sensor_type_combo.currentIndexChanged.connect(self.on_user_select_sensor_type)
+        self.sensor_type_combo.currentIndexChanged.connect(self._on_user_select_sensor_type)
         ctrl_layout.addWidget(self.sensor_type_combo)
 
         ctrl_layout.addSpacing(15)
         ctrl_layout.addWidget(QLabel("Rate:"))
         self.rate_combo = QComboBox()
         self.rate_combo.setFixedWidth(160)
-        self.rate_combo.currentIndexChanged.connect(self.set_mcu_rate)
+        self.rate_combo.currentIndexChanged.connect(self._set_mcu_rate)
         ctrl_layout.addWidget(self.rate_combo)
 
         ctrl_layout.addSpacing(20)
@@ -127,7 +130,7 @@ class MainWindow(QMainWindow):
         for val in ["500", "1000", "2000", "5000", "10000"]:
             self.history_combo.addItem(val)
         self.history_combo.setCurrentText("2000")
-        self.history_combo.currentTextChanged.connect(self.update_buffer_size)
+        self.history_combo.currentTextChanged.connect(self._update_buffer_size)
         ctrl_layout.addWidget(self.history_combo)
 
         self.auto_psd_cb = QCheckBox("Auto-Update PSD")
@@ -144,347 +147,45 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(ctrl_layout)
 
-        # Stats Panel for Channel Means
-        stats_frame = QFrame()
-        stats_frame.setFrameShape(QFrame.StyledPanel)
-        stats_frame.setStyleSheet("""
-            QFrame {
-                background-color: rgba(128, 128, 128, 0.1);
-                border: 1px solid rgba(128, 128, 128, 0.2);
-                border-radius: 4px;
-            }
-        """)
-        stats_layout = QHBoxLayout(stats_frame)
-        stats_layout.setContentsMargins(15, 6, 15, 6)
-        
-        stats_title = QLabel("Channel Means:")
-        stats_title.setStyleSheet("font-weight: bold;")
-        stats_layout.addWidget(stats_title)
-        
-        stats_layout.addSpacing(20)
-        self.mean_x_label = QLabel("X: 0.00")
-        self.mean_x_label.setStyleSheet("color: #ef5350; font-weight: bold; font-size: 13px;")
-        stats_layout.addWidget(self.mean_x_label)
-        
-        stats_layout.addSpacing(20)
-        self.mean_y_label = QLabel("Y: 0.00")
-        self.mean_y_label.setStyleSheet("color: #66bb6a; font-weight: bold; font-size: 13px;")
-        stats_layout.addWidget(self.mean_y_label)
-        
-        stats_layout.addSpacing(20)
-        self.mean_z_label = QLabel("Z: 0.00")
-        self.mean_z_label.setStyleSheet("color: #42a5f5; font-weight: bold; font-size: 13px;")
-        stats_layout.addWidget(self.mean_z_label)
-        
-        stats_layout.addStretch()
-        main_layout.addWidget(stats_frame)
+        # 3. Channel Means Statistics Panel
+        self.stats_panel = StatsPanel()
+        main_layout.addWidget(self.stats_panel)
 
-        # Content layout containing Tabs (left) and Sidebar (right)
+        # 4. Content Area: Tabs (Left) + Acquisition Sidebar (Right)
         content_layout = QHBoxLayout()
         main_layout.addLayout(content_layout)
 
-        # Tabs for Visualization
         self.tabs = QTabWidget()
+        self.time_plot = TimeSeriesPlot()
+        self.psd_plot = PsdPlot()
+        self.psd_plot.update_requested.connect(self._update_psd)
+
+        self.tabs.addTab(self.time_plot, "Time Series")
+        self.tabs.addTab(self.psd_plot, "PSD Analysis")
         content_layout.addWidget(self.tabs, stretch=4)
 
-        # Sidebar for Acquisition
-        sidebar = QFrame()
-        sidebar.setFrameShape(QFrame.StyledPanel)
-        sidebar.setFixedWidth(260)
-        sidebar.setStyleSheet("""
-            QFrame {
-                background-color: rgba(128, 128, 128, 0.05);
-                border: 1px solid rgba(128, 128, 128, 0.15);
-                border-radius: 6px;
-            }
-            QLabel {
-                background: transparent;
-                border: none;
-            }
-            QPushButton {
-                padding: 6px;
-            }
-        """)
-        
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(12, 12, 12, 12)
-        sidebar_layout.setSpacing(10)
-        
-        # Title
-        title = QLabel("Data Acquisition")
-        title.setStyleSheet("font-weight: bold; font-size: 14px; border-bottom: 1px solid rgba(128,128,128,0.2); padding-bottom: 4px;")
-        sidebar_layout.addWidget(title)
-        
-        # File selector section
-        sidebar_layout.addWidget(QLabel("Output File:"))
-        file_layout = QHBoxLayout()
-        self.file_path_input = QLineEdit("acquisition.h5")
-        self.file_path_input.setToolTip("Path to the output HDF5 (.h5) dataset file")
-        file_layout.addWidget(self.file_path_input)
-        
-        browse_btn = QPushButton("...")
-        browse_btn.setFixedWidth(30)
-        browse_btn.clicked.connect(self.browse_file)
-        file_layout.addWidget(browse_btn)
-        sidebar_layout.addLayout(file_layout)
-        
-        # Auto-stop configuration
-        auto_stop_layout = QHBoxLayout()
-        self.auto_stop_cb = QCheckBox("Auto-stop:")
-        self.auto_stop_cb.setChecked(False)
-        self.auto_stop_cb.stateChanged.connect(self.toggle_auto_stop_input)
-        auto_stop_layout.addWidget(self.auto_stop_cb)
-        
-        self.duration_spin = QSpinBox()
-        self.duration_spin.setRange(1, 86400) # 1s to 24 hours
-        self.duration_spin.setValue(60)
-        self.duration_spin.setSuffix(" s")
-        sidebar_layout.addSpacing(10)
-
-        # Dynamic Sensor Control Box
-        self.sensor_ctrl_box = QGroupBox("Sensor Controls")
-        sensor_box_layout = QVBoxLayout(self.sensor_ctrl_box)
-        sensor_box_layout.setContentsMargins(6, 6, 6, 6)
-
-        self.sensor_stack = QStackedWidget()
-
-        # Page 0: FLC100-ADS131 Controls
-        flc_page = QWidget()
-        flc_layout = QVBoxLayout(flc_page)
-        flc_layout.setContentsMargins(0, 0, 0, 0)
-        flc_layout.setSpacing(4)
-
-        flc_layout.addWidget(QLabel("Software Downsample:"))
-        self.downsample_combo = QComboBox()
-        for label, val in [("1x (Raw 1 kS/s)", 1), ("2x (500 Hz)", 2), ("4x (250 Hz)", 4), ("10x (100 Hz)", 10), ("20x (50 Hz)", 20), ("100x (10 Hz)", 100)]:
-            self.downsample_combo.addItem(label, val)
-        self.downsample_combo.currentIndexChanged.connect(self.set_mcu_downsample)
-        flc_layout.addWidget(self.downsample_combo)
-
-        flc_layout.addWidget(QLabel("PGA Gain:"))
-        self.gain_combo = QComboBox()
-        for gain in [1, 2, 4, 8]:
-            self.gain_combo.addItem(f"{gain}x", gain)
-        self.gain_combo.currentIndexChanged.connect(self.set_mcu_gain)
-        flc_layout.addWidget(self.gain_combo)
-
-        self.test_sig_cb = QCheckBox("1 Hz Test Signal")
-        self.test_sig_cb.stateChanged.connect(lambda state: self.send_mcu_command("TEST ON" if state else "TEST OFF"))
-        flc_layout.addWidget(self.test_sig_cb)
-
-        self.sensor_stack.addWidget(flc_page) # Index 0
-
-        # Page 1: RM3100 Controls
-        rm_page = QWidget()
-        rm_layout = QVBoxLayout(rm_page)
-        rm_layout.setContentsMargins(0, 0, 0, 0)
-        rm_layout.setSpacing(4)
-
-        rm_layout.addWidget(QLabel("Cycle Count (Cycles):"))
-        self.cycle_spin = QSpinBox()
-        self.cycle_spin.setRange(50, 1000)
-        self.cycle_spin.setValue(200)
-        self.cycle_spin.setSingleStep(10)
-        self.cycle_spin.valueChanged.connect(self.set_mcu_cycle_count)
-        rm_layout.addWidget(self.cycle_spin)
-
-        self.sensor_stack.addWidget(rm_page) # Index 1
-
-        sensor_box_layout.addWidget(self.sensor_stack)
-        sidebar_layout.addWidget(self.sensor_ctrl_box)
-
-        sidebar_layout.addSpacing(10)
-        
-        # Action Buttons
-        self.start_rec_btn = QPushButton("Start Recording")
-        self.start_rec_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2e7d32;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:disabled {
-                background-color: rgba(46, 125, 50, 0.3);
-                color: rgba(255, 255, 255, 0.5);
-            }
-        """)
-        self.start_rec_btn.clicked.connect(self.start_recording)
-        sidebar_layout.addWidget(self.start_rec_btn)
-        
-        self.stop_rec_btn = QPushButton("Stop Recording")
-        self.stop_rec_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #c62828;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:disabled {
-                background-color: rgba(198, 40, 40, 0.3);
-                color: rgba(255, 255, 255, 0.5);
-            }
-        """)
-        self.stop_rec_btn.setEnabled(False)
-        self.stop_rec_btn.clicked.connect(self.stop_recording)
-        sidebar_layout.addWidget(self.stop_rec_btn)
-        
-        sidebar_layout.addSpacing(10)
-        
-        # Status block
-        status_box = QFrame()
-        status_box.setStyleSheet("background-color: rgba(0, 0, 0, 0.05); border-radius: 4px; border: none;")
-        status_box_layout = QVBoxLayout(status_box)
-        status_box_layout.setContentsMargins(8, 8, 8, 8)
-        
-        self.rec_status_label = QLabel("Status: Idle")
-        self.rec_status_label.setStyleSheet("font-weight: bold; color: #aaaaaa;")
-        status_box_layout.addWidget(self.rec_status_label)
-        
-        self.samples_label = QLabel("Recorded: 0 samples")
-        status_box_layout.addWidget(self.samples_label)
-        
-        self.time_left_label = QLabel("Time left: --")
-        status_box_layout.addWidget(self.time_left_label)
-        
-        sidebar_layout.addWidget(status_box)
-        sidebar_layout.addStretch()
-        
-        content_layout.addWidget(sidebar, stretch=1)
-
-        # Tab 1: Time Series
-        self.time_plot_widget = pg.PlotWidget(title="Real-time Magnetometer Data")
-        self.time_plot_widget.addLegend()
-        self.time_plot_widget.setLabel('left', 'Magnetic Field (Counts/nT)')
-        self.time_plot_widget.setLabel('bottom', 'Time (s)')
-        self.time_plot_widget.showGrid(x=True, y=True)
-        
-        self.curve_x = self.time_plot_widget.plot(pen='r', name='X')
-        self.curve_y = self.time_plot_widget.plot(pen='g', name='Y')
-        self.curve_z = self.time_plot_widget.plot(pen='b', name='Z')
-        
-        self.tabs.addTab(self.time_plot_widget, "Time Series")
-
-        # Tab 2: PSD
-        self.psd_plot_widget = pg.PlotWidget(title="Power Spectral Density (Welch)")
-        self.psd_plot_widget.addLegend()
-        self.psd_plot_widget.setLabel('left', 'Power/Frequency (dB/Hz)')
-        self.psd_plot_widget.setLabel('bottom', 'Frequency (Hz)')
-        self.psd_plot_widget.setLogMode(x=False, y=True)
-        self.psd_plot_widget.showGrid(x=True, y=True)
-
-        self.psd_curve_x = self.psd_plot_widget.plot(pen='r', name='X')
-        self.psd_curve_y = self.psd_plot_widget.plot(pen='g', name='Y')
-        self.psd_curve_z = self.psd_plot_widget.plot(pen='b', name='Z')
-
-        psd_tab_layout = QVBoxLayout()
-        psd_tab_layout.addWidget(self.psd_plot_widget)
-        calc_psd_btn = QPushButton("Update PSD Now")
-        calc_psd_btn.clicked.connect(self.update_psd)
-        psd_tab_layout.addWidget(calc_psd_btn)
-        
-        psd_tab_widget = QWidget()
-        psd_tab_widget.setLayout(psd_tab_layout)
-        self.tabs.addTab(psd_tab_widget, "PSD Analysis")
+        # Sidebar
+        self.sidebar = AcquisitionSidebar()
+        self.sidebar.start_recording_requested.connect(self.start_recording)
+        self.sidebar.stop_recording_requested.connect(self.stop_recording)
+        self.sidebar.command_requested.connect(self.send_mcu_command)
+        content_layout.addWidget(self.sidebar, stretch=1)
 
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
+        self.populate_rates_for_sensor("RM3100")
+
     def refresh_ports(self):
         self.port_combo.clear()
-        
-        # Always allow WiFi UDP receiver mode for remote wireless operation
         self.port_combo.addItem("WIFI_UDP (Port 9876)")
-
         ports = serial.tools.list_ports.comports()
         for p in ports:
-            # Filter for typical USB-serial devices (ttyUSBx, ttyACMx, or COMx on Windows)
-            device = p.device
-            if any(pattern in device for pattern in ["ttyUSB", "ttyACM", "COM"]):
-                self.port_combo.addItem(device)
-        
-        # Always allow the simulator
+            if any(pattern in p.device for pattern in ["ttyUSB", "ttyACM", "COM"]):
+                self.port_combo.addItem(p.device)
         if self.port_combo.findText("MOCK_SENSOR") == -1:
             self.port_combo.addItem("MOCK_SENSOR")
-
-    def update_buffer_size(self):
-        try:
-            new_size = int(self.history_combo.currentText())
-            if new_size == self.max_samples:
-                return
-            
-            # Re-order and preserve existing data
-            old_t = np.concatenate((self.time_buffer[self.ptr:], self.time_buffer[:self.ptr]))
-            old_x = np.concatenate((self.x_buffer[self.ptr:], self.x_buffer[:self.ptr]))
-            old_y = np.concatenate((self.y_buffer[self.ptr:], self.y_buffer[:self.ptr]))
-            old_z = np.concatenate((self.z_buffer[self.ptr:], self.z_buffer[:self.ptr]))
-            
-            # Keep only non-zero samples
-            valid = old_t > 0
-            old_t, old_x, old_y, old_z = old_t[valid], old_x[valid], old_y[valid], old_z[valid]
-            
-            # Resize
-            self.max_samples = new_size
-            self.time_buffer = np.zeros(self.max_samples)
-            self.x_buffer = np.zeros(self.max_samples)
-            self.y_buffer = np.zeros(self.max_samples)
-            self.z_buffer = np.zeros(self.max_samples)
-            
-            # Copy back (trimmed if the new buffer is smaller)
-            to_copy = min(len(old_t), self.max_samples)
-            if to_copy > 0:
-                self.time_buffer[:to_copy] = old_t[-to_copy:]
-                self.x_buffer[:to_copy] = old_x[-to_copy:]
-                self.y_buffer[:to_copy] = old_y[-to_copy:]
-                self.z_buffer[:to_copy] = old_z[-to_copy:]
-                self.ptr = to_copy % self.max_samples
-            else:
-                self.ptr = 0
-
-            self.status_bar.showMessage(f"History resized to {new_size}. Preserved {to_copy} samples.")
-            self.save_config()
-        except ValueError:
-            pass
-
-    def load_config(self):
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    index = self.port_combo.findText(config.get("port", ""))
-                    if index >= 0:
-                        self.port_combo.setCurrentIndex(index)
-                    rate_str = config.get("rate", "96")
-                    try:
-                        rate_val = int(rate_str, 16)
-                        self.select_rate_code(rate_val)
-                    except ValueError:
-                        pass
-                    
-                    hist_val = config.get("history", "2000")
-                    self.history_combo.setCurrentText(hist_val)
-                    self.update_buffer_size()
-                    
-                    fft_val = config.get("fft_window", "256")
-                    self.nperseg_combo.setCurrentText(fft_val)
-            except Exception:
-                pass
-
-    def save_config(self):
-        rate_code = self.rate_combo.currentData() if hasattr(self, 'rate_combo') else 0x96
-        rate_hex = f"{rate_code:02x}" if rate_code is not None else "96"
-        config = {
-            "port": self.port_combo.currentText(),
-            "rate": rate_hex,
-            "history": self.history_combo.currentText(),
-            "fft_window": self.nperseg_combo.currentText()
-        }
-        try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(config, f)
-        except Exception:
-            pass
 
     def toggle_connection(self):
         if self.serial_thread and self.serial_thread.isRunning():
@@ -496,13 +197,13 @@ class MainWindow(QMainWindow):
             if not port:
                 self.status_bar.showMessage("No port selected!")
                 return
-            
-            self.save_config()
+
+            self._save_config()
             if port.startswith("WIFI_UDP"):
                 self.serial_thread = UdpWorker(listen_port=9876)
             else:
                 self.serial_thread = SerialWorker(port)
-                
+
             self.serial_thread.data_received.connect(self.handle_data)
             self.serial_thread.status_message.connect(self.handle_status_message)
             self.serial_thread.connection_status.connect(self.handle_connection_status)
@@ -510,399 +211,167 @@ class MainWindow(QMainWindow):
             self.connect_btn.setText("Disconnect")
 
     @Slot(bool)
-    def handle_connection_status(self, connected):
-        if not connected:
-            self.connect_btn.setText("Connect")
-        else:
-            self.connect_btn.setText("Disconnect")
-            # Request MCU status after a 1.5 second delay (allows ESP32 auto-reset bootloader to pass)
+    def handle_connection_status(self, connected: bool):
+        self.connect_btn.setText("Disconnect" if connected else "Connect")
+        if connected:
             QTimer.singleShot(1500, lambda: self.send_mcu_command("STATUS"))
 
     @Slot(str, object, object, object, object, object)
-    def handle_data(self, device_id, ts, x, y, z, status=0xC00000):
-        if not hasattr(self, 'discovered_nodes'):
-            self.discovered_nodes = set(["All Nodes"])
+    def handle_data(self, device_id: str, ts: int, x: float, y: float, z: float, status: int = 0xC00000):
         if device_id not in self.discovered_nodes:
             self.discovered_nodes.add(device_id)
-            if hasattr(self, 'node_combo'):
-                self.node_combo.addItem(device_id)
+            self.node_combo.addItem(device_id)
 
-        selected_node = self.node_combo.currentText() if hasattr(self, 'node_combo') else "All Nodes"
+        selected_node = self.node_combo.currentText()
         if selected_node != "All Nodes" and device_id != selected_node:
             return
 
-        if self.is_recording and hasattr(self, 'h5_file') and self.h5_file:
+        # Record to HDF5 if active
+        if self.recorder and self.recorder.is_recording:
             try:
-                ts_sec = float(ts) / 1000000.0
-                self.h5_buffer.append((ts_sec, x, y, z, status))
-                self.recorded_samples += 1
-                
-                # Flush batch to disk every 20 samples (20 ms)
-                if len(self.h5_buffer) >= 20:
-                    self.flush_h5_buffer()
-                    
-                if self.recorded_samples % 10 == 0:
-                    self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
+                count = self.recorder.add_sample(ts, x, y, z, status)
+                if count % 10 == 0:
+                    self.sidebar.samples_label.setText(f"Recorded: {count} samples")
             except Exception as e:
-                self.status_bar.showMessage(f"HDF5 stream error: {str(e)}")
+                self.status_bar.showMessage(f"HDF5 stream error: {e}")
                 self.stop_recording()
 
-        self.time_buffer[self.ptr] = ts
-        self.x_buffer[self.ptr] = x
-        self.y_buffer[self.ptr] = y
-        self.z_buffer[self.ptr] = z
-        
-        self.ptr = (self.ptr + 1) % self.max_samples
+        self.data_buffer.add_sample(ts, x, y, z, status)
 
-        # Throttle UI plot updates to 50ms interval (20 FPS) for smooth rendering at any data rate
+        # Throttle GUI rendering to 50ms interval (20 FPS)
         now = time.perf_counter()
         if not hasattr(self, 'last_plot_time') or (now - self.last_plot_time) >= 0.05:
             self.last_plot_time = now
-            # Reconstruct continuous data from ring buffer
-            data_t = np.concatenate((self.time_buffer[self.ptr:], self.time_buffer[:self.ptr]))
-            data_x = np.concatenate((self.x_buffer[self.ptr:], self.x_buffer[:self.ptr]))
-            data_y = np.concatenate((self.y_buffer[self.ptr:], self.y_buffer[:self.ptr]))
-            data_z = np.concatenate((self.z_buffer[self.ptr:], self.z_buffer[:self.ptr]))
-
-            valid_mask = data_t > 0
-            if np.any(valid_mask):
-                t_valid = data_t[valid_mask]
-                t_plot = (t_valid - t_valid[0]) / 1000000.0 # us to s
-                x_val = data_x[valid_mask].astype(float)
-                y_val = data_y[valid_mask].astype(float)
-                z_val = data_z[valid_mask].astype(float)
-
+            t_plot, x_arr, y_arr, z_arr, _ = self.data_buffer.get_ordered_data()
+            if len(t_plot) > 0:
                 filt_mode = self.filter_combo.currentText()
-                if "50Hz" in filt_mode:
-                    w = 20 # ~50 Hz smoothing window at 1 kS/s
-                    if len(x_val) >= w:
-                        x_val = np.convolve(x_val, np.ones(w)/w, mode='same')
-                        y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
-                        z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
-                elif "10Hz" in filt_mode:
-                    w = 100 # ~10 Hz smoothing window at 1 kS/s
-                    if len(x_val) >= w:
-                        x_val = np.convolve(x_val, np.ones(w)/w, mode='same')
-                        y_val = np.convolve(y_val, np.ones(w)/w, mode='same')
-                        z_val = np.convolve(z_val, np.ones(w)/w, mode='same')
+                self.time_plot.update_data(t_plot, x_arr, y_arr, z_arr, filter_mode=filt_mode)
 
-                # MCU streams pre-scaled physical nT directly
-                current_sensor_type = self.sensor_type_combo.currentData() if hasattr(self, 'sensor_type_combo') else "RM3100"
-                sensor_name_str = str(getattr(self, 'detected_sensor', 'RM3100')).upper()
-                is_rm3100 = (current_sensor_type == "RM3100") or ("RM3100" in sensor_name_str) or (current_sensor_type == "AUTO" and "FLC100" not in sensor_name_str)
+                sensor_type = self.sensor_type_combo.currentData()
+                is_rm3100 = (sensor_type == "RM3100") or ("RM3100" in self.detected_sensor.upper())
+                unit_str = "nT" if is_rm3100 else "Counts"
+                self.time_plot.set_unit_label(selected_node, unit_str)
+                self.stats_panel.update_means(np.mean(x_arr), np.mean(y_arr), np.mean(z_arr), unit_str)
 
-                x_val_disp, y_val_disp, z_val_disp = x_val, y_val, z_val
-                if is_rm3100:
-                    unit_str = "nT"
-                    self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (nT)')
-                else:
-                    unit_str = "Counts"
-                    self.time_plot_widget.setLabel('left', f'[{selected_node}] Field (Counts)')
-
-                # Debug print to terminal console every 1 second
-                now_dbg = time.time()
-                if not hasattr(self, 'last_debug_print') or (now_dbg - self.last_debug_print) >= 1.0:
-                    self.last_debug_print = now_dbg
-                    raw_sample_x = x_val[-1] if len(x_val) > 0 else 0
-                    disp_sample_x = x_val_disp[-1] if len(x_val_disp) > 0 else 0
-                    print(f"[DEBUG GUI] Node={device_id} | is_rm3100={is_rm3100} | RawX={raw_sample_x} -> DispX={disp_sample_x:.1f} {unit_str}")
-
-                self.curve_x.setData(t_plot, x_val_disp)
-                self.curve_y.setData(t_plot, y_val_disp)
-                self.curve_z.setData(t_plot, z_val_disp)
-
-                # Calculate and update channel means
-                mean_x = np.mean(x_val_disp)
-                mean_y = np.mean(y_val_disp)
-                mean_z = np.mean(z_val_disp)
-                self.mean_x_label.setText(f"X: {mean_x:.1f} {unit_str}")
-                self.mean_y_label.setText(f"Y: {mean_y:.1f} {unit_str}")
-                self.mean_z_label.setText(f"Z: {mean_z:.1f} {unit_str}")
-
-    def update_psd(self):
+    def _update_psd(self):
         if not self.auto_psd_cb.isChecked() and self.sender() == self.psd_timer:
             return
-
-        # Re-order data first
-        data_t = np.concatenate((self.time_buffer[self.ptr:], self.time_buffer[:self.ptr]))
-        data_x = np.concatenate((self.x_buffer[self.ptr:], self.x_buffer[:self.ptr]))
-        data_y = np.concatenate((self.y_buffer[self.ptr:], self.y_buffer[:self.ptr]))
-        data_z = np.concatenate((self.z_buffer[self.ptr:], self.z_buffer[:self.ptr]))
-
-        # Calculate mask on rotated data
-        valid_mask = data_t > 0
-        n_valid = np.sum(valid_mask)
-        
+        t_raw, x_raw, y_raw, z_raw = self.data_buffer.get_raw_valid_data()
         try:
             nperseg = int(self.nperseg_combo.currentText())
         except ValueError:
             nperseg = 256
 
-        if n_valid < nperseg:
-            if self.sender() != self.psd_timer:
-                self.status_bar.showMessage(f"Not enough data for PSD (need {nperseg} samples)")
+        success = self.psd_plot.calculate_and_plot(t_raw, x_raw, y_raw, z_raw, nperseg=nperseg)
+        if not success and self.sender() != self.psd_timer:
+            self.status_bar.showMessage(f"Not enough data for PSD (need {nperseg} samples)")
+
+    def start_recording(self):
+        filepath = self.sidebar.file_path_input.text().strip()
+        if not filepath:
+            self.status_bar.showMessage("Error: Specify a valid filename.")
             return
 
-        # Filter to only valid data
-        data_t = data_t[valid_mask]
-        data_x = data_x[valid_mask]
-        data_y = data_y[valid_mask]
-        data_z = data_z[valid_mask]
+        if os.path.exists(filepath):
+            reply = QMessageBox.question(
+                self, "Confirm Overwrite",
+                f"File '{os.path.basename(filepath)}' already exists. Overwrite?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
 
-        # Estimate sample rate
-        dt_us = np.median(np.diff(data_t))
-        if dt_us <= 0:
+        sensor_type = self.sensor_type_combo.currentData()
+        rate_code = self.rate_combo.currentData() or 0x95
+        attrs = {
+            'sensor_type': sensor_type,
+            'sensor_model_detected': self.detected_sensor,
+            'rate_code_hex': f"0x{rate_code:02x}",
+            'rate_code_dec': int(rate_code)
+        }
+
+        if sensor_type == "RM3100" or "RM3100" in self.detected_sensor.upper():
+            nc = self.sidebar.cycle_spin.value()
+            gain = 0.3671 * float(nc) + 1.5
+            attrs['cycle_count'] = nc
+            attrs['gain_lsb_per_ut'] = gain
+            attrs['scale_factor_nt_per_count'] = 1000.0 / gain
+            attrs['data_units'] = "raw counts"
+        else:
+            attrs['downsample_factor'] = self.sidebar.downsample_combo.currentData() or 1
+            attrs['pga_gain'] = self.sidebar.gain_combo.currentData() or 1
+            attrs['vref_v'] = 2.4
+            attrs['data_units'] = "raw 24-bit ADC counts"
+
+        self.recorder = Hdf5Recorder(filepath, attrs=attrs)
+        self.sidebar.set_recording_state(True)
+
+        if self.sidebar.auto_stop_cb.isChecked():
+            self.record_duration = float(self.sidebar.duration_spin.value())
+            self.record_start_time = time.time()
+            self.record_timer.start(100)
+        else:
+            self.sidebar.time_left_label.setText("Time left: Continuous")
+
+        self.status_bar.showMessage(f"Recording HDF5 -> {os.path.basename(filepath)}")
+
+    def stop_recording(self):
+        if not self.recorder or not self.recorder.is_recording:
             return
-        fs = 1000000.0 / dt_us
+        self.record_timer.stop()
+        total_samples = self.recorder.close()
+        self.sidebar.set_recording_state(False)
+        self.sidebar.samples_label.setText(f"Recorded: {total_samples} samples")
+        self.status_bar.showMessage(f"HDF5 saved: {os.path.basename(self.sidebar.file_path_input.text())} ({total_samples} samples)")
 
-        # Calculate PSD
-        for buf, curve in [(data_x, self.psd_curve_x),
-                           (data_y, self.psd_curve_y),
-                           (data_z, self.psd_curve_z)]:
-            f, pxx = signal.welch(buf, fs, nperseg=nperseg)
-            curve.setData(f, pxx)
+    def _update_recording_timer(self):
+        if not self.recorder or not self.recorder.is_recording:
+            self.record_timer.stop()
+            return
+        elapsed = time.time() - self.record_start_time
+        remaining = max(0.0, self.record_duration - elapsed)
+        self.sidebar.time_left_label.setText(f"Time left: {remaining:.1f}s")
+        if remaining <= 0:
+            self.stop_recording()
 
-    def send_mcu_command(self, cmd):
+    def send_mcu_command(self, cmd: str):
         if self.serial_thread and self.serial_thread.isRunning():
             self.serial_thread.send_command(cmd)
         else:
             self.status_bar.showMessage("Not connected!")
 
     def open_provision_dialog(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Provision Remote Node (ESP32 NVS Setup)")
-        dialog.setFixedWidth(420)
+        rate_code = self.rate_combo.currentData() or 0x95
+        cycle = self.sidebar.cycle_spin.value()
+        dlg = ProvisionDialog(
+            self, command_sender=self.send_mcu_command,
+            current_rate_hex=f"{rate_code:02x}", current_cycle=cycle
+        )
+        dlg.exec()
 
-        layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-
-        # Output Mode
-        mode_combo = QComboBox()
-        mode_combo.addItem("SERIAL (USB Testing Mode)", "SERIAL")
-        mode_combo.addItem("WIFI (Remote UDP Burst Mode)", "WIFI")
-        mode_combo.addItem("BLE (Bluetooth LE Long Range)", "BLE")
-        mode_combo.addItem("BOTH (Simultaneous USB & WiFi)", "BOTH")
-        form.addRow("Output Mode:", mode_combo)
-
-        # Sensor Hardware Model
-        sensor_combo = QComboBox()
-        sensor_combo.addItem("FLC100-ADS131E08 (24-bit Analog Fluxgate)", "FLC100")
-        sensor_combo.addItem("PNI RM3100 (Digital SPI Magnetometer)", "RM3100")
-        form.addRow("Sensor Hardware:", sensor_combo)
-
-        # Device ID
-        device_id_input = QLineEdit()
-        device_id_input.setPlaceholderText("e.g. SENSOR_01 (Leave blank for MAC default)")
-        form.addRow("Device ID:", device_id_input)
-
-        # Sampling Rate
-        rate_combo = QComboBox()
-        rates_flc = [("1000 Hz / 1 kS/s", "06"), ("500 Hz", "05"), ("250 Hz", "FA"), ("100 Hz", "64"), ("50 Hz", "32"), ("10 Hz", "0A")]
-        rates_rm = [("37 Hz", "96"), ("75 Hz", "95"), ("150 Hz", "94"), ("300 Hz", "93"), ("600 Hz", "92"), ("18 Hz", "97"), ("9 Hz", "98")]
-        
-        for label, val in rates_flc:
-            rate_combo.addItem(f"FLC100: {label}", ("FLC100", val))
-        for label, val in rates_rm:
-            rate_combo.addItem(f"RM3100: {label}", ("RM3100", val))
-            
-        if hasattr(self, 'rate_combo') and self.rate_combo.currentData() is not None:
-            curr_hex = f"{self.rate_combo.currentData():02x}".upper()
-            for i in range(rate_combo.count()):
-                if rate_combo.itemData(i)[1].upper() == curr_hex:
-                    rate_combo.setCurrentIndex(i)
-                    break
-        form.addRow("Sampling Rate:", rate_combo)
-
-        # Software Downsample (FLC100)
-        ds_spin = QSpinBox()
-        ds_spin.setRange(1, 100)
-        ds_spin.setValue(self.downsample_combo.currentData() if hasattr(self, 'downsample_combo') and self.downsample_combo.currentData() is not None else 1)
-        form.addRow("Downsample Factor (FLC100):", ds_spin)
-
-        # PGA Gain (FLC100)
-        gain_combo = QComboBox()
-        for g in [1, 2, 4, 8]:
-            gain_combo.addItem(f"{g}x", g)
-        form.addRow("PGA Gain (FLC100):", gain_combo)
-
-        # RM3100 Cycle Count
-        cycle_spin = QSpinBox()
-        cycle_spin.setRange(50, 1000)
-        cycle_spin.setSingleStep(10)
-        cycle_spin.setValue(self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200)
-        form.addRow("Cycle Count (RM3100):", cycle_spin)
-
-        # WiFi SSID
-        ssid_input = QLineEdit()
-        ssid_input.setPlaceholderText("Network SSID")
-        if hasattr(self, 'wifi_ssid'):
-            ssid_input.setText(self.wifi_ssid)
-        form.addRow("WiFi SSID:", ssid_input)
-
-        # WiFi Password
-        pass_input = QLineEdit()
-        pass_input.setEchoMode(QLineEdit.Password)
-        pass_input.setPlaceholderText("Network Password")
-        form.addRow("WiFi Password:", pass_input)
-
-        # Target IP
-        local_ip = "255.255.255.255"
-        try:
-            import socket
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            pass
-
-        target_input = QLineEdit(local_ip)
-        target_input.setPlaceholderText("e.g. 192.168.1.100")
-        form.addRow("Target Server IP:", target_input)
-
-        layout.addLayout(form)
-
-        btn_box = QHBoxLayout()
-        apply_btn = QPushButton("Apply & Save to ESP32 NVS")
-        apply_btn.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px;")
-
-        def apply_provisioning():
-            mode_val = mode_combo.currentData()
-            sensor_val = sensor_combo.currentData()
-            dev_id_val = device_id_input.text().strip()
-            ssid_val = ssid_input.text().strip()
-            pass_val = pass_input.text().strip()
-            target_val = target_input.text().strip()
-
-            if mode_val in ["WIFI", "BOTH"] and not ssid_val:
-                QMessageBox.warning(dialog, "Missing WiFi SSID", "Please enter a valid WiFi SSID for WiFi mode.")
-                return
-
-            self.send_mcu_command(f"SENSOR {sensor_val}")
-            if dev_id_val:
-                self.send_mcu_command(f"ID {dev_id_val}")
-                
-            rate_info = rate_combo.itemData(rate_combo.currentIndex())
-            if rate_info:
-                self.send_mcu_command(f"RATE {rate_info[1]}")
-            
-            if sensor_val == "FLC100":
-                self.send_mcu_command(f"DOWNSAMPLE {ds_spin.value()}")
-                self.send_mcu_command(f"GAIN {gain_combo.currentData()}")
-            elif sensor_val == "RM3100":
-                self.send_mcu_command(f"CYCLE {cycle_spin.value()}")
-
-            if ssid_val and pass_val:
-                self.send_mcu_command(f"WIFI {ssid_val} {pass_val}")
-            if target_val:
-                self.send_mcu_command(f"TARGET {target_val}")
-
-            self.send_mcu_command(f"MODE {mode_val}")
-
-            QMessageBox.information(
-                dialog,
-                "Provisioning Saved",
-                f"Node provisioned successfully!\n\n- Output Mode: {mode_val}\n- Device ID: {dev_id_val or 'MAC Default'}\n- Target IP: {target_val}\n\nAll measurement & network parameters saved to ESP32 NVS Flash."
-            )
-            dialog.accept()
-
-        apply_btn.clicked.connect(apply_provisioning)
-        btn_box.addWidget(apply_btn)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        btn_box.addWidget(cancel_btn)
-
-        layout.addLayout(btn_box)
-        dialog.exec()
-
-    def set_mcu_rate(self):
-        if not hasattr(self, 'rate_combo'):
-            return
-        rate_code = self.rate_combo.currentData()
-        if rate_code is not None:
-            rate_hex = f"{rate_code:02x}"
-            self.send_mcu_command(f"RATE {rate_hex}")
-            
-            # Synchronize active cycle count cap matching MCU rate limits
-            user_cc = self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200
-            if rate_code == 0x92:   # 600 Hz
-                self.active_cycle_count = min(user_cc, 30)
-            elif rate_code == 0x93: # 300 Hz
-                self.active_cycle_count = min(user_cc, 50)
-            elif rate_code == 0x94: # 150 Hz
-                self.active_cycle_count = min(user_cc, 100)
-            else:
-                self.active_cycle_count = user_cc
-
-    def set_mcu_downsample(self):
-        val = self.downsample_combo.currentData()
-        if val is not None:
-            self.send_mcu_command(f"DOWNSAMPLE {val}")
-
-    def set_mcu_gain(self):
-        gain = self.gain_combo.currentData()
-        if gain is not None:
-            self.send_mcu_command(f"GAIN {gain}")
-
-    def set_mcu_cycle_count(self):
-        count = self.cycle_spin.value()
-        rate_code = self.rate_combo.currentData() if hasattr(self, 'rate_combo') else 0x95
-        
-        if rate_code == 0x92:   # 600 Hz limit
-            self.active_cycle_count = min(count, 30)
-        elif rate_code == 0x93: # 300 Hz limit
-            self.active_cycle_count = min(count, 50)
-        elif rate_code == 0x94: # 150 Hz limit
-            self.active_cycle_count = min(count, 100)
-        else:
-            self.active_cycle_count = count
-
-        print(f"[DEBUG CLI] Spinbox cycle count set to {count} -> active_cycle_count = {self.active_cycle_count} | Sending 'CYCLE {count}' to MCU")
-        self.send_mcu_command(f"CYCLE {count}")
-
-    def populate_rates_for_sensor(self, sensor_name):
+    def populate_rates_for_sensor(self, sensor_name: str):
         self.rate_combo.blockSignals(True)
         self.rate_combo.clear()
         self.detected_sensor = sensor_name
-        
-        if sensor_name == "FLC100-ADS131E08":
-            if hasattr(self, 'sensor_stack'):
-                self.sensor_stack.setCurrentIndex(0) # FLC100 Page
-            rates = [
-                ("10 Hz (0A)", 0x0A),
-                ("50 Hz (32)", 0x32),
-                ("100 Hz (64)", 0x64),
-                ("250 Hz (FA)", 0xFA),
-                ("500 Hz (05)", 0x05),
-                ("1000 Hz / 1 kS/s (06)", 0x06)
-            ]
-        else: # Default (RM3100)
-            if hasattr(self, 'sensor_stack'):
-                self.sensor_stack.setCurrentIndex(1) # RM3100 Page
-            rates = [
-                ("9 Hz (98)", 0x98),
-                ("18 Hz (97)", 0x97),
-                ("37 Hz (96)", 0x96),
-                ("75 Hz (95)", 0x95),
-                ("150 Hz (94)", 0x94),
-                ("300 Hz (93)", 0x93),
-                ("600 Hz (92)", 0x92)
-            ]
-            
+        self.sidebar.set_sensor_type(sensor_name)
+
+        if "FLC100" in sensor_name:
+            rates = [("10 Hz (0A)", 0x0A), ("50 Hz (32)", 0x32), ("100 Hz (64)", 0x64),
+                     ("250 Hz (FA)", 0xFA), ("500 Hz (05)", 0x05), ("1000 Hz / 1 kS/s (06)", 0x06)]
+        else:
+            rates = [("9 Hz (98)", 0x98), ("18 Hz (97)", 0x97), ("37 Hz (96)", 0x96),
+                     ("75 Hz (95)", 0x95), ("150 Hz (94)", 0x94), ("300 Hz (93)", 0x93), ("600 Hz (92)", 0x92)]
+
         for label, code in rates:
             self.rate_combo.addItem(label, code)
-            
         self.rate_combo.blockSignals(False)
 
-    def select_rate_code(self, rate_code):
-        self.rate_combo.blockSignals(True)
-        index = self.rate_combo.findData(rate_code)
-        if index >= 0:
-            self.rate_combo.setCurrentIndex(index)
-        self.rate_combo.blockSignals(False)
+    def _set_mcu_rate(self):
+        rate_code = self.rate_combo.currentData()
+        if rate_code is not None:
+            self.send_mcu_command(f"RATE {rate_code:02x}")
 
-    def on_user_select_sensor_type(self):
+    def _on_user_select_sensor_type(self):
         val = self.sensor_type_combo.currentData()
         if val == "RM3100":
             self.populate_rates_for_sensor("RM3100")
@@ -913,243 +382,48 @@ class MainWindow(QMainWindow):
         elif val == "AUTO":
             self.send_mcu_command("STATUS")
 
-    def handle_status_message(self, msg):
+    def handle_status_message(self, msg: str):
         self.status_bar.showMessage(msg)
-        print(f"[DEBUG AUTO-DETECT] MCU Status Message: {msg}")
-        
         line_upper = msg.upper()
-        
-        # Sensor Identity Detection & UI Control Switching
         if "RM3100" in line_upper:
-            self.detected_sensor = "RM3100"
-            if hasattr(self, 'sensor_type_combo') and self.sensor_type_combo.currentData() == "AUTO":
-                self.sensor_type_combo.blockSignals(True)
-                idx = self.sensor_type_combo.findData("RM3100")
-                if idx >= 0:
-                    self.sensor_type_combo.setCurrentIndex(idx)
-                self.sensor_type_combo.blockSignals(False)
-            
-            if hasattr(self, 'sensor_stack'):
-                self.sensor_stack.setCurrentIndex(1) # RM3100 Page (Cycle Count)
             self.populate_rates_for_sensor("RM3100")
-            print("[DEBUG AUTO-DETECT] Auto-detected RM3100 -> GUI dropdown, sidebar stack, and rates switched to RM3100!")
         elif "FLC100" in line_upper or "ADS131" in line_upper:
-            self.detected_sensor = "FLC100-ADS131E08"
-            if hasattr(self, 'sensor_type_combo') and self.sensor_type_combo.currentData() == "AUTO":
-                self.sensor_type_combo.blockSignals(True)
-                idx = self.sensor_type_combo.findData("FLC100")
-                if idx >= 0:
-                    self.sensor_type_combo.setCurrentIndex(idx)
-                self.sensor_type_combo.blockSignals(False)
-                
-            if hasattr(self, 'sensor_stack'):
-                self.sensor_stack.setCurrentIndex(0) # FLC100 Page
             self.populate_rates_for_sensor("FLC100-ADS131E08")
-            print("[DEBUG AUTO-DETECT] Auto-detected FLC100 -> GUI dropdown, sidebar stack, and rates switched to FLC100!")
-        
-        # Rate Code Selection
-        if "RATE CODE:" in line_upper or "RATE:" in line_upper:
-            parts = line_upper.split(":")
-            if len(parts) >= 2:
-                rate_str = parts[1].replace("0X", "").strip()
-                try:
-                    rate_val = int(rate_str, 16)
-                    self.select_rate_code(rate_val)
-                except ValueError:
-                    pass
 
-    def browse_file(self):
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Select Output File",
-            self.file_path_input.text(),
-            "HDF5 Scientific Files (*.h5 *.hdf5);;NumPy Binary Files (*.npy);;All Files (*)"
-        )
-        if filename:
-            self.file_path_input.setText(filename)
-
-    def toggle_auto_stop_input(self, state):
-        self.duration_spin.setEnabled(self.auto_stop_cb.isChecked())
-
-    def start_recording(self):
-        filepath = self.file_path_input.text().strip()
-        if not filepath:
-            self.status_bar.showMessage("Error: Please specify a valid filename.")
-            return
-
-        if os.path.exists(filepath):
-            reply = QMessageBox.question(
-                self,
-                "Confirm Overwrite",
-                f"The file '{os.path.basename(filepath)}' already exists. Do you want to overwrite it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                self.status_bar.showMessage("Recording cancelled (file exists).")
-                return
-
+    def _update_buffer_size(self):
         try:
-            # Create HDF5 file directly and initialize header attributes
-            self.h5_file = h5py.File(filepath, "w")
-            self.record_start_time = time.time()
-            self.record_start_iso = datetime.now().astimezone().isoformat()
-            self.record_start_unix = self.record_start_time
+            sz = int(self.history_combo.currentText())
+            copied = self.data_buffer.resize(sz)
+            self.status_bar.showMessage(f"History resized to {sz}. Preserved {copied} samples.")
+            self._save_config()
+        except ValueError:
+            pass
 
-            self.h5_file.attrs['start_time_iso'] = self.record_start_iso
-            self.h5_file.attrs['start_time_unix'] = self.record_start_unix
-            
-            sensor_type = self.sensor_type_combo.currentData() if hasattr(self, 'sensor_type_combo') else "RM3100"
-            sensor_name_str = str(getattr(self, 'detected_sensor', 'RM3100'))
-            
-            self.h5_file.attrs['sensor_type'] = sensor_type
-            self.h5_file.attrs['sensor_model_detected'] = sensor_name_str
-            
-            rate_code = self.rate_combo.currentData() if hasattr(self, 'rate_combo') else 0x95
-            if rate_code is not None:
-                self.h5_file.attrs['rate_code_hex'] = f"0x{rate_code:02x}"
-                self.h5_file.attrs['rate_code_dec'] = int(rate_code)
+    def _load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    cfg = json.load(f)
+                    idx = self.port_combo.findText(cfg.get("port", ""))
+                    if idx >= 0:
+                        self.port_combo.setCurrentIndex(idx)
+                    self.history_combo.setCurrentText(cfg.get("history", "2000"))
+                    self._update_buffer_size()
+                    self.nperseg_combo.setCurrentText(cfg.get("fft_window", "256"))
+            except Exception:
+                pass
 
-            if sensor_type == "RM3100" or "RM3100" in sensor_name_str.upper():
-                nc_spin = self.cycle_spin.value() if hasattr(self, 'cycle_spin') else 200
-                nc_active = getattr(self, 'active_cycle_count', nc_spin)
-                gain = 0.3671 * float(nc_active) + 1.5
-                scale_nt = 1000.0 / gain
-                
-                self.h5_file.attrs['cycle_count_spinbox'] = nc_spin
-                self.h5_file.attrs['cycle_count_active'] = nc_active
-                self.h5_file.attrs['gain_lsb_per_ut'] = gain
-                self.h5_file.attrs['scale_factor_nt_per_count'] = scale_nt
-                self.h5_file.attrs['data_units'] = "raw counts (multiply by scale_factor_nt_per_count for nT)"
-            else:
-                ds = self.downsample_combo.currentData() if hasattr(self, 'downsample_combo') else 1
-                gain = self.gain_combo.currentData() if hasattr(self, 'gain_combo') else 1
-                self.h5_file.attrs['downsample_factor'] = ds
-                self.h5_file.attrs['pga_gain'] = gain
-                self.h5_file.attrs['vref_v'] = 2.4
-                self.h5_file.attrs['data_units'] = "raw 24-bit ADC counts"
-
-            # Create resizable 1D datasets with 32k chunking, byte-shuffle filter, and Gzip level 4 compression
-            chunk_sz = 32768
-            self.dset_time = self.h5_file.create_dataset('time_s', shape=(0,), maxshape=(None,), dtype='f8', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
-            self.dset_x = self.h5_file.create_dataset('x', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
-            self.dset_y = self.h5_file.create_dataset('y', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
-            self.dset_z = self.h5_file.create_dataset('z', shape=(0,), maxshape=(None,), dtype='f4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
-            self.dset_status = self.h5_file.create_dataset('status', shape=(0,), maxshape=(None,), dtype='u4', chunks=(chunk_sz,), shuffle=True, compression='gzip', compression_opts=4)
-            
-            self.h5_buffer = []
-        except Exception as e:
-            self.status_bar.showMessage(f"Error initializing HDF5 file: {str(e)}")
-            return
-
-        self.is_recording = True
-        self.recorded_samples = 0
-
-        # Update UI state
-        self.start_rec_btn.setEnabled(False)
-        self.stop_rec_btn.setEnabled(True)
-        self.file_path_input.setEnabled(False)
-        self.auto_stop_cb.setEnabled(False)
-        self.duration_spin.setEnabled(False)
-
-        self.rec_status_label.setText("Status: Recording...")
-        self.rec_status_label.setStyleSheet("font-weight: bold; color: #66bb6a;")
-        self.samples_label.setText("Recorded: 0 samples")
-
-        if self.auto_stop_cb.isChecked():
-            self.record_duration = float(self.duration_spin.value())
-            self.time_left_label.setText(f"Time left: {self.record_duration:.1f}s")
-            self.record_timer.start(100) # update every 100ms
-        else:
-            self.time_left_label.setText("Time left: Continuous")
-
-        self.status_bar.showMessage(f"Streaming Compressed HDF5 -> {os.path.basename(filepath)}")
-
-    def flush_h5_buffer(self):
-        """Flushes buffered sample tuples directly into the HDF5 datasets."""
-        if not hasattr(self, 'h5_file') or not self.h5_file or not self.h5_buffer:
-            return
+    def _save_config(self):
+        cfg = {
+            "port": self.port_combo.currentText(),
+            "history": self.history_combo.currentText(),
+            "fft_window": self.nperseg_combo.currentText()
+        }
         try:
-            batch = np.array(self.h5_buffer, dtype=object)
-            n_new = len(batch)
-            curr = self.dset_time.shape[0]
-            new_sz = curr + n_new
-
-            self.dset_time.resize((new_sz,))
-            self.dset_x.resize((new_sz,))
-            self.dset_y.resize((new_sz,))
-            self.dset_z.resize((new_sz,))
-            self.dset_status.resize((new_sz,))
-
-            self.dset_time[curr:new_sz] = batch[:, 0].astype(np.float64)
-            self.dset_x[curr:new_sz] = batch[:, 1].astype(np.float32)
-            self.dset_y[curr:new_sz] = batch[:, 2].astype(np.float32)
-            self.dset_z[curr:new_sz] = batch[:, 3].astype(np.float32)
-            self.dset_status[curr:new_sz] = batch[:, 4].astype(np.uint32)
-
-            self.h5_buffer.clear()
-        except Exception as e:
-            self.status_bar.showMessage(f"HDF5 flush error: {str(e)}")
-
-    def stop_recording(self):
-        if not hasattr(self, 'is_recording') or not self.is_recording:
-            return
-
-        self.is_recording = False
-        self.record_timer.stop()
-
-        filepath = self.file_path_input.text().strip()
-        save_success = False
-        try:
-            # Flush any remaining buffer samples to disk
-            self.flush_h5_buffer()
-
-            if hasattr(self, 'h5_file') and self.h5_file:
-                total_samples = self.dset_time.shape[0]
-                end_iso = datetime.now().astimezone().isoformat()
-                end_unix = time.time()
-                dur = end_unix - getattr(self, 'record_start_time', end_unix)
-                
-                self.h5_file.attrs['end_time_iso'] = end_iso
-                self.h5_file.attrs['end_time_unix'] = end_unix
-                self.h5_file.attrs['duration_seconds'] = dur
-                self.h5_file.attrs['sample_count'] = total_samples
-
-                self.h5_file.flush()
-                self.h5_file.close()
-                self.h5_file = None
-                save_success = True
-        except Exception as e:
-            self.status_bar.showMessage(f"Error finalizing HDF5 file: {str(e)}")
-
-        # Update UI state
-        self.start_rec_btn.setEnabled(True)
-        self.stop_rec_btn.setEnabled(False)
-        self.file_path_input.setEnabled(True)
-        self.auto_stop_cb.setEnabled(True)
-        self.duration_spin.setEnabled(self.auto_stop_cb.isChecked())
-
-        self.rec_status_label.setText("Status: Idle")
-        self.rec_status_label.setStyleSheet("font-weight: bold; color: #aaaaaa;")
-        self.time_left_label.setText("Time left: --")
-
-        # Make sure the final count is written
-        self.samples_label.setText(f"Recorded: {self.recorded_samples} samples")
-        if save_success:
-            self.status_bar.showMessage(f"HDF5 dataset saved: {os.path.basename(filepath)} ({self.recorded_samples} samples)")
-
-    def update_recording_timer(self):
-        if not hasattr(self, 'is_recording') or not self.is_recording:
-            self.record_timer.stop()
-            return
-
-        elapsed = time.time() - self.record_start_time
-        remaining = max(0.0, self.record_duration - elapsed)
-
-        self.time_left_label.setText(f"Time left: {remaining:.1f}s")
-
-        if remaining <= 0:
-            self.stop_recording()
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(cfg, f)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         if self.serial_thread and self.serial_thread.isRunning():

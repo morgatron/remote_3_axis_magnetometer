@@ -30,6 +30,12 @@ venv/
 *.db-shm
 
 # Sensitive & Local Configuration Files
-wifi.cfg
+*.cfg
 .env
 .env.*
+!.env.example
+!.env*.example
+provision_config.json
+provision_receiver_config.json
+.cloudflared/
+*.token

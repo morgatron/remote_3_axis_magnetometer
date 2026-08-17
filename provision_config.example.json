@@ -1,0 +1,21 @@
+{
+  "port": "/dev/ttyACM0",
+  "baud": 921600,
+  "sensor": "RM3100",
+  "device_id": "NODE_01",
+  "output_mode": "BLE",
+  "wifi": {
+    "ssid": "YOUR_WIFI_SSID",
+    "password": "YOUR_WIFI_PASSWORD",
+    "target_ip": "192.168.1.100"
+  },
+  "rm3100": {
+    "rate": "0x95",
+    "cycle_count": 200,
+    "downsample": 75
+  },
+  "flc100": {
+    "rate": "0x06",
+    "downsample": 1000
+  }
+}

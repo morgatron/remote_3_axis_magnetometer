@@ -4,25 +4,40 @@ This guide covers operating the **Central Data Server** (`central_service/server
 
 ---
 
-## 1. Running the Services
+## 1. Quick Setup & Running the Services
 
-### Central Server (`server.py`)
-Provides SQLite persistence, WebSockets live streaming, REST API endpoints, and the Web GUI interface.
+### Automated Installation (Raspberry Pi 4 / Laptop)
+Run the automated installer script to set up Python virtual environments, configure `.env`, install auto-starting systemd services, and apply hardware optimizations:
 
 ```bash
 cd central_service
+sudo ./install.sh
+```
+
+### Managing the Server (`./manage.sh`)
+```bash
+./manage.sh status     # Display status, database size, memory, and telemetry counts
+./manage.sh logs       # Live stream logs
+./manage.sh restart    # Restart services
+./manage.sh backup     # Safe online SQLite snapshot into backups/
+```
+
+### Manual Execution
+```bash
+cd central_service
 python server.py
+# In another terminal / background:
+python gateway.py
 ```
 - Server URL: `http://localhost:8000`
 - Interactive OpenAPI Docs: `http://localhost:8000/docs`
 
-### Edge Gateway Relay (`gateway.py`)
-Reads incoming USB Serial lines from receiver MCUs or UDP port 9876 broadcasts, and forwards batched payloads to the server API.
-
+### Residential NAT & Remote Access (`./remote_access.sh`)
+If deploying behind a residential home router with dynamic IP or Carrier-Grade NAT (CGNAT):
 ```bash
-cd central_service
-python gateway.py
+./remote_access.sh
 ```
+See the dedicated [**Residential NAT & Remote Access Guide**](NAT_AND_REMOTE_ACCESS.md) and [**Server Hardware Setup Guide**](SERVER_SETUP_GUIDE.md).
 
 ---
 
