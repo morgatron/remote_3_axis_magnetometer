@@ -1,5 +1,5 @@
 # PlatformIO & Build artifacts
-.pio
+.pio/
 .vscode/
 
 # Python & Caches
@@ -11,6 +11,12 @@ __pycache__/
 .venv/
 env/
 venv/
+
+# Editor & System Artifacts
+*.swp
+*.swo
+*~
+.DS_Store
 
 # Temporary, Test & Data Artifacts
 *.tmp

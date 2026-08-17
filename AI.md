@@ -245,19 +245,22 @@ To secure the server against unauthorized open-internet data injection:
 - **Multi-Node Overlay Plotting**: Select **Overlay: All Nodes** ($|B|$, $B_z$, or $\text{RSSI}$) to plot multiple field nodes simultaneously on a single chart with distinct color-coded lines for spatial gradient comparison.
 
 ### Run Automated Test Suite
-```bash
-# 1. Binary Struct Serialization & Math Unit Tests (PC Host)
-python3 -m unittest test/test_batch_serialization.py
-python3 -m unittest test/test_receiver_parser.py
-python3 test/test_scaling_math.py
 
-# 2. Central Server API & Export Test
+```bash
+# 1. Run Complete Automated Test Suite (Single Command)
+python3 scripts/run_all_tests.py
+
+# Or run individual test suites:
+python3 test/test_batch_serialization.py
+python3 test/test_receiver_parser.py
+python3 test/test_scaling_math.py
 python3 central_service/test_server.py
 
-# 3. Standalone Hardware Self-Tests
+# 2. Standalone Hardware Self-Tests (Requires connected hardware)
 python3 test/test_sensor_standalone.py --port /dev/ttyACM1
 python3 test/test_receiver_standalone.py --port /dev/ttyACM0
+python3 test/test_cycle_count_invariance.py --port /dev/ttyACM1
 
-# 4. End-to-End Multi-Device Integration Test (Sensor + Receiver)
+# 3. End-to-End Multi-Device Integration Test (Sensor + Receiver)
 python3 test/test_integration_sensor_receiver.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0
 ```
