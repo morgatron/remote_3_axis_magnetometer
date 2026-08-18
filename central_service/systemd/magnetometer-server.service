@@ -1,11 +1,9 @@
 [Unit]
 Description=Magnetometer Central Data Server & Web Dashboard
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=simple
-User=%USER%
 WorkingDirectory=%WORKING_DIR%
 EnvironmentFile=-%WORKING_DIR%/.env
 ExecStart=%WORKING_DIR%/.venv/bin/python %WORKING_DIR%/server.py
@@ -13,10 +11,10 @@ Restart=always
 RestartSec=3
 LimitNOFILE=65536
 
-# Standard Output & Error to journald (view with journalctl -u magnetometer-server -f)
+# Standard Output & Error to journald (view with journalctl --user -u magnetometer-server -f)
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=magnetometer-server
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

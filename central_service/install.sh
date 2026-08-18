@@ -145,27 +145,24 @@ if [ "$IS_RPI" = true ]; then
     echo -e "${GREEN}[+] SQLite WAL (Write-Ahead Logging) is active for high write performance & SD card safety.${NC}"
 fi
 
-# Step 5: Systemd Service Installation
-echo -e "\n${BLUE}[5/5] Installing systemd auto-start services...${NC}"
+# Step 5: Systemd Service Installation (User-level service for SELinux & home directory safety)
+echo -e "\n${BLUE}[5/5] Installing systemd auto-start services (user mode)...${NC}"
 
 if command -v systemctl >/dev/null 2>&1; then
-    SUDO_CMD=""
-    if [ "$IS_ROOT" = false ]; then SUDO_CMD="sudo"; fi
+    USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
+    mkdir -p "${USER_SYSTEMD_DIR}"
 
-    # Create server service unit
-    SERVER_SERVICE_PATH="/etc/systemd/system/magnetometer-server.service"
-    GATEWAY_SERVICE_PATH="/etc/systemd/system/magnetometer-gateway.service"
+    SERVER_SERVICE_PATH="${USER_SYSTEMD_DIR}/magnetometer-server.service"
+    GATEWAY_SERVICE_PATH="${USER_SYSTEMD_DIR}/magnetometer-gateway.service"
 
     echo "Generating ${SERVER_SERVICE_PATH}..."
-    $SUDO_CMD bash -c "cat <<EOF > ${SERVER_SERVICE_PATH}
+    cat <<EOF > "${SERVER_SERVICE_PATH}"
 [Unit]
 Description=Magnetometer Central Data Server & Web Dashboard
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=simple
-User=${CURRENT_USER}
 WorkingDirectory=${SCRIPT_DIR}
 EnvironmentFile=-${SCRIPT_DIR}/.env
 ExecStart=${SCRIPT_DIR}/.venv/bin/python ${SCRIPT_DIR}/server.py
@@ -177,19 +174,18 @@ StandardError=journal
 SyslogIdentifier=magnetometer-server
 
 [Install]
-WantedBy=multi-user.target
-EOF"
+WantedBy=default.target
+EOF
 
     echo "Generating ${GATEWAY_SERVICE_PATH}..."
-    $SUDO_CMD bash -c "cat <<EOF > ${GATEWAY_SERVICE_PATH}
+    cat <<EOF > "${GATEWAY_SERVICE_PATH}"
 [Unit]
 Description=Magnetometer Edge Gateway (UDP/Serial Ingestion)
-After=network-online.target magnetometer-server.service
-Wants=network-online.target
+After=network.target magnetometer-server.service
+Wants=magnetometer-server.service
 
 [Service]
 Type=simple
-User=${CURRENT_USER}
 WorkingDirectory=${SCRIPT_DIR}
 EnvironmentFile=-${SCRIPT_DIR}/.env
 ExecStart=${SCRIPT_DIR}/.venv/bin/python ${SCRIPT_DIR}/gateway.py
@@ -201,22 +197,37 @@ StandardError=journal
 SyslogIdentifier=magnetometer-gateway
 
 [Install]
-WantedBy=multi-user.target
-EOF"
+WantedBy=default.target
+EOF
 
-    # Ensure all files and executables are owned and runnable by the service user
-    if [ "$IS_ROOT" = true ] && [ -n "$SUDO_USER" ]; then
-        chown -R "${SUDO_USER}:${SUDO_USER}" "${SCRIPT_DIR}"
-    fi
+    # Ensure all files and executables are runnable by current user
     chmod -R u+rwX,go+rX "${SCRIPT_DIR}/.venv"
     chmod +x "${SCRIPT_DIR}/.venv/bin/"* 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/server.py" "${SCRIPT_DIR}/gateway.py" 2>/dev/null || true
 
-    echo "Reloading systemd daemon and enabling services..."
-    $SUDO_CMD systemctl daemon-reload
-    $SUDO_CMD systemctl enable --now magnetometer-server.service
-    $SUDO_CMD systemctl enable --now magnetometer-gateway.service
-    echo -e "${GREEN}[+] Services enabled and started successfully.${NC}"
+    # Clean up old system-level service if present to avoid dual-running/conflicts
+    if [ -f "/etc/systemd/system/magnetometer-server.service" ]; then
+        echo "Cleaning up legacy system-level services in /etc/systemd/system/..."
+        if [ "$IS_ROOT" = false ]; then
+            sudo systemctl disable --now magnetometer-server.service magnetometer-gateway.service 2>/dev/null || true
+            sudo rm -f /etc/systemd/system/magnetometer-server.service /etc/systemd/system/magnetometer-gateway.service 2>/dev/null || true
+            sudo systemctl daemon-reload 2>/dev/null || true
+        else
+            systemctl disable --now magnetometer-server.service magnetometer-gateway.service 2>/dev/null || true
+            rm -f /etc/systemd/system/magnetometer-server.service /etc/systemd/system/magnetometer-gateway.service 2>/dev/null || true
+            systemctl daemon-reload 2>/dev/null || true
+        fi
+    fi
+
+    # Enable lingering so user services run even when user is not logged in
+    echo "Enabling user lingering so services run on boot without active login..."
+    loginctl enable-linger "${CURRENT_USER}" 2>/dev/null || sudo loginctl enable-linger "${CURRENT_USER}" 2>/dev/null || true
+
+    echo "Reloading systemd user daemon and enabling services..."
+    systemctl --user daemon-reload
+    systemctl --user enable --now magnetometer-server.service
+    systemctl --user enable --now magnetometer-gateway.service
+    echo -e "${GREEN}[+] User services enabled and started successfully.${NC}"
 else
     echo -e "${YELLOW}[!] Notice: systemd not found. You can run manually via: ./manage.sh start${NC}"
 fi

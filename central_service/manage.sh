@@ -37,29 +37,54 @@ function print_header() {
     echo -e "${NC}"
 }
 
+function get_systemd_mode() {
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl --user is-active magnetometer-server.service >/dev/null 2>&1 || [ -f "${HOME}/.config/systemd/user/magnetometer-server.service" ]; then
+            echo "user"
+            return
+        elif systemctl is-active magnetometer-server.service >/dev/null 2>&1 || [ -f "/etc/systemd/system/magnetometer-server.service" ]; then
+            echo "system"
+            return
+        fi
+    fi
+    echo "none"
+}
+
 function show_status() {
     print_header
     echo -e "${BOLD}--- Services Status ---${NC}"
 
-    HAS_SYSTEMD=false
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files magnetometer-server.service >/dev/null 2>&1; then
-        HAS_SYSTEMD=true
-    fi
+    SYSTEMD_MODE=$(get_systemd_mode)
 
-    if [ "$HAS_SYSTEMD" = true ]; then
+    if [ "$SYSTEMD_MODE" = "user" ]; then
+        SERVER_ACTIVE=$(systemctl --user is-active magnetometer-server.service 2>/dev/null || echo "inactive")
+        GATEWAY_ACTIVE=$(systemctl --user is-active magnetometer-gateway.service 2>/dev/null || echo "inactive")
+        
+        if [ "$SERVER_ACTIVE" = "active" ]; then
+            echo -e "  magnetometer-server:  ${GREEN}[ACTIVE / RUNNING]${NC} (systemd --user)"
+        else
+            echo -e "  magnetometer-server:  ${RED}[INACTIVE / STOPPED]${NC} (systemd --user)"
+        fi
+
+        if [ "$GATEWAY_ACTIVE" = "active" ]; then
+            echo -e "  magnetometer-gateway: ${GREEN}[ACTIVE / RUNNING]${NC} (systemd --user)"
+        else
+            echo -e "  magnetometer-gateway: ${YELLOW}[INACTIVE / STOPPED]${NC} (systemd --user)"
+        fi
+    elif [ "$SYSTEMD_MODE" = "system" ]; then
         SERVER_ACTIVE=$(systemctl is-active magnetometer-server.service 2>/dev/null || echo "inactive")
         GATEWAY_ACTIVE=$(systemctl is-active magnetometer-gateway.service 2>/dev/null || echo "inactive")
         
         if [ "$SERVER_ACTIVE" = "active" ]; then
-            echo -e "  magnetometer-server:  ${GREEN}[ACTIVE / RUNNING]${NC} (systemd)"
+            echo -e "  magnetometer-server:  ${GREEN}[ACTIVE / RUNNING]${NC} (systemd system)"
         else
-            echo -e "  magnetometer-server:  ${RED}[INACTIVE / STOPPED]${NC} (systemd)"
+            echo -e "  magnetometer-server:  ${RED}[INACTIVE / STOPPED]${NC} (systemd system)"
         fi
 
         if [ "$GATEWAY_ACTIVE" = "active" ]; then
-            echo -e "  magnetometer-gateway: ${GREEN}[ACTIVE / RUNNING]${NC} (systemd)"
+            echo -e "  magnetometer-gateway: ${GREEN}[ACTIVE / RUNNING]${NC} (systemd system)"
         else
-            echo -e "  magnetometer-gateway: ${YELLOW}[INACTIVE / STOPPED]${NC} (systemd)"
+            echo -e "  magnetometer-gateway: ${YELLOW}[INACTIVE / STOPPED]${NC} (systemd system)"
         fi
     else
         # Process check
@@ -121,10 +146,14 @@ function show_status() {
 }
 
 function start_services() {
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files magnetometer-server.service >/dev/null 2>&1; then
-        echo "Starting systemd services..."
-        sudo systemctl start magnetometer-server.service
-        sudo systemctl start magnetometer-gateway.service
+    SYSTEMD_MODE=$(get_systemd_mode)
+    if [ "$SYSTEMD_MODE" = "user" ]; then
+        echo "Starting systemd user services..."
+        systemctl --user start magnetometer-server.service magnetometer-gateway.service
+        echo -e "${GREEN}[+] Services started via systemd --user.${NC}"
+    elif [ "$SYSTEMD_MODE" = "system" ]; then
+        echo "Starting systemd system services..."
+        sudo systemctl start magnetometer-server.service magnetometer-gateway.service
         echo -e "${GREEN}[+] Services started via systemd.${NC}"
     else
         echo "Starting server in background..."
@@ -135,8 +164,13 @@ function start_services() {
 }
 
 function stop_services() {
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files magnetometer-server.service >/dev/null 2>&1; then
-        echo "Stopping systemd services..."
+    SYSTEMD_MODE=$(get_systemd_mode)
+    if [ "$SYSTEMD_MODE" = "user" ]; then
+        echo "Stopping systemd user services..."
+        systemctl --user stop magnetometer-server.service magnetometer-gateway.service
+        echo -e "${GREEN}[+] Services stopped.${NC}"
+    elif [ "$SYSTEMD_MODE" = "system" ]; then
+        echo "Stopping systemd system services..."
         sudo systemctl stop magnetometer-server.service magnetometer-gateway.service
         echo -e "${GREEN}[+] Services stopped.${NC}"
     else
@@ -148,8 +182,13 @@ function stop_services() {
 }
 
 function restart_services() {
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files magnetometer-server.service >/dev/null 2>&1; then
-        echo "Restarting systemd services..."
+    SYSTEMD_MODE=$(get_systemd_mode)
+    if [ "$SYSTEMD_MODE" = "user" ]; then
+        echo "Restarting systemd user services..."
+        systemctl --user restart magnetometer-server.service magnetometer-gateway.service
+        echo -e "${GREEN}[+] Services restarted via systemd --user.${NC}"
+    elif [ "$SYSTEMD_MODE" = "system" ]; then
+        echo "Restarting systemd system services..."
         sudo systemctl restart magnetometer-server.service magnetometer-gateway.service
         echo -e "${GREEN}[+] Services restarted.${NC}"
     else
@@ -160,7 +199,11 @@ function restart_services() {
 }
 
 function tail_logs() {
-    if command -v journalctl >/dev/null 2>&1 && systemctl list-unit-files magnetometer-server.service >/dev/null 2>&1; then
+    SYSTEMD_MODE=$(get_systemd_mode)
+    if [ "$SYSTEMD_MODE" = "user" ]; then
+        echo -e "${CYAN}Streaming systemd user logs (Ctrl+C to exit)...${NC}"
+        journalctl --user -u magnetometer-server -u magnetometer-gateway -f -n 50
+    elif [ "$SYSTEMD_MODE" = "system" ]; then
         echo -e "${CYAN}Streaming systemd live logs (Ctrl+C to exit)...${NC}"
         sudo journalctl -u magnetometer-server -u magnetometer-gateway -f -n 50
     elif [ -f server.log ]; then
