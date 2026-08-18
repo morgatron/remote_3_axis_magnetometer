@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Union
 
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -138,6 +139,14 @@ app = FastAPI(
     title="Magnetometer Central Data Server",
     description="Future-proof, lightweight time-series server for distributed 3-axis magnetometers.",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.middleware("http")

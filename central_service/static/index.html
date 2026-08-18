@@ -362,9 +362,12 @@
 
     <script>
         const isFileProtocol = window.location.protocol === 'file:';
-        const apiHost = isFileProtocol ? 'localhost:8000' : window.location.host;
-        const apiBaseUrl = `http://${apiHost}`;
-        const wsBaseUrl = `ws://${apiHost}`;
+        const httpProto = isFileProtocol ? 'http:' : window.location.protocol;
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = isFileProtocol ? 'localhost:8000' : window.location.host;
+
+        const apiBaseUrl = `${httpProto}//${host}`;
+        const wsBaseUrl = `${wsProto}//${host}`;
 
         let nodesData = {};
         let selectedNodeId = null;
