@@ -27,7 +27,7 @@ class TestReceiverFormat(unittest.TestCase):
         self.assertAlmostEqual(parsed["z"], 48910.10)
         self.assertEqual(parsed["status_hex"], "C00000")
         self.assertEqual(parsed["temp"], 24.5)
-        self.assertEqual(parsed["vbat"], 3) # truncated int representation in stream_parser or float
+        self.assertAlmostEqual(parsed["vbat"], 3.75)
         self.assertEqual(parsed["rssi"], -54)
 
     def test_ble_coded_phy_parsed_line(self):

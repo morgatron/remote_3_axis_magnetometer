@@ -7,7 +7,9 @@
 #include "ESPNowReceiver.h"
 #include "BLEReceiver.h"
 #include "UDPReceiver.h"
+#if defined(BOARD_HAS_LORA)
 #include "LoRaReceiver.h"
+#endif
 #include "RelayEgress.h"
 #include "ReceiverCLI.h"
 #include "OLEDDisplay.h"
@@ -122,9 +124,12 @@ void connectEgressWiFi() {
 static BLEReceiver bleRcvr;
 static ESPNowReceiver espnowRcvr;
 static UDPReceiver udpRcvr;
+#if defined(BOARD_HAS_LORA)
 static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-
 static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr, &loraRcvr };
+#else
+static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr };
+#endif
 
 ReceiverCLI receiverCLI(saveReceiverSettings);
 
@@ -144,7 +149,11 @@ void setup() {
 
     Serial.println(F("\r\n========================================================="));
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));
+#if defined(BOARD_HAS_LORA)
     Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP, LoRa"));
+#else
+    Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP"));
+#endif
     Serial.println(F(" Egress Targets: USB Serial CDC + WiFi HTTP/UDP Central"));
     Serial.println(F(" Power Mode: Low-Power Receiver (80 MHz CPU, OLED 30s Timeout)"));
     Serial.println(F("========================================================="));

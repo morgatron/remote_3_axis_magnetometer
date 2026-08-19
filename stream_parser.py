@@ -38,7 +38,7 @@ def parse_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
             status_int = int(clean_status, 16)
 
             temp = float(parts[6]) if len(parts) >= 7 and parts[6].strip() else None
-            vbat = int(float(parts[7])) if len(parts) >= 8 and parts[7].strip() else None
+            vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else None
             rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else None
 
             return {
@@ -103,7 +103,7 @@ def parse_telemetry_batch(raw_payload: str, arrival_wall_time: Optional[float] =
     for s in parsed_samples:
         delta_sec = (latest_us - s["timestamp_us"]) / 1_000_000.0
         sample_utc = arrival_wall_time - delta_sec
-        s["timestamp_iso"] = datetime.fromtimestamp(sample_utc, tz=timezone.utc).isoformat()
+        s["timestamp_iso"] = datetime.fromtimestamp(sample_utc, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return parsed_samples
 

@@ -53,7 +53,9 @@ uint16_t targetPort = 9876;
 uint16_t udpListenPort = 9876;
 
 #include "BLEStream.h"
+#if defined(BOARD_HAS_LORA)
 #include "LoRaStream.h"
+#endif
 
 enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3, MODE_LORA = 4 };
 uint8_t outputMode = MODE_BOTH; // Default: MODE_BOTH (Serial & BLE Coded PHY telemetry active)
@@ -189,7 +191,7 @@ float lastBmag_nT = 0.0f;
 void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len);
 
 void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
-    sampleCounter++;
+    sampleCounter = sampleCounter + 1;
     lastBmag_nT = sqrtf(x * x + y * y + z * z);
     char line[160];
     int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
@@ -286,7 +288,7 @@ void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, flo
     }
 
     if (outputMode == MODE_LORA) {
-        #if defined(LORA_CS_PIN)
+        #if defined(BOARD_HAS_LORA)
         if (!loraStream.isInitialized()) {
             loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
         }
@@ -337,7 +339,7 @@ void IRAM_ATTR drdyISR() {
         uint32_t dt = (uint32_t)(now - lastDrdyTimeUs);
         lastDrdyIntervalUs = dt;
         if (dt < 800 || dt > 1200) {
-            drdyAnomalyCount++;
+            drdyAnomalyCount = drdyAnomalyCount + 1;
         }
     }
     lastDrdyTimeUs = now;
@@ -467,12 +469,8 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
 #endif
 
-    if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
-        bleStream.begin(deviceID);
-    }
-
     if (outputMode == MODE_LORA) {
-        #if defined(LORA_CS_PIN)
+        #if defined(BOARD_HAS_LORA)
         loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
         #endif
     }

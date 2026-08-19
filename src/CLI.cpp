@@ -4,7 +4,9 @@
 #include "FLC100_ADS131.h"
 #include "MockSensor.h"
 #include "BLEStream.h"
+#if defined(BOARD_HAS_LORA)
 #include "LoRaStream.h"
+#endif
 #include <WiFi.h>
 
 CLI::CLI(Magnetometer*& sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)())
@@ -286,12 +288,14 @@ void CLI::handleCommand(String cmd) {
             bleStream.begin(deviceID);
             Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
         } else if (modeStr == "LORA") {
+            #if defined(BOARD_HAS_LORA)
             outputMode = 4;
-            #if defined(LORA_CS_PIN)
             extern LoRaStream loraStream;
             loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-            #endif
             Serial.println("Output Mode set to LORA (Sub-GHz SX1262 LoRa).");
+            #else
+            Serial.println("LORA mode not supported on this hardware.");
+            #endif
         } else {
             Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE|LORA>");
         }

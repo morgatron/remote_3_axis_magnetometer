@@ -71,6 +71,17 @@ class UdpWorker(QThread):
             if line and line.strip():
                 self.status_message.emit(f"MCU (WiFi): {line.strip()}")
 
+    def send_command(self, cmd: str):
+        if self.sock and self.target_ip:
+            try:
+                cmd_bytes = (cmd.strip() + "\r\n").encode("utf-8")
+                self.sock.sendto(cmd_bytes, (self.target_ip, self.target_port))
+                self.status_message.emit(f"Sent (UDP -> {self.target_ip}): {cmd.strip()}")
+            except Exception as e:
+                self.status_message.emit(f"UDP send error: {e}")
+        else:
+            self.status_message.emit("Cannot send UDP command: Target IP not set yet.")
+
     def stop(self):
         self.running = False
         if self.sock:

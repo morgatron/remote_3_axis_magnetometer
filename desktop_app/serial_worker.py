@@ -73,6 +73,25 @@ class SerialWorker(QThread):
             if line and line.strip():
                 self.status_message.emit(f"MCU: {line.strip()}")
 
+    def send_command(self, cmd: str):
+        if self.port == "MOCK_SENSOR":
+            if cmd == "STREAM ON":
+                self.streaming = True
+                self.status_message.emit("Mock Stream: ON")
+            elif cmd == "STREAM OFF":
+                self.streaming = False
+                self.status_message.emit("Mock Stream: OFF")
+            return
+
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                cmd_bytes = (cmd.strip() + "\r\n").encode("utf-8")
+                self.serial_port.write(cmd_bytes)
+                self.serial_port.flush()
+                self.status_message.emit(f"Sent: {cmd.strip()}")
+            except Exception as e:
+                self.status_message.emit(f"Send command error: {e}")
+
     def stop(self):
         self.running = False
         if self.serial_port and self.serial_port.is_open:
