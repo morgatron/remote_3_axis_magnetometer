@@ -61,12 +61,12 @@ struct TelemetryItem {
  * Total size: 26 bytes (fits inside standard BLE advertisement payload limits <= 29 bytes).
  */
 typedef struct __attribute__((packed)) {
-    char device_id[8];       // Null-terminated string (e.g. "NODE_B5")
-    uint32_t timestamp_ms;   // MCU millis() uptime
-    float x_nT;              // Magnetic field X in nT
-    float y_nT;              // Magnetic field Y in nT
-    float z_nT;              // Magnetic field Z in nT
-    uint16_t status;         // Hardware status word
+    char     device_id[8];       // Null-terminated string (e.g. "NODE_B5")
+    uint32_t packet_age_ms;      // Age of sample in ms at instant of RF transmission
+    float    x_nT;              // Magnetic field X in nT
+    float    y_nT;              // Magnetic field Y in nT
+    float    z_nT;              // Magnetic field Z in nT
+    uint16_t status;             // Hardware status word
 } SensorBinaryPacket;
 
 typedef struct __attribute__((packed)) {
@@ -77,7 +77,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     char          device_id[8];         // Null-terminated identifier (e.g. "NODE_3A8")
-    uint32_t      start_ts_ms;          // Timestamp of first sample in batch
+    uint32_t      latest_sample_age_ms; // Age in ms of newest sample (samples[sample_count-1]) at instant of TX
     uint16_t      sample_interval_ms;   // Time between samples in ms (e.g. 1000 ms = 1 Hz)
     uint8_t       sample_count;         // Number of samples in batch (up to 10)
     uint16_t      status;               // Status word

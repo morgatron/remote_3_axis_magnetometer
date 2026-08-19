@@ -13,11 +13,11 @@ extern volatile uint32_t loraRxCount;
 
 class LoRaReceiver : public ITelemetryReceiver {
 public:
-    LoRaReceiver(int cs = 5, int irq = 4, int rst = 14, int busy = 15, SPIClass *spiBus = nullptr)
-        : _cs(cs), _irq(irq), _rst(rst), _busy(busy), _spiBus(spiBus) {}
+    LoRaReceiver(int cs = 8, int irq = 14, int rst = 12, int busy = 13, int sck = 9, int miso = 11, int mosi = 10, SPIClass *spiBus = nullptr)
+        : _cs(cs), _irq(irq), _rst(rst), _busy(busy), _sck(sck), _miso(miso), _mosi(mosi), _spiBus(spiBus) {}
 
     void begin() override {
-        bool ok = loraStream.begin(_cs, _irq, _rst, _busy, _spiBus);
+        bool ok = loraStream.begin(_cs, _irq, _rst, _busy, _sck, _miso, _mosi, _spiBus);
         if (ok) {
             loraStream.startReceive();
             Serial.println(F("[LORA RECEIVER SUCCESS] Sub-GHz SX1262 Continuous Reception Active (868/915 MHz)"));
@@ -36,7 +36,9 @@ public:
         loraRxCount++;
         TelemetryItem item;
         memset(&item, 0, sizeof(item));
-        item.rssi = rssi;
+        // Semtech SX1262 True Signal Power formula: When SNR < 0, true RSSI = RSSI(noise floor) + SNR
+        int trueRssi = (snr < 0.0f) ? (int)round((float)rssi + snr) : rssi;
+        item.rssi = trueRssi;
         strncpy(item.protocol, "LORA_SX1262", sizeof(item.protocol) - 1);
 
         if (len == sizeof(SensorBinaryPacket)) {
@@ -47,7 +49,13 @@ public:
             } else {
                 strncpy(item.node_id, "LORA_NODE", sizeof(item.node_id) - 1);
             }
-            item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
+            // Subtract packet age and deterministic Time-on-Air (AU915 SF7/125kHz 26-byte payload ~58ms)
+            constexpr uint32_t LORA_TOA_MS = 58;
+            uint32_t now_ms = millis();
+            uint32_t total_delay_ms = pkt.packet_age_ms + LORA_TOA_MS;
+            uint32_t sample_ts_ms = (now_ms >= total_delay_ms) ? (now_ms - total_delay_ms) : 0;
+
+            item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
             item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
             item.status = pkt.status; item.temp = 0.0f; item.vbat = 0.0f;
 
@@ -72,6 +80,7 @@ public:
 
 private:
     int _cs, _irq, _rst, _busy;
+    int _sck, _miso, _mosi;
     SPIClass *_spiBus;
 };
 

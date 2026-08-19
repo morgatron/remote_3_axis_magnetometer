@@ -71,11 +71,13 @@ private:
                 snprintf(item.node_id, sizeof(item.node_id), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
             }
 
-            item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
+            uint32_t now_ms = millis();
+            uint32_t sample_ts_ms = (now_ms >= pkt.packet_age_ms) ? (now_ms - pkt.packet_age_ms) : 0;
+            item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
             item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
             item.status = pkt.status;
 
-            bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "ESP-NOW", pkt.timestamp_ms);
+            bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "ESP-NOW", sample_ts_ms);
             if (isNewSample) {
                 item.formatCsvLine();
                 if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);

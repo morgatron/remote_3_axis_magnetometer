@@ -103,7 +103,7 @@ def parse_telemetry_batch(raw_payload: str, arrival_wall_time: Optional[float] =
     for s in parsed_samples:
         delta_sec = (latest_us - s["timestamp_us"]) / 1_000_000.0
         sample_utc = arrival_wall_time - delta_sec
-        s["timestamp_iso"] = datetime.fromtimestamp(sample_utc, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        s["timestamp_iso"] = datetime.fromtimestamp(sample_utc, tz=timezone.utc).isoformat()
 
     return parsed_samples
 

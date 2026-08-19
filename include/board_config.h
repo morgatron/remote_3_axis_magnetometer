@@ -19,6 +19,9 @@
 #define LORA_DIO1_PIN 14
 #define LORA_RST_PIN  12
 #define LORA_BUSY_PIN 13
+#define LORA_SCK_PIN  9
+#define LORA_MOSI_PIN 10
+#define LORA_MISO_PIN 11
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
 // Custom ESP32-C6 RISC-V PCB Pinout

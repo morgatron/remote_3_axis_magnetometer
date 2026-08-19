@@ -43,7 +43,7 @@ pkt_count_by_device = {}
 
 def decode_sensor_packet(raw: bytes):
     """Decode a SensorBinaryPacket from raw manufacturer data bytes.
-    Returns (device_id, timestamp_ms, x, y, z, status) or None on failure."""
+    Returns (device_id, age_ms, x, y, z, status) or None on failure."""
     if len(raw) < PACKET_SIZE:
         return None
 
@@ -54,9 +54,8 @@ def decode_sensor_packet(raw: bytes):
 
     data = raw[offset:]
     try:
-        device_id_raw, ts_ms, x, y, z, status = struct.unpack(PACKET_FMT, data)
+        device_id_raw, age_ms, x, y, z, status = struct.unpack(PACKET_FMT, data)
     except struct.error:
-        print("Invalid packetL ", data)
         return None
 
     # Decode device_id (null-terminated ASCII)
@@ -75,7 +74,7 @@ def decode_sensor_packet(raw: bytes):
         if math.isnan(val) or math.isinf(val) or abs(val) > 10_000_000.0:
             return None
 
-    return device_id, ts_ms, x, y, z, status
+    return device_id, age_ms, x, y, z, status
 
 
 def on_advertisement(device, advertisement_data):
@@ -85,41 +84,33 @@ def on_advertisement(device, advertisement_data):
         return
 
     for company_id, payload in mfr_data.items():
-        # Try decoding with the company_id bytes prepended (as bleak strips them)
-        # and also the raw payload directly
         result = decode_sensor_packet(payload)
         if result is None:
-            # Try prepending company ID as 2 LE bytes
             full = struct.pack("<H", company_id) + payload
             result = decode_sensor_packet(full)
 
         if result is not None:
-            device_id, ts_ms, x, y, z, status = result
+            device_id, age_ms, x, y, z, status = result
             now = time.time()
+            sample_time_utc = now - (age_ms / 1000.0)
 
-            # De-duplicate: skip if same timestamp as last seen
-            if device_id in last_ts_by_device and last_ts_by_device[device_id] == ts_ms:
-                return
-
-            last_ts_by_device[device_id] = ts_ms
             pkt_count_by_device[device_id] = pkt_count_by_device.get(device_id, 0) + 1
             count = pkt_count_by_device[device_id]
 
             bmag = (x**2 + y**2 + z**2) ** 0.5
 
-            name = advertisement_data.local_name or device.name or "?"
             rssi = advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else "?"
             if rssi == "?" and hasattr(device, 'rssi'):
                 rssi = device.rssi
 
             print(
                 f"[#{count:4d}] {device_id:8s} | "
-                f"ts={ts_ms:10d}ms | "
+                f"age={age_ms:6d}ms | "
+                f"sample_time={time.strftime('%H:%M:%S', time.localtime(sample_time_utc))} | "
                 f"B=({x:+10.2f}, {y:+10.2f}, {z:+10.2f}) nT | "
                 f"|B|={bmag:10.2f} nT | "
                 f"status=0x{status:04X} | "
-                f"RSSI={rssi} dBm | "
-                f"addr={device.address}"
+                f"RSSI={rssi} dBm"
             )
 
 
@@ -128,7 +119,7 @@ async def scan(duration: float):
     print(f"{'='*100}")
     print(f"BLE Advertising Monitor — Scanning for SensorBinaryPacket ({PACKET_SIZE} bytes)")
     print(f"{'='*100}")
-    print(f"  Packet format: device_id[8] + timestamp_ms[4] + x_nT[4] + y_nT[4] + z_nT[4] + status[2]")
+    print(f"  Packet format: device_id[8] + packet_age_ms[4] + x_nT[4] + y_nT[4] + z_nT[4] + status[2]")
     print(f"  Duration: {'indefinite (Ctrl+C to stop)' if duration == 0 else f'{duration}s'}")
     print(f"{'='*100}")
     print()

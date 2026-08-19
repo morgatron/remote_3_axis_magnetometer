@@ -2,19 +2,36 @@
 #include <RadioLib.h>
 
 static SX1262* pRadio = nullptr;
+static SPIClass* pLoraSpi = nullptr;
 
 LoRaStream::LoRaStream() : _initialized(false), _cs(-1), _irq(-1), _rst(-1), _busy(-1), _spi(nullptr), _radio(nullptr) {}
 
-bool LoRaStream::begin(int cs, int irq, int rst, int busy, SPIClass *spiBus, LoRaConfig cfg) {
+bool LoRaStream::begin(int cs, int irq, int rst, int busy, int sck, int miso, int mosi, SPIClass *spiBus, LoRaConfig cfg) {
+    if (_initialized && pRadio) {
+        return true;
+    }
+
     _cs = cs;
     _irq = irq;
     _rst = rst;
     _busy = busy;
-    _spi = spiBus ? spiBus : &SPI;
     _config = cfg;
 
     if (_cs < 0 || _irq < 0) {
         return false;
+    }
+
+    // Configure dedicated SPI bus for LoRa if not explicitly provided
+    if (spiBus) {
+        _spi = spiBus;
+    } else if (sck >= 0 && miso >= 0 && mosi >= 0) {
+        if (!pLoraSpi) {
+            pLoraSpi = new SPIClass(FSPI);
+            pLoraSpi->begin(sck, miso, mosi, _cs);
+        }
+        _spi = pLoraSpi;
+    } else {
+        _spi = &SPI;
     }
 
     // Instantiate RadioLib Module for Heltec V4 SX1262
@@ -22,11 +39,28 @@ bool LoRaStream::begin(int cs, int irq, int rst, int busy, SPIClass *spiBus, LoR
     pRadio = new SX1262(mod);
     _radio = pRadio;
 
-    int state = pRadio->begin(_config.frequency, _config.bandwidth, _config.spreadingFactor, _config.codingRate, RADIOLIB_SX126X_SYNC_WORD_PRIVATE, _config.power, _config.preambleLength);
+    int state = pRadio->begin(
+        _config.frequency,
+        _config.bandwidth,
+        _config.spreadingFactor,
+        _config.codingRate,
+        RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
+        _config.power,
+        _config.preambleLength
+    );
 
     if (state == RADIOLIB_ERR_NONE) {
+        // 1. Enable DIO2 as RF switch control for Heltec V3/V4 onboard RF switch
+        pRadio->setDio2AsRfSwitch(true);
+
+        // 2. Enable SX1262 Rx Boosted Gain (+2 to 3 dB LNA sensitivity improvement)
+        pRadio->setRxBoostedGainMode(true);
+
+        // 3. Set Over-Current Protection to 140 mA for clean +22 dBm PA output
+        pRadio->setCurrentLimit(140.0f);
+
         _initialized = true;
-        Serial.printf("[LORA SUCCESS] SX1262 LoRa Active on %.1f MHz AU915 (SF%d, BW %.0f kHz, TX +%d dBm)\r\n",
+        Serial.printf("[LORA SUCCESS] SX1262 LoRa Active on %.1f MHz AU915 (SF%d, BW %.0f kHz, TX +%d dBm, DIO2 RF-Switch ON, RX Boost ON)\r\n",
                       _config.frequency, _config.spreadingFactor, _config.bandwidth, _config.power);
         return true;
     } else {

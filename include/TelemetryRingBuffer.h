@@ -49,7 +49,10 @@ public:
         if (deviceId && deviceId[0] != '\0') {
             strncpy(outBatch.device_id, deviceId, sizeof(outBatch.device_id) - 1);
         }
-        outBatch.start_ts_ms = _buffer[_tail].ts_ms;
+        size_t newest_idx = (_tail + count - 1) % CAPACITY;
+        uint32_t latest_ts_ms = _buffer[newest_idx].ts_ms;
+        uint32_t now_ms = millis();
+        outBatch.latest_sample_age_ms = (now_ms >= latest_ts_ms) ? (now_ms - latest_ts_ms) : 0;
         outBatch.sample_interval_ms = 1000;
         outBatch.sample_count = count;
 

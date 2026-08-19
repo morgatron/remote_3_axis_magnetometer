@@ -76,13 +76,19 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                     item.temp = 0.0f;
                     item.vbat = (float)batch.vbat_mv / 1000.0f;
 
-                    if (!nodeTracker.recordBatchSeen(item.node_id, item.mac, item.rssi, batch.start_ts_ms, batch.sample_count, item.vbat)) {
+                    uint32_t now_ms = millis();
+                    uint32_t latest_sample_ts_ms = (now_ms >= batch.latest_sample_age_ms) ? (now_ms - batch.latest_sample_age_ms) : 0;
+                    uint32_t oldest_sample_offset = (batch.sample_count > 0) ? (batch.sample_count - 1) * batch.sample_interval_ms : 0;
+                    uint32_t oldest_sample_ts_ms = (latest_sample_ts_ms >= oldest_sample_offset) ? (latest_sample_ts_ms - oldest_sample_offset) : 0;
+
+                    if (!nodeTracker.recordBatchSeen(item.node_id, item.mac, item.rssi, oldest_sample_ts_ms, batch.sample_count, item.vbat)) {
                         return; // Already processed duplicate scan
                     }
 
                     for (uint8_t i = 0; i < batch.sample_count; i++) {
-                        uint32_t sample_ts = batch.start_ts_ms + (i * batch.sample_interval_ms);
-                        item.timestamp_us = (uint64_t)sample_ts * 1000ULL;
+                        uint32_t offset_from_newest = (batch.sample_count - 1 - i) * batch.sample_interval_ms;
+                        uint32_t sample_ts_ms = (latest_sample_ts_ms >= offset_from_newest) ? (latest_sample_ts_ms - offset_from_newest) : 0;
+                        item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
                         item.x = (float)batch.samples[i].x_nT;
                         item.y = (float)batch.samples[i].y_nT;
                         item.z = (float)batch.samples[i].z_nT;
@@ -98,18 +104,20 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
 
         // 2. Fallback check for single SensorBinaryPacket
         if (mlen >= sizeof(SensorBinaryPacket)) {
-            for (size_t offset = 0; offset <= mlen - sizeof(SensorBatchPacket); offset++) {
+            for (size_t offset = 0; offset <= mlen - sizeof(SensorBinaryPacket); offset++) {
                 SensorBinaryPacket pkt;
                 memcpy(&pkt, mptr + offset, sizeof(pkt));
                 if (isValidSensorPacket(pkt)) {
                     if (pkt.device_id[0] != '\0') {
                         strncpy(item.node_id, pkt.device_id, sizeof(item.node_id) - 1);
                     }
-                    item.timestamp_us = (uint64_t)pkt.timestamp_ms * 1000ULL;
+                    uint32_t now_ms = millis();
+                    uint32_t sample_ts_ms = (now_ms >= pkt.packet_age_ms) ? (now_ms - pkt.packet_age_ms) : 0;
+                    item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
                     item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
                     item.status = pkt.status; item.temp = 0.0f; item.vbat = 0.0f;
 
-                    bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "BLE", pkt.timestamp_ms);
+                    bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "BLE", sample_ts_ms);
                     if (isNewSample) {
                         bleRxCount++;
                         item.formatCsvLine();

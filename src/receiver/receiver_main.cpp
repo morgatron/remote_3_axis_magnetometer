@@ -122,7 +122,7 @@ void connectEgressWiFi() {
 static BLEReceiver bleRcvr;
 static ESPNowReceiver espnowRcvr;
 static UDPReceiver udpRcvr;
-static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN);
+static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
 
 static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr, &loraRcvr };
 
@@ -151,8 +151,14 @@ void setup() {
 
     loadReceiverSettings();
 
-    // 1. Initialize Board Power Rail (Vext)
+    // 1. Initialize Board Power Rail (Vext) & OLED Screen
     initBoardPower();
+
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    oledDisplay.begin(17, 18, 21, 36);
+    oledDisplay.updateReceiverScreen(0, 0, 0, "READY", "USB Serial", "SERIAL");
+    lastOledActivityMs = millis();
+#endif
 
     // 2. Create FreeRTOS Telemetry Queue
     telemetryQueue = xQueueCreate(256, sizeof(TelemetryItem));
@@ -174,10 +180,6 @@ void setup() {
 
     // 6. Start Interactive CLI
     receiverCLI.begin();
-
-#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
-    oledDisplay.begin(17, 18, 21, 36);
-#endif
 }
 
 void loop() {

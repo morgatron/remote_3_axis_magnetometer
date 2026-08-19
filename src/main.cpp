@@ -53,8 +53,9 @@ uint16_t targetPort = 9876;
 uint16_t udpListenPort = 9876;
 
 #include "BLEStream.h"
+#include "LoRaStream.h"
 
-enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3 };
+enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3, MODE_LORA = 4 };
 uint8_t outputMode = MODE_BOTH; // Default: MODE_BOTH (Serial & BLE Coded PHY telemetry active)
 uint8_t batchSizeConfig = 10; // Default: 10 samples per Coded PHY burst (range 1-10)
 String wifiSSID = "";
@@ -283,6 +284,25 @@ void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, flo
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
         processBleTelemetry(deviceID, ts, x, y, z, status, line);
     }
+
+    if (outputMode == MODE_LORA) {
+        #if defined(LORA_CS_PIN)
+        if (!loraStream.isInitialized()) {
+            loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+        }
+        if (loraStream.isInitialized()) {
+            SensorBinaryPacket pkt;
+            memset(&pkt, 0, sizeof(pkt));
+            strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
+            pkt.packet_age_ms = 0; // Transmitted immediately upon sample capture
+            pkt.x_nT = x;
+            pkt.y_nT = y;
+            pkt.z_nT = z;
+            pkt.status = (uint16_t)(status & 0xFFFF);
+            loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
+        }
+        #endif
+    }
 }
 
 CLI serialCLI(sensor, streaming, current_rate, saveSettings);
@@ -338,16 +358,6 @@ void recoverSensor() {
 
     pinMode(CS_PIN, OUTPUT);
     digitalWrite(CS_PIN, HIGH);
-    delay(10);
-
-    bool ok = sensor->begin();
-    if (!ok) {
-        Serial.println("[WATCHDOG RECOVERY] Re-initializing SPI bus...");
-        SPI.end();
-        delay(10);
-        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-        sensor->begin();
-    }
 
     sensor->setContinuousMode(true, current_rate);
     sensor->readAndPushSample(); // Clear pending DRDY latch on ASIC
@@ -396,34 +406,34 @@ void setup() {
         Serial.println("Auto-probing physical sensor hardware...");
         bool found = false;
 
-        if (sensorRM3100.begin()) {
-            sensor = &sensorRM3100;
-            sensorTypeConfig = 0;
-            found = true;
-            Serial.println("Auto-detected sensor: RM3100");
-        } else if (sensorFLC100.begin()) {
-            sensor = &sensorFLC100;
-            sensorTypeConfig = 1;
-            found = true;
-            Serial.println("Auto-detected sensor: FLC100-ADS131E08");
+        for (int retry = 0; retry < 3 && !found; retry++) {
+            if (sensorRM3100.begin()) {
+                sensor = &sensorRM3100;
+                sensorTypeConfig = 0;
+                found = true;
+                Serial.println("Auto-detected sensor: RM3100");
+                break;
+            } else if (sensorFLC100.begin()) {
+                sensor = &sensorFLC100;
+                sensorTypeConfig = 1;
+                found = true;
+                Serial.println("Auto-detected sensor: FLC100-ADS131E08");
+                break;
+            }
+            delay(100);
         }
 
         if (found) {
             saveSettings();
+            // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
+            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
+        } else {
+            Serial.print("[SENSOR NOTICE] No physical SPI sensor detected. Falling back to Synthetic MOCK mode.\r\n");
+            Serial.print("[HINT] Connect RM3100 or FLC100-ADS131E08 and reboot, or send 'SENSOR RM3100' / 'SENSOR FLC100'.\r\n");
+            sensor = &sensorMock;
+            sensorTypeConfig = 2;
+            sensor->begin();
         }
-
-        while (!found) {
-            delay(1000);
-            Serial.print("[SENSOR ERROR] Physical sensor hardware probe failed! Check SPI wiring.\r\n");
-            Serial.print("[HINT] Send CLI command 'SENSOR MOCK' to enable synthetic range testing.\r\n");
-            serialCLI.update();
-            if (sensor->begin()) {
-                found = true;
-            }
-        }
-
-        // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
-        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
     }
 
     Serial.print("Active Sensor: ");
@@ -461,6 +471,12 @@ void setup() {
         bleStream.begin(deviceID);
     }
 
+    if (outputMode == MODE_LORA) {
+        #if defined(LORA_CS_PIN)
+        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+        #endif
+    }
+
     // Enable Automatic Tickless Light Sleep and Dynamic Frequency Scaling
     configurePowerManagement();
 }
@@ -472,14 +488,14 @@ void loop() {
     static uint32_t lastOledUpdateMs = 0;
     if (millis() - lastOledUpdateMs >= 500) {
         lastOledUpdateMs = millis();
-        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH", "BLE"};
+        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH", "BLE", "LORA"};
         oledDisplay.updateSensorScreen(
             deviceID.c_str(),
             sensor ? sensor->getSensorName().c_str() : "NONE",
             lastBmag_nT,
             sampleCounter,
             3.70f,
-            modeNames[outputMode % 4]
+            modeNames[outputMode % 5]
         );
     }
 #endif

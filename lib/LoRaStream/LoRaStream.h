@@ -26,15 +26,18 @@ public:
 
     /**
      * @brief Initialize SPI bus and SX1262 module.
-     * @param cs Pin CS
+     * @param cs Pin CS (NSS)
      * @param irq Pin DIO1
      * @param rst Pin RESET
      * @param busy Pin BUSY
+     * @param sck Pin SPI SCK (-1 to use default SPI)
+     * @param miso Pin SPI MISO (-1 to use default SPI)
+     * @param mosi Pin SPI MOSI (-1 to use default SPI)
      * @param spiBus Pointer to dedicated SPIClass instance
      * @param cfg Radio frequency & spreading factor configuration (Default: AU915 Band @ 915.0 MHz)
      * @return true if SX1262 initialization succeeds
      */
-    bool begin(int cs, int irq, int rst, int busy, SPIClass *spiBus = nullptr, LoRaConfig cfg = {915.0f, 500.0f, 7, 5, 22, 8});
+    bool begin(int cs, int irq, int rst, int busy, int sck = -1, int miso = -1, int mosi = -1, SPIClass *spiBus = nullptr, LoRaConfig cfg = {915.0f, 125.0f, 7, 5, 22, 8});
 
     /**
      * @brief Transmit telemetry binary packet or string payload over LoRa.
