@@ -70,9 +70,9 @@ typedef struct __attribute__((packed)) {
 } SensorBinaryPacket;
 
 typedef struct __attribute__((packed)) {
-    int32_t x_nT;
-    int32_t y_nT;
-    int32_t z_nT;
+    float x_nT;
+    float y_nT;
+    float z_nT;
 } CompactSample;
 
 typedef struct __attribute__((packed)) {

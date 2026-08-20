@@ -31,12 +31,12 @@ void MockSensor::readXYZ(int32_t &x, int32_t &y, int32_t &z) {
 }
 
 void MockSensor::readXYZ(int32_t &x, int32_t &y, int32_t &z, uint32_t &status) {
-    float noiseX = (float)random(-15, 16);
-    float noiseY = (float)random(-15, 16);
-    float noiseZ = (float)random(-15, 16);
-    x = (int32_t)(21500.0f + 250.0f * sinf(_phase) + noiseX);
-    y = (int32_t)(-3200.0f + 180.0f * cosf(_phase * 0.7f) + noiseY);
-    z = (int32_t)(43200.0f + 120.0f * sinf(_phase * 1.3f) + noiseZ);
+    float noiseX = (float)random(-1500, 1600) / 100.0f;
+    float noiseY = (float)random(-1500, 1600) / 100.0f;
+    float noiseZ = (float)random(-1500, 1600) / 100.0f;
+    x = (int32_t)((21500.0f + 250.0f * sinf(_phase) + noiseX) * 100.0f);
+    y = (int32_t)((-3200.0f + 180.0f * cosf(_phase * 0.7f) + noiseY) * 100.0f);
+    z = (int32_t)((43200.0f + 120.0f * sinf(_phase * 1.3f) + noiseZ) * 100.0f);
     status = MOCK_STATUS_WORD;
 }
 
@@ -60,15 +60,15 @@ void MockSensor::generateSample() {
     uint64_t now = micros();
     _lastSampleTimeUs = now;
 
-    // Generate realistic 3-axis geomagnetic field components (in nT)
+    // Generate realistic 3-axis geomagnetic field components (in nT with 0.01 nT precision)
     // Base Earth field ~ [21,500 nT, -3,200 nT, 43,200 nT] + sine wave + noise
-    float noiseX = (float)random(-15, 16);
-    float noiseY = (float)random(-15, 16);
-    float noiseZ = (float)random(-15, 16);
+    float noiseX = (float)random(-1500, 1600) / 100.0f;
+    float noiseY = (float)random(-1500, 1600) / 100.0f;
+    float noiseZ = (float)random(-1500, 1600) / 100.0f;
 
-    int32_t xVal = (int32_t)(21500.0f + 250.0f * sinf(_phase) + noiseX);
-    int32_t yVal = (int32_t)(-3200.0f + 180.0f * cosf(_phase * 0.7f) + noiseY);
-    int32_t zVal = (int32_t)(43200.0f + 120.0f * sinf(_phase * 1.3f) + noiseZ);
+    int32_t xVal = (int32_t)((21500.0f + 250.0f * sinf(_phase) + noiseX) * 100.0f);
+    int32_t yVal = (int32_t)((-3200.0f + 180.0f * cosf(_phase * 0.7f) + noiseY) * 100.0f);
+    int32_t zVal = (int32_t)((43200.0f + 120.0f * sinf(_phase * 1.3f) + noiseZ) * 100.0f);
 
     _phase += 0.05f;
     if (_phase > 2.0f * M_PI) {

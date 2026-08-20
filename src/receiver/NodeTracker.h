@@ -80,7 +80,7 @@ public:
         return true;
     }
 
-    bool recordBatchSeen(const char* device_id, const uint8_t* mac, int rssi, uint32_t start_ts_ms, uint8_t sample_count, float vbat = 0.0f) {
+    bool recordBatchSeen(const char* device_id, const uint8_t* mac, int rssi, uint32_t start_ts_ms, uint8_t sample_count, float vbat = 0.0f, const char* protocol = "BLE") {
         uint32_t now = millis();
         int idx = findNodeIndex(device_id, mac);
 
@@ -112,9 +112,6 @@ public:
             node.rssi = rssi;
             return false; // Already processed this batch!
         }
-        //Serial.print("new batch numsamples, time: "); Serial.print(sample_count); Serial.print(" "); Serial.println(start_ts_ms);
-        //Serial.print("last batch numsamples, time: "); Serial.print(node.last_batch_sample_count); Serial.print(" "); Serial.println(node.last_batch_start_ts_ms);
-        //Serial.print("last sample ts, last seen ts: "); Serial.print(node.last_sample_ts_ms); Serial.print(" "); Serial.println(node.last_batch_start_ts_ms);
 
         node.last_batch_start_ts_ms = start_ts_ms;
         node.last_batch_sample_count = sample_count;
@@ -123,7 +120,7 @@ public:
         node.packet_count += sample_count;
         node.rssi = rssi;
         if (vbat > 0.0f) node.vbat = vbat;
-        strncpy(node.protocol, "BLE", sizeof(node.protocol) - 1);
+        strncpy(node.protocol, protocol, sizeof(node.protocol) - 1);
         return true; // New batch payload
     }
 

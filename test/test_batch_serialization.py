@@ -23,19 +23,19 @@ class TestBatchSerialization(unittest.TestCase):
         #     uint16_t      vbat_mv;              // 2 bytes
         #     CompactSample samples[10];          // 120 bytes
         # } SensorBatchPacket;                  // Total = 139 bytes
-        self.compact_sample_fmt = "<iii" # 3 x int32_t (x, y, z in nT) = 12 bytes
+        self.compact_sample_fmt = "<fff" # 3 x float (x, y, z in nT) = 12 bytes
         self.batch_hdr_fmt = "<8sIHBHH"  # 8s + uint32 + uint16 + uint8 + uint16 + uint16 = 19 bytes header
 
     def test_compact_sample_packing(self):
         """Verify 3-axis sample packing into 12-byte compact struct."""
-        x_nT, y_nT, z_nT = 21550, -3240, 43180
+        x_nT, y_nT, z_nT = 21550.75, -3240.25, 43180.50
         packed = struct.pack(self.compact_sample_fmt, x_nT, y_nT, z_nT)
         self.assertEqual(len(packed), 12)
         
         unpacked_x, unpacked_y, unpacked_z = struct.unpack(self.compact_sample_fmt, packed)
-        self.assertEqual(unpacked_x, x_nT)
-        self.assertEqual(unpacked_y, y_nT)
-        self.assertEqual(unpacked_z, z_nT)
+        self.assertAlmostEqual(unpacked_x, x_nT, places=2)
+        self.assertAlmostEqual(unpacked_y, y_nT, places=2)
+        self.assertAlmostEqual(unpacked_z, z_nT, places=2)
 
     def test_10_sample_batch_reconstruction(self):
         """Simulate packing 10 samples and verifying timestamp reconstruction using packet age."""
@@ -52,9 +52,9 @@ class TestBatchSerialization(unittest.TestCase):
         samples_bytes = bytearray()
         expected_samples = []
         for i in range(sample_count):
-            x = 20000 + i * 10
-            y = -3000 - i * 5
-            z = 43000 + i * 20
+            x = 20000.12 + i * 10.5
+            y = -3000.45 - i * 5.25
+            z = 43000.80 + i * 20.1
             expected_samples.append((x, y, z))
             samples_bytes.extend(struct.pack(self.compact_sample_fmt, x, y, z))
 
@@ -80,7 +80,9 @@ class TestBatchSerialization(unittest.TestCase):
             offset_from_newest = (count_out - 1 - i) * interval_out
             sample_ts_ms = latest_sample_ts_ms - offset_from_newest
             
-            self.assertEqual((x, y, z), expected_samples[i])
+            self.assertAlmostEqual(x, expected_samples[i][0], places=2)
+            self.assertAlmostEqual(y, expected_samples[i][1], places=2)
+            self.assertAlmostEqual(z, expected_samples[i][2], places=2)
             self.assertEqual(sample_ts_ms, 49750 - (9 - i) * 1000)
 
 if __name__ == "__main__":

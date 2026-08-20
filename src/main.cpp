@@ -233,7 +233,7 @@ void checkBleAckTask() {
 void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
     // 1. Insert new sample into 10-minute circular buffer
     uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
-    telemetryRingBuffer.push(ts_ms, (int32_t)x, (int32_t)y, (int32_t)z);
+    telemetryRingBuffer.push(ts_ms, x, y, z);
 
     // 2. Check ACK/timeout status of in-flight burst
     checkBleAckTask();
@@ -262,6 +262,51 @@ void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, 
     }
 }
 
+void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
+    #if defined(BOARD_HAS_LORA)
+    if (!loraStream.isInitialized()) {
+        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+    }
+    if (!loraStream.isInitialized()) return;
+
+    uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 10) ? batchSizeConfig : 10;
+
+    if (targetBatchSize == 1) {
+        // Direct unbuffered single-sample transmission (1 packet per sample)
+        SensorBinaryPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
+        pkt.packet_age_ms = 0; // Transmitted immediately upon sample capture
+        pkt.x_nT = x;
+        pkt.y_nT = y;
+        pkt.z_nT = z;
+        pkt.status = (uint16_t)(status & 0xFFFF);
+        loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
+    } else {
+        // Batched telemetry mode (e.g. 10 samples per burst every 10 seconds)
+        uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
+        static TelemetryRingBuffer loraRingBuffer;
+        loraRingBuffer.push(ts_ms, x, y, z);
+
+        static uint32_t lastLoraBurstTxMs = 0;
+        uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
+        uint16_t unacked = loraRingBuffer.getUnackedCount();
+
+        if (unacked >= targetBatchSize || (unacked > 0 && millis() - lastLoraBurstTxMs >= minBurstIntervalMs)) {
+            SensorBatchPacket batch;
+            uint8_t countToSend = loraRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
+            if (countToSend > 0) {
+                batch.status = (uint16_t)(status & 0xFFFF);
+                batch.vbat_mv = 3300;
+                loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
+                loraRingBuffer.confirmAck(countToSend);
+                lastLoraBurstTxMs = millis();
+            }
+        }
+    }
+    #endif
+}
+
 void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len) {
     // Non-blocking Serial output (prevents USB CDC buffer stalls when host monitor is not attached)
     if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
@@ -288,22 +333,7 @@ void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, flo
     }
 
     if (outputMode == MODE_LORA) {
-        #if defined(BOARD_HAS_LORA)
-        if (!loraStream.isInitialized()) {
-            loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-        }
-        if (loraStream.isInitialized()) {
-            SensorBinaryPacket pkt;
-            memset(&pkt, 0, sizeof(pkt));
-            strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
-            pkt.packet_age_ms = 0; // Transmitted immediately upon sample capture
-            pkt.x_nT = x;
-            pkt.y_nT = y;
-            pkt.z_nT = z;
-            pkt.status = (uint16_t)(status & 0xFFFF);
-            loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
-        }
-        #endif
+        processLoRaTelemetry(deviceID, ts, x, y, z, status, line);
     }
 }
 

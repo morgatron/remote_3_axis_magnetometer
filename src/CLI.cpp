@@ -36,7 +36,7 @@ void CLI::printHelp() {
     Serial.println("STREAM ON/OFF - Enable/Disable data streaming");
     Serial.println("RATE <hex>    - Set rate code (saved)");
     Serial.println("CYCLE <int>   - Set cycle count (RM3100 specific)");
-    Serial.println("BATCH <1-10>  - Set samples per BLE burst (1 = instant 1Hz, 10 = low power)");
+    Serial.println("BATCH <1-10>  - Set samples per burst (1 = instant 1Hz, 10 = 10s batch for BLE & LoRa)");
     Serial.println("STATUS        - Show current status");
     Serial.println("-----------------------");
 }
@@ -56,9 +56,9 @@ void CLI::handleCommand(String cmd) {
             extern uint8_t batchSizeConfig;
             batchSizeConfig = count;
             if (_saveCallback) _saveCallback();
-            Serial.printf("BLE Batch Burst Size set to %d samples per burst.\r\n", batchSizeConfig);
+            Serial.printf("Batch Burst Size set to %d samples per burst (BLE & LoRa).\r\n", batchSizeConfig);
         } else {
-            Serial.println("Usage: BATCH <1-10> (Set samples per Coded PHY Extended Advertising burst)");
+            Serial.println("Usage: BATCH <1-10> (Set samples per burst for BLE & LoRa)");
         }
     } else if (cmd == "STREAM ON") {
         _streaming = true;

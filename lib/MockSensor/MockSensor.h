@@ -24,7 +24,7 @@ public:
     void setContinuousMode(bool enable, uint8_t rate_code = 0x95) override;
     String getStatusString() override;
     String getSensorName() override { return "Mock Synthetic Sensor (Range Test)"; }
-    float getScaleFactor() override { return 1.0f; }
+    float getScaleFactor() override { return 0.01f; }
 
     // Ring Buffer API
     void readAndPushSample() override;

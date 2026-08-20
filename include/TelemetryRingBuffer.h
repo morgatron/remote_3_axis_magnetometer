@@ -19,7 +19,7 @@ public:
     /**
      * @brief Push a new 3-axis magnetometer sample into the buffer.
      */
-    void push(uint32_t ts_ms, int32_t x_nT, int32_t y_nT, int32_t z_nT) {
+    void push(uint32_t ts_ms, float x_nT, float y_nT, float z_nT) {
         _buffer[_head].ts_ms = ts_ms;
         _buffer[_head].x_nT = x_nT;
         _buffer[_head].y_nT = y_nT;
@@ -95,9 +95,9 @@ public:
 private:
     struct Sample {
         uint32_t ts_ms;
-        int32_t x_nT;
-        int32_t y_nT;
-        int32_t z_nT;
+        float x_nT;
+        float y_nT;
+        float z_nT;
     };
 
     Sample _buffer[CAPACITY];
