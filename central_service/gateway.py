@@ -206,6 +206,131 @@ def udp_listener_thread():
             time.sleep(0.5)
 
 # --- 2. Serial / USB Listener ---
+def termux_usb_listener_thread(fd: int):
+    """Direct USB Bulk Transfer Reader for unrooted Android via termux-usb."""
+    import ctypes
+    import fcntl
+    import struct
+
+    is_64bit = (ctypes.sizeof(ctypes.c_void_p) == 8)
+    if is_64bit:
+        class BulkTransfer(ctypes.Structure):
+            _fields_ = [
+                ('ep', ctypes.c_uint),
+                ('len', ctypes.c_uint),
+                ('timeout', ctypes.c_uint),
+                ('pad', ctypes.c_uint),
+                ('data', ctypes.c_void_p),
+            ]
+        class CtrlTransfer(ctypes.Structure):
+            _fields_ = [
+                ('bRequestType', ctypes.c_uint8),
+                ('bRequest', ctypes.c_uint8),
+                ('wValue', ctypes.c_uint16),
+                ('wIndex', ctypes.c_uint16),
+                ('wLength', ctypes.c_uint16),
+                ('timeout', ctypes.c_uint32),
+                ('pad', ctypes.c_uint32),
+                ('data', ctypes.c_void_p),
+            ]
+    else:
+        class BulkTransfer(ctypes.Structure):
+            _fields_ = [
+                ('ep', ctypes.c_uint),
+                ('len', ctypes.c_uint),
+                ('timeout', ctypes.c_uint),
+                ('data', ctypes.c_void_p),
+            ]
+        class CtrlTransfer(ctypes.Structure):
+            _fields_ = [
+                ('bRequestType', ctypes.c_uint8),
+                ('bRequest', ctypes.c_uint8),
+                ('wValue', ctypes.c_uint16),
+                ('wIndex', ctypes.c_uint16),
+                ('wLength', ctypes.c_uint16),
+                ('timeout', ctypes.c_uint32),
+                ('data', ctypes.c_void_p),
+            ]
+
+    USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(CtrlTransfer) << 16) | (ord('U') << 8) | 0
+    USBDEVFS_BULK = (3 << 30) | (ctypes.sizeof(BulkTransfer) << 16) | (ord('U') << 8) | 2
+    USBDEVFS_CLAIMINTERFACE = (1 << 30) | (4 << 16) | (ord('U') << 8) | 15
+
+    print(f"[Gateway Termux USB] Active on File Descriptor {fd}. Initializing CDC...")
+    
+    # Claim interfaces 0 and 1
+    for iface in (0, 1):
+        try:
+            fcntl.ioctl(fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", iface))
+        except Exception:
+            pass
+
+    # Send CDC Set Control Line State (DTR=1, RTS=1)
+    ctrl = CtrlTransfer()
+    ctrl.bRequestType = 0x21
+    ctrl.bRequest = 0x22  # SET_CONTROL_LINE_STATE
+    ctrl.wValue = 0x03    # DTR | RTS
+    ctrl.wIndex = 0
+    ctrl.wLength = 0
+    ctrl.timeout = 1000
+    ctrl.data = None
+    try:
+        fcntl.ioctl(fd, USBDEVFS_CONTROL, ctrl)
+    except Exception:
+        pass
+
+    # Probe for active Bulk IN endpoint (common: 0x81, 0x82, 0x83)
+    candidate_endpoints = [0x81, 0x82, 0x83, 0x84, 0x85]
+    active_ep = None
+    buf = ctypes.create_string_buffer(4096)
+    
+    print(f"[Gateway Termux USB] Probing Bulk IN endpoints {candidate_endpoints}...")
+    for ep in candidate_endpoints:
+        transfer = BulkTransfer()
+        transfer.ep = ep
+        transfer.len = 4096
+        transfer.timeout = 200
+        transfer.data = ctypes.addressof(buf)
+        try:
+            res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
+            if res >= 0:
+                active_ep = ep
+                print(f"[Gateway Termux USB] Connected on Endpoint 0x{ep:02X}!")
+                break
+        except Exception:
+            continue
+
+    if active_ep is None:
+        active_ep = 0x81
+        print(f"[Gateway Termux USB] Defaulting to Endpoint 0x{active_ep:02X}...")
+
+    rx_buf = ""
+    rx_count = 0
+    while True:
+        try:
+            transfer = BulkTransfer()
+            transfer.ep = active_ep
+            transfer.len = 4096
+            transfer.timeout = 1000
+            transfer.data = ctypes.addressof(buf)
+            res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
+            if res > 0:
+                chunk = buf.raw[:res].decode("utf-8", errors="ignore")
+                rx_buf += chunk
+                while "\n" in rx_buf:
+                    line, rx_buf = rx_buf.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        sample = parse_csv_line(line)
+                        if sample:
+                            rx_count += 1
+                            if rx_count % 10 == 1:
+                                print(f"[Gateway Termux USB RX #{rx_count}] {sample['node_id']} -> |B| = {math.sqrt(sample['x']**2 + sample['y']**2 + sample['z']**2):.1f} nT (RSSI: {sample.get('rssi')} dBm)")
+                            if not send_queue.full():
+                                send_queue.put(sample)
+        except Exception:
+            time.sleep(0.05)
+
 def serial_listener_thread(port, baud):
     if not HAS_SERIAL:
         print("[Gateway Notice] 'pyserial' not available. Serial listener disabled.")
@@ -247,6 +372,7 @@ def serial_listener_thread(port, baud):
         except Exception as e:
             print(f"[Gateway Serial Disconnected] {target_port}: {e}. Retrying in 2.0s...")
             time.sleep(2.0)
+
 
 # --- 3. BLE Listener (Async) ---
 async def ble_listener_loop():
@@ -308,8 +434,23 @@ if __name__ == "__main__":
         t_udp = threading.Thread(target=udp_listener_thread, daemon=True)
         t_udp.start()
 
-    # Start Serial Listener
-    if (ENABLE_SERIAL or SERIAL_PORT) and HAS_SERIAL:
+    # Start Serial / Termux USB Listener
+    termux_fd = None
+    if os.getenv("TERMUX_USB_FD"):
+        try:
+            termux_fd = int(os.getenv("TERMUX_USB_FD"))
+        except ValueError:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1].isdigit():
+        try:
+            termux_fd = int(sys.argv[1])
+        except ValueError:
+            pass
+
+    if termux_fd is not None:
+        t_termux_usb = threading.Thread(target=termux_usb_listener_thread, args=(termux_fd,), daemon=True)
+        t_termux_usb.start()
+    elif (ENABLE_SERIAL or SERIAL_PORT) and HAS_SERIAL:
         t_ser = threading.Thread(target=serial_listener_thread, args=(SERIAL_PORT, SERIAL_BAUD), daemon=True)
         t_ser.start()
 
