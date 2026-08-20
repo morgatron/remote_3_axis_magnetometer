@@ -1,1 +1,1 @@
-{"port": "MOCK_SENSOR", "history": "10000", "fft_window": "256"}
+{"port": "/dev/ttyACM0", "history": "10000", "fft_window": "256"}

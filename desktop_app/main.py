@@ -247,9 +247,7 @@ class MainWindow(QMainWindow):
                 filt_mode = self.filter_combo.currentText()
                 self.time_plot.update_data(t_plot, x_arr, y_arr, z_arr, filter_mode=filt_mode)
 
-                sensor_type = self.sensor_type_combo.currentData()
-                is_rm3100 = (sensor_type == "RM3100") or ("RM3100" in self.detected_sensor.upper())
-                unit_str = "nT" if is_rm3100 else "Counts"
+                unit_str = "nT"
                 self.time_plot.set_unit_label(selected_node, unit_str)
                 self.stats_panel.update_means(np.mean(x_arr), np.mean(y_arr), np.mean(z_arr), unit_str)
 

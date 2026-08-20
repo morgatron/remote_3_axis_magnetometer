@@ -55,6 +55,21 @@ ENABLE_SERIAL = os.getenv("ENABLE_SERIAL", "true").lower() == "true"
 SERIAL_PORT = os.getenv("SERIAL_PORT", None)
 SERIAL_BAUD = int(os.getenv("SERIAL_BAUD", "921600"))
 
+# Check Serial / pyserial Availability
+HAS_SERIAL = False
+HAS_LIST_PORTS = False
+if ENABLE_SERIAL or SERIAL_PORT:
+    try:
+        import serial
+        HAS_SERIAL = True
+        try:
+            import serial.tools.list_ports
+            HAS_LIST_PORTS = True
+        except Exception as e:
+            print(f"[Gateway Notice] 'serial.tools.list_ports' not supported on this platform ({e}). Auto-discovery disabled.")
+    except ImportError:
+        print("[Gateway Notice] 'pyserial' package not found. Serial listener will be disabled (install via 'pip install pyserial').")
+
 # BLE disabled by default (Coded PHY Extended Advertising cannot be scanned by standard host PC Bluetooth adapters)
 ENABLE_BLE = os.getenv("ENABLE_BLE", "false").lower() == "true"
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -68,6 +83,7 @@ if ENABLE_BLE:
         HAS_BLEAK = True
     except ImportError:
         print("[Gateway Notice] 'bleak' package not found. BLE listener will be disabled (install via 'pip install bleak').")
+
 
 # Import shared stream parser from local folder or repository root
 sys.path.insert(0, os.path.dirname(__file__))
@@ -191,15 +207,21 @@ def udp_listener_thread():
 
 # --- 2. Serial / USB Listener ---
 def serial_listener_thread(port, baud):
-    import serial
-    import serial.tools.list_ports
+    if not HAS_SERIAL:
+        print("[Gateway Notice] 'pyserial' not available. Serial listener disabled.")
+        return
 
     rx_count = 0
     while True:
         target_port = port
         if not target_port:
-            # Auto-detect available ESP32 USB CDC / ACM / USB serial ports
-            acm_ports = sorted([p.device for p in serial.tools.list_ports.comports() if 'ACM' in p.device or 'USB' in p.device])
+            # Auto-detect available ESP32 USB CDC / ACM / USB serial ports if supported
+            acm_ports = []
+            if HAS_LIST_PORTS:
+                try:
+                    acm_ports = sorted([p.device for p in serial.tools.list_ports.comports() if 'ACM' in p.device or 'USB' in p.device])
+                except Exception:
+                    acm_ports = []
             if acm_ports:
                 target_port = acm_ports[0]
             else:
@@ -287,7 +309,7 @@ if __name__ == "__main__":
         t_udp.start()
 
     # Start Serial Listener
-    if ENABLE_SERIAL or SERIAL_PORT:
+    if (ENABLE_SERIAL or SERIAL_PORT) and HAS_SERIAL:
         t_ser = threading.Thread(target=serial_listener_thread, args=(SERIAL_PORT, SERIAL_BAUD), daemon=True)
         t_ser.start()
 
