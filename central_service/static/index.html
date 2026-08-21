@@ -8,6 +8,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <style>
         :root {
             --bg-dark: #0f172a;
@@ -258,6 +260,50 @@
             font-size: 0.75rem;
             color: var(--text-muted);
         }
+
+        /* Leaflet Dark Theme Overrides */
+        .leaflet-container {
+            background: #0f172a !important;
+            font-family: inherit !important;
+        }
+        .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+            background: rgba(30, 41, 59, 0.95) !important;
+            color: var(--text-main) !important;
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
+            border-radius: 8px !important;
+        }
+        .leaflet-popup-content {
+            margin: 12px 14px !important;
+            line-height: 1.5 !important;
+            font-size: 0.85rem !important;
+        }
+        .leaflet-tooltip {
+            background: rgba(15, 23, 42, 0.95) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--border-color) !important;
+            border-radius: 6px !important;
+            font-size: 0.75rem !important;
+            padding: 4px 8px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+        }
+        .leaflet-control-zoom a {
+            background: rgba(30, 41, 59, 0.9) !important;
+            color: var(--text-main) !important;
+            border-color: var(--border-color) !important;
+        }
+        .leaflet-control-zoom a:hover {
+            background: rgba(51, 65, 85, 0.9) !important;
+        }
+        .leaflet-control-attribution {
+            background: rgba(15, 23, 42, 0.7) !important;
+            color: var(--text-muted) !important;
+            font-size: 0.7rem !important;
+        }
+        .leaflet-control-attribution a {
+            color: var(--accent-blue) !important;
+        }
     </style>
 </head>
 <body>
@@ -322,6 +368,25 @@
                 <div class="chart-container">
                     <canvas id="realtimeChart"></canvas>
                 </div>
+            </div>
+        </div>
+
+        <!-- Regional Sensor Array Map -->
+        <div class="panel">
+            <div class="panel-header">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="panel-title">Regional Station Map</span>
+                    <span id="map-station-count" style="font-size: 0.8rem; color: var(--text-muted);">0 stations mapped</span>
+                </div>
+                <div class="chart-controls">
+                    <button onclick="recenterMap()" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; background: rgba(30, 41, 59, 0.9); border: 1px solid var(--border-color);">
+                        Recenter Array
+                    </button>
+                </div>
+            </div>
+            <div id="station-map" style="height: 320px; width: 100%; border-radius: 8px; position: relative; z-index: 1;"></div>
+            <div id="no-coords-banner" style="display: none; padding: 0.75rem 1rem; margin-top: 0.5rem; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px; font-size: 0.8rem; color: #fbbf24;">
+                📍 No GPS coordinates provisioned for active nodes. Set coordinates via <code>python3 scripts/update_node.py --node &lt;ID&gt; --lat &lt;LAT&gt; --lon &lt;LON&gt;</code> or <code>./manage.sh node update</code>.
             </div>
         </div>
 
@@ -591,6 +656,8 @@
                 const by = n.y !== undefined ? n.y : 0;
                 const bz = n.z !== undefined ? n.z : 0;
                 const mag = Math.sqrt(bx*bx + by*by + bz*bz).toFixed(1);
+                const hasCoords = (n.lat !== null && n.lat !== undefined && n.lon !== null && n.lon !== undefined);
+                const displayName = n.name && n.name !== n.node_id ? `${n.name} <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">(${n.node_id})</span>` : n.node_id;
                 
                 let timeStr = 'N/A';
                 if (n.last_seen) {
@@ -601,7 +668,7 @@
                 listHtml += `
                     <div class="node-card ${isSel}" onclick="selectNode('${n.node_id}')">
                         <div class="node-card-top">
-                            <span class="node-name">${n.node_id}</span>
+                            <span class="node-name">${displayName} ${hasCoords ? '📍' : ''}</span>
                             <span class="node-time">${timeStr}</span>
                         </div>
                         <div class="node-metrics">
@@ -610,20 +677,29 @@
                         </div>
                     </div>
                 `;
-                optionsHtml += `<option value="${n.node_id}">${n.node_id}</option>`;
+                optionsHtml += `<option value="${n.node_id}">${n.name ? `${n.name} (${n.node_id})` : n.node_id}</option>`;
             });
 
             listEl.innerHTML = listHtml;
             selectEl.innerHTML = optionsHtml;
+            updateMapMarkers();
         }
 
         async function selectNode(nodeId) {
             selectedNodeId = nodeId;
             const mode = document.getElementById('field-selector').value;
             if (!mode.startsWith('overlay_')) {
-                document.getElementById('selected-node-title').innerText = `Telemetry Viewer: ${nodeId}`;
+                const nodeObj = nodesData[nodeId];
+                const titleStr = nodeObj && nodeObj.name ? `${nodeObj.name} (${nodeId})` : nodeId;
+                document.getElementById('selected-node-title').innerText = `Telemetry Viewer: ${titleStr}`;
             }
             renderNodeList();
+            updateMapMarkers();
+
+            // If node has marker on map, open its popup
+            if (stationMarkers[nodeId]) {
+                stationMarkers[nodeId].openPopup();
+            }
 
             const range = document.getElementById('time-range-selector').value;
             if (range !== 'live') {
@@ -699,8 +775,14 @@
             const d = pt.timestamp ? new Date(pt.timestamp) : new Date();
             const timeLabel = isNaN(d.getTime()) ? new Date().toLocaleTimeString() : d.toLocaleTimeString();
 
+            const existing = nodesData[nodeId] || {};
             nodesData[nodeId] = {
+                ...existing,
                 node_id: nodeId,
+                name: existing.name || nodeId,
+                lat: existing.lat,
+                lon: existing.lon,
+                elevation_m: existing.elevation_m,
                 x: pt.x,
                 y: pt.y,
                 z: pt.z,
@@ -740,7 +822,10 @@
                 const res = await fetch(`${apiBaseUrl}/api/v1/nodes`);
                 const nodes = await res.json();
                 nodes.forEach(n => {
-                    nodesData[n.node_id] = n;
+                    nodesData[n.node_id] = {
+                        ...(nodesData[n.node_id] || {}),
+                        ...n
+                    };
                 });
                 renderNodeList();
                 
@@ -749,6 +834,166 @@
                 }
             } catch (err) {
                 console.error("Failed to fetch nodes", err);
+            }
+        }
+
+        // --- Regional Array Map (Leaflet) ---
+        let map = null;
+        let stationMarkers = {};
+        let hasAutoFitMap = false;
+
+        function initMap() {
+            if (map) return;
+            const mapEl = document.getElementById('station-map');
+            if (!mapEl) return;
+
+            map = L.map('station-map', {
+                attributionControl: true,
+                zoomControl: true
+            }).setView([-33.8688, 151.2093], 12);
+
+            // Dark-themed CartoDB tile layer
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(map);
+
+            updateMapMarkers();
+        }
+
+        function updateMapMarkers() {
+            if (!map) return;
+
+            const nodes = Object.values(nodesData);
+            let mappedCount = 0;
+            const validLatLngs = [];
+
+            nodes.forEach(n => {
+                if (n.lat === null || n.lat === undefined || n.lon === null || n.lon === undefined) {
+                    return;
+                }
+
+                const lat = parseFloat(n.lat);
+                const lon = parseFloat(n.lon);
+                if (isNaN(lat) || isNaN(lon)) return;
+
+                mappedCount++;
+                validLatLngs.push([lat, lon]);
+
+                const isSelected = (n.node_id === selectedNodeId);
+                
+                let isOnline = false;
+                if (n.last_seen) {
+                    const lastSeenMs = new Date(n.last_seen).getTime();
+                    if (!isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < 60000) {
+                        isOnline = true;
+                    }
+                }
+
+                const bx = n.x !== undefined ? n.x : 0;
+                const by = n.y !== undefined ? n.y : 0;
+                const bz = n.z !== undefined ? n.z : 0;
+                const mag = Math.sqrt(bx*bx + by*by + bz*bz).toFixed(1);
+                const elevStr = (n.elevation_m !== undefined && n.elevation_m !== null) ? `${n.elevation_m}m` : 'N/A';
+                const vbatStr = n.vbat ? `${n.vbat} mV` : 'N/A';
+                const rssiStr = (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'N/A';
+                const stationName = n.name || n.node_id;
+
+                const markerColor = isSelected ? '#a855f7' : (isOnline ? '#22c55e' : '#f59e0b');
+                const markerRadius = isSelected ? 12 : 8;
+
+                const popupContent = `
+                    <div style="min-width: 190px;">
+                        <div style="font-weight: 700; font-size: 0.95rem; color: var(--accent-blue); margin-bottom: 4px;">
+                            ${stationName}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px;">
+                            ID: <code>${n.node_id}</code> | Elev: ${elevStr}
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.8rem; margin-bottom: 8px;">
+                            <div><b>|B|:</b> ${mag} nT</div>
+                            <div><b>Bz:</b> ${typeof bz === 'number' ? bz.toFixed(1) : bz} nT</div>
+                            <div><b>Battery:</b> ${vbatStr}</div>
+                            <div><b>RSSI:</b> ${rssiStr}</div>
+                        </div>
+                        ${n.notes ? `<div style="font-size: 0.75rem; color: var(--text-muted); font-style: italic; margin-bottom: 6px;">${n.notes}</div>` : ''}
+                        <button onclick="selectNode('${n.node_id}')" style="width: 100%; padding: 4px 8px; font-size: 0.8rem; border-radius: 4px; background: linear-gradient(135deg, var(--accent-blue), #0284c7);">
+                            View Telemetry
+                        </button>
+                    </div>
+                `;
+
+                if (stationMarkers[n.node_id]) {
+                    stationMarkers[n.node_id].setLatLng([lat, lon]);
+                    stationMarkers[n.node_id].setStyle({
+                        radius: markerRadius,
+                        fillColor: markerColor,
+                        color: isSelected ? '#ffffff' : markerColor
+                    });
+                    stationMarkers[n.node_id].setPopupContent(popupContent);
+                    stationMarkers[n.node_id].setTooltipContent(`<b>${stationName}</b>: ${mag} nT`);
+                } else {
+                    const marker = L.circleMarker([lat, lon], {
+                        radius: markerRadius,
+                        fillColor: markerColor,
+                        color: isSelected ? '#ffffff' : markerColor,
+                        weight: 2,
+                        opacity: 1,
+                        fillOpacity: 0.85
+                    }).addTo(map);
+
+                    marker.bindPopup(popupContent);
+                    marker.bindTooltip(`<b>${stationName}</b>: ${mag} nT`, { direction: 'top', offset: [0, -8] });
+                    marker.on('click', () => {
+                        selectNode(n.node_id);
+                    });
+                    stationMarkers[n.node_id] = marker;
+                }
+            });
+
+            // Remove pruned markers
+            Object.keys(stationMarkers).forEach(nid => {
+                if (!nodesData[nid] || nodesData[nid].lat === null || nodesData[nid].lat === undefined) {
+                    map.removeLayer(stationMarkers[nid]);
+                    delete stationMarkers[nid];
+                }
+            });
+
+            const countEl = document.getElementById('map-station-count');
+            if (countEl) {
+                countEl.innerText = `${mappedCount} station${mappedCount === 1 ? '' : 's'} mapped`;
+            }
+
+            const bannerEl = document.getElementById('no-coords-banner');
+            if (bannerEl) {
+                bannerEl.style.display = (mappedCount === 0 && nodes.length > 0) ? 'block' : 'none';
+            }
+
+            if (!hasAutoFitMap && validLatLngs.length > 0) {
+                recenterMap();
+                hasAutoFitMap = true;
+            }
+        }
+
+        function recenterMap() {
+            if (!map) return;
+            const latLngs = [];
+            Object.values(nodesData).forEach(n => {
+                if (n.lat !== null && n.lat !== undefined && n.lon !== null && n.lon !== undefined) {
+                    const lat = parseFloat(n.lat);
+                    const lon = parseFloat(n.lon);
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        latLngs.push([lat, lon]);
+                    }
+                }
+            });
+
+            if (latLngs.length === 1) {
+                map.setView(latLngs[0], 14);
+            } else if (latLngs.length > 1) {
+                const bounds = L.latLngBounds(latLngs);
+                map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
             }
         }
 
@@ -796,6 +1041,7 @@
 
         window.addEventListener('DOMContentLoaded', () => {
             initChart();
+            initMap();
             fetchInitialNodes();
             connectWebSocket();
         });
