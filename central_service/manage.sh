@@ -281,6 +281,105 @@ function export_data() {
     fi
 }
 
+function manage_nodes() {
+    ACTION="${1:-list}"
+    shift || true
+
+    HEADER_AUTH=()
+    if [ -n "$API_KEY" ]; then
+        HEADER_AUTH=(-H "X-API-Key: ${API_KEY}")
+    fi
+
+    case "$ACTION" in
+        list)
+            print_header
+            echo -e "${BOLD}--- Registered Sensor Nodes ---${NC}"
+            if [ -f "${SCRIPT_DIR}/../scripts/update_node.py" ]; then
+                python3 "${SCRIPT_DIR}/../scripts/update_node.py" --server "http://localhost:${PORT}" --list
+            elif command -v sqlite3 >/dev/null 2>&1 && [ -f "$DB_FILE" ]; then
+                sqlite3 -header -column "$DB_FILE" "SELECT node_id, name, lat, lon, elevation_m, last_seen, sensor_model FROM nodes ORDER BY node_id;"
+            else
+                curl -s "http://localhost:${PORT}/api/v1/nodes"
+            fi
+            ;;
+        delete)
+            NODE_ID="$1"
+            if [ -z "$NODE_ID" ]; then
+                echo -e "${RED}[!] Error: Specify node ID to delete: $0 node delete <NODE_ID> [--purge]${NC}"
+                exit 1
+            fi
+            PURGE_FLAG="false"
+            if [ "$2" = "--purge" ] || [ "$2" = "-p" ]; then
+                PURGE_FLAG="true"
+            fi
+
+            echo "Deleting node '${NODE_ID}' (Purge telemetry: ${PURGE_FLAG})..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:${PORT}/api/v1/nodes/${NODE_ID}?purge_telemetry=${PURGE_FLAG}" \
+                "${HEADER_AUTH[@]}")
+            HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+                echo -e "${GREEN}[+] Node '${NODE_ID}' deleted successfully!${NC}"
+                echo -e "    Response: ${HTTP_BODY}"
+            else
+                echo -e "${RED}[!] Failed to delete node '${NODE_ID}' (HTTP ${HTTP_CODE})${NC}"
+                echo -e "    Response: ${HTTP_BODY}"
+                exit 1
+            fi
+            ;;
+        prune)
+            DAYS="30"
+            PURGE_FLAG="false"
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --days|-d)
+                        DAYS="$2"
+                        shift 2
+                        ;;
+                    --purge|-p)
+                        PURGE_FLAG="true"
+                        shift
+                        ;;
+                    *)
+                        if [[ "$1" =~ ^[0-9]+$ ]]; then
+                            DAYS="$1"
+                        fi
+                        shift
+                        ;;
+                esac
+            done
+
+            echo "Pruning inactive nodes older than ${DAYS} days (Purge telemetry: ${PURGE_FLAG})..."
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:${PORT}/api/v1/nodes/prune?days=${DAYS}&purge_telemetry=${PURGE_FLAG}" \
+                "${HEADER_AUTH[@]}")
+            HTTP_BODY=$(echo "$RESPONSE" | head -n -1)
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+                echo -e "${GREEN}[+] Pruning complete!${NC}"
+                echo -e "    Response: ${HTTP_BODY}"
+            else
+                echo -e "${RED}[!] Failed to prune inactive nodes (HTTP ${HTTP_CODE})${NC}"
+                echo -e "    Response: ${HTTP_BODY}"
+                exit 1
+            fi
+            ;;
+        update)
+            if [ -f "${SCRIPT_DIR}/../scripts/update_node.py" ]; then
+                python3 "${SCRIPT_DIR}/../scripts/update_node.py" --server "http://localhost:${PORT}" "$@"
+            else
+                echo -e "${RED}[!] Error: scripts/update_node.py not found.${NC}"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Usage: $0 node {list|delete <NODE_ID> [--purge]|prune [--days <N>] [--purge]|update <args>}"
+            exit 1
+            ;;
+    esac
+}
+
 # Command Router
 case "${1:-status}" in
     status)
@@ -307,8 +406,12 @@ case "${1:-status}" in
     export)
         export_data "${2:-csv}"
         ;;
+    nodes|node)
+        shift
+        manage_nodes "$@"
+        ;;
     *)
-        echo "Usage: $0 {status|start|stop|restart|logs|backup|test|export [csv|parquet|npz]}"
+        echo "Usage: $0 {status|start|stop|restart|logs|backup|test|export [csv|parquet|npz]|node {list|delete|prune|update}}"
         exit 1
         ;;
 esac

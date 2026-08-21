@@ -43,6 +43,14 @@ This system is designed for high-resolution, battery-powered remote magnetic fie
    - Running the PySide6 Desktop Application (`desktop_app/main.py`)
    - Real-time time-series plotting & Welch PSD spectral analysis
    - Device dynamic NVS provisioning & Gzip HDF5 (`.h5`) logging
+8. [**LoRa SX1262 Testing & Setup Guide**](lora_testing_setup.md)
+   - AU915 Band configuration (SF7 / 125 kHz / +22 dBm)
+   - 10-sample batched bursting (`BATCH 10`) with `latest_sample_age_ms` time-on-air compensation
+   - Automated testing tool (`scripts/setup_lora_test.py`)
+9. [**BLE Coded PHY Long-Range Testing Guide**](simple_ble_testing_setup.md)
+   - Bluetooth 5.0 LE Coded PHY S=8 batching
+   - Hardware `AUX_SCAN_REQ` confirmation ACKs
+   - Offline disconnect ring buffer and catch-up flushing
 
 ---
 

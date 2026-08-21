@@ -16,10 +16,13 @@ sudo ./install.sh
 
 ### Managing the Server (`./manage.sh`)
 ```bash
-./manage.sh status     # Display status, database size, memory, and telemetry counts
-./manage.sh logs       # Live stream logs
-./manage.sh restart    # Restart services
-./manage.sh backup     # Safe online SQLite snapshot into backups/
+./manage.sh status                  # Display status, database size, memory, and telemetry counts
+./manage.sh logs                    # Live stream logs
+./manage.sh restart                 # Restart services
+./manage.sh backup                  # Safe online SQLite snapshot into backups/
+./manage.sh nodes                   # List all registered sensor nodes and GPS coordinates
+./manage.sh node delete TEST        # Delete unwanted/test node (add --purge to delete telemetry)
+./manage.sh node prune --days 30    # Prune inactive nodes not seen in >30 days
 ```
 
 ### Manual Execution
@@ -85,4 +88,27 @@ with open("telemetry_export.parquet", "wb") as f:
     f.write(response.content)
 
 print("Saved telemetry_export.parquet successfully.")
+```
+
+---
+
+## 5. Station Metadata & GPS Location Management (`scripts/update_node.py`)
+
+To assign or update station names, GPS coordinates, elevation, and site notes for deployed nodes:
+
+```bash
+# 1. Update station location and site notes
+python3 scripts/update_node.py --node NODE_3A8 --name "North Ridge" --lat -33.8568 --lon 151.2153 --elev 42.5 --notes "Borehole #3 site"
+
+# 2. List all registered nodes and their coordinates
+python3 scripts/update_node.py --list
+
+# 3. Interactive prompt wizard (prompts for fields interactively)
+python3 scripts/update_node.py -i
+
+# 4. Delete an unwanted test node (add --purge to also delete historical telemetry)
+python3 scripts/update_node.py --delete TEST_NODE --purge
+
+# 5. Prune all nodes inactive for more than 30 days
+python3 scripts/update_node.py --prune-inactive 30 --purge
 ```

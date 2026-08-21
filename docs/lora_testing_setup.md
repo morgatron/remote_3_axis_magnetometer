@@ -24,10 +24,11 @@ This document provides step-by-step instructions for flashing, provisioning, and
 The driver is pre-configured to operate under **Australian RF Spectrum Regulations (AU915 Band)**:
 
 * **Frequency**: `915.0 MHz` (AU915 Band 915.0–928.0 MHz)
-* **Bandwidth**: `500.0 kHz` (Configured for high data-rate 1 kSPS telemetry streaming)
-* **Spreading Factor**: `SF7` (Lowest latency & maximum data throughput)
+* **Bandwidth**: `125.0 kHz` (Optimized for maximum sensitivity ~ -123 dBm)
+* **Spreading Factor**: `SF7` (Fast time-on-air and low latency)
 * **Coding Rate**: `4/5`
-* **Output Power**: `+22 dBm` (Maximum SX1262 TX power output)
+* **Output Power**: `+22 dBm` (Maximum SX1262 TX power output with DIO2 RF switch enabled)
+* **True Signal Power Calculation**: Below the thermal noise floor (-103 dBm), true RSSI is calculated as `RSSI + SNR` when $\text{SNR} < 0\text{ dB}$.
 
 ---
 
@@ -36,11 +37,11 @@ The driver is pre-configured to operate under **Australian RF Spectrum Regulatio
 Run the single-command automated test tool [`scripts/setup_lora_test.py`](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/scripts/setup_lora_test.py):
 
 ```bash
-# 1. Automated Flash, Provision, and 30-second Live Telemetry Test
-python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0
+# 1. Automated Flash, Provision (10-sample batch burst), and Live Telemetry Test
+python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0 --batch 10
 
 # 2. Skip Flashing (Run Provisioning & Live Test Only)
-python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0 --skip-flash
+python3 scripts/setup_lora_test.py --sensor-port /dev/ttyACM1 --rcvr-port /dev/ttyACM0 --batch 10 --skip-flash
 ```
 
 ---
@@ -61,13 +62,13 @@ pio run -e heltec_v4_sensor -t upload --upload-port /dev/ttyACM1
 
 ### Step 2: Provision the Field Sensor Node (`/dev/ttyACM1`)
 
-Open a terminal or serial monitor (`picocom -b 921600 /dev/ttyACM1`) and enter the following CLI commands:
+Open a terminal or serial monitor (`pio device monitor -p /dev/ttyACM1 -b 921600`) and enter the following CLI commands:
 
 ```text
 SENSOR MOCK
 ID NODE_LORA_01
 BATCH 10
-MODE BOTH
+MODE LORA
 STREAM ON
 SAVE
 ```
@@ -76,7 +77,7 @@ SAVE
 
 ### Step 3: Provision the Gateway Receiver Node (`/dev/ttyACM0`)
 
-Open a terminal or serial monitor (`picocom -b 921600 /dev/ttyACM0`) and enter:
+Open a terminal or serial monitor (`pio device monitor -p /dev/ttyACM0 -b 921600`) and enter:
 
 ```text
 MODE SERIAL

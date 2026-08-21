@@ -211,6 +211,36 @@ def test_api_key_auth():
         proc.terminate()
         proc.wait()
 
+def test_delete_and_prune_nodes():
+    # 1. Ingest telemetry for nodes to be deleted/pruned
+    p1 = {"node_id": "PRUNE_ME_1", "x": 1.0, "y": 2.0, "z": 3.0}
+    p2 = {"node_id": "PRUNE_ME_2", "x": 4.0, "y": 5.0, "z": 6.0}
+    requests.post(f"{SERVER_URL}/api/v1/telemetry", json=p1)
+    requests.post(f"{SERVER_URL}/api/v1/telemetry", json=p2)
+
+    # 2. Test deleting PRUNE_ME_1 with telemetry purge
+    del_resp = requests.delete(f"{SERVER_URL}/api/v1/nodes/PRUNE_ME_1?purge_telemetry=true")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["status"] == "success"
+    assert del_resp.json()["node_id"] == "PRUNE_ME_1"
+    assert del_resp.json()["telemetry_deleted"] >= 1
+
+    # Verify node is gone
+    nodes_resp = requests.get(f"{SERVER_URL}/api/v1/nodes")
+    node_ids = [n["node_id"] for n in nodes_resp.json()]
+    assert "PRUNE_ME_1" not in node_ids
+
+    # 3. Test 404 for non-existent node
+    del_404 = requests.delete(f"{SERVER_URL}/api/v1/nodes/NON_EXISTENT_NODE")
+    assert del_404.status_code == 404
+
+    # 4. Test pruning inactive nodes
+    prune_resp = requests.delete(f"{SERVER_URL}/api/v1/nodes/prune?days=0&purge_telemetry=true")
+    assert prune_resp.status_code == 200
+    assert prune_resp.json()["status"] == "success"
+
+    print("[PASS] Node delete and prune API test passed.")
+
 def cleanup(proc):
     if proc:
         proc.terminate()
@@ -229,6 +259,7 @@ if __name__ == "__main__":
         test_list_nodes()
         test_data_export_formats()
         test_downsampling()
+        test_delete_and_prune_nodes()
         test_api_key_auth()
         print("\nALL CENTRAL SERVER TESTS PASSED SUCCESSFULLY!")
     finally:

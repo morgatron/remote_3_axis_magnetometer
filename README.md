@@ -18,6 +18,8 @@ Complete user documentation is available in the [`docs/`](docs/) directory:
 - [**Secrets Management & System Security Guide (`docs/SECRETS_AND_SECURITY.md`)**](docs/SECRETS_AND_SECURITY.md)
 - [**Central Server & Web GUI Guide (`docs/central_server_guide.md`)**](docs/central_server_guide.md)
 - [**Desktop Application Guide (`docs/desktop_app_guide.md`)**](docs/desktop_app_guide.md)
+- [**LoRa SX1262 Testing & Setup Guide (`docs/lora_testing_setup.md`)**](docs/lora_testing_setup.md)
+- [**BLE Coded PHY Testing Guide (`docs/simple_ble_testing_setup.md`)**](docs/simple_ble_testing_setup.md)
 - [**Minimal End-to-End Testing Setup (`TESTING_SETUP.md`)**](TESTING_SETUP.md)
 
 ---

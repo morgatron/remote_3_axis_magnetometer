@@ -71,11 +71,12 @@ pio device monitor -b 921600
 | `HELP` / `STATUS` | Query Device ID, sensor model, rate code, and hardware status | `STATUS` |
 | `STREAM ON` / `OFF` | Enable / disable continuous telemetry stream | `STREAM ON` |
 | `ID <name>` | Configure custom Device ID / Node name (saves to NVS Flash) | `ID NODE_ALPHA` |
-| `SENSOR <RM3100\|FLC100\|MOCK>` | Set active sensor driver (`MOCK` = Range testing with synthetic telemetry and status `0x80MOCK`) | `SENSOR MOCK` |
+| `SENSOR <RM3100\|FLC100\|MOCK>` | Set active sensor driver (`FLC100` = 24-bit ADS131E08 ADC, `MOCK` = Range testing with synthetic telemetry and status `0x80MOCK`) | `SENSOR FLC100` |
+| `DOWNSAMPLE <int>` | Set MCU software decimation ratio (`10` = 100 Hz from 1 kSPS ADC, `1000` = 1 Hz; saved to NVS) | `DOWNSAMPLE 10` |
 | `RATE <hex>` | Set rate code (`0x95` = 75 Hz, `0x94` = 150 Hz, `0x93` = 300 Hz, `0x92` = 600 Hz) | `RATE 95` |
 | `CYCLE <int>` | Set RM3100 oscillation cycle count | `CYCLE 200` |
-| `BATCH <1-10>` | Set samples per BLE burst (`1` = real-time 1 Hz, `10` = max low-power mode; saved to NVS) | `BATCH 10` |
-| `MODE <SERIAL\|WIFI\|BLE\|BOTH>` | Route stream to USB Serial, WiFi UDP, BLE Long Range, or both | `MODE BOTH` |
+| `BATCH <1-10>` | Set samples per burst for BLE & LoRa (`1` = real-time 1 Hz, `10` = max low-power mode; saved to NVS) | `BATCH 10` |
+| `MODE <SERIAL\|WIFI\|BLE\|LORA\|BOTH>` | Route stream to USB Serial, WiFi UDP, BLE Coded PHY, Sub-GHz LoRa, or Dual Egress | `MODE SERIAL` |
 
 ---
 

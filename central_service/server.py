@@ -204,9 +204,9 @@ class NodeUpdate(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     elevation_m: Optional[float] = None
-    baseline_x: Optional[float] = 0.0
-    baseline_y: Optional[float] = 0.0
-    baseline_z: Optional[float] = 0.0
+    baseline_x: Optional[float] = None
+    baseline_y: Optional[float] = None
+    baseline_z: Optional[float] = None
     notes: Optional[str] = None
 
 # --- Ingestion Helper ---
@@ -343,6 +343,62 @@ def update_node(node: NodeUpdate):
         """, (node.node_id, node.name, node.lat, node.lon, node.elevation_m, node.baseline_x, node.baseline_y, node.baseline_z, node.notes))
         conn.commit()
     return {"status": "success", "node_id": node.node_id}
+
+@app.delete("/api/v1/nodes/prune")
+@app.delete("/api/nodes/prune")
+def prune_inactive_nodes(
+    days: int = Query(30, ge=0, description="Prune nodes with no telemetry for more than N days"),
+    purge_telemetry: bool = Query(False, description="Also delete associated telemetry records for pruned nodes")
+):
+    """Batch prune inactive nodes from the database."""
+    with get_db() as conn:
+        cursor = conn.execute(
+            "SELECT node_id FROM nodes WHERE datetime(last_seen) <= datetime('now', '-' || ? || ' days') OR last_seen IS NULL",
+            (days,)
+        )
+        pruned_ids = [row["node_id"] for row in cursor.fetchall()]
+        if not pruned_ids:
+            return {"status": "success", "pruned_count": 0, "pruned_nodes": []}
+
+        placeholders = ",".join("?" for _ in pruned_ids)
+        conn.execute(f"DELETE FROM nodes WHERE node_id IN ({placeholders})", pruned_ids)
+        
+        telemetry_deleted = 0
+        if purge_telemetry:
+            cur = conn.execute(f"DELETE FROM telemetry WHERE node_id IN ({placeholders})", pruned_ids)
+            telemetry_deleted = cur.rowcount
+
+        conn.commit()
+    return {
+        "status": "success",
+        "pruned_count": len(pruned_ids),
+        "pruned_nodes": pruned_ids,
+        "telemetry_deleted": telemetry_deleted
+    }
+
+@app.delete("/api/v1/nodes/{node_id}")
+@app.delete("/api/nodes/{node_id}")
+def delete_node(
+    node_id: str,
+    purge_telemetry: bool = Query(False, description="Also delete associated telemetry records for this node")
+):
+    """Delete a specific node from the registered nodes list, optionally purging its telemetry."""
+    with get_db() as conn:
+        cur = conn.execute("DELETE FROM nodes WHERE node_id = ?", (node_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+        
+        telemetry_deleted = 0
+        if purge_telemetry:
+            cur_t = conn.execute("DELETE FROM telemetry WHERE node_id = ?", (node_id,))
+            telemetry_deleted = cur_t.rowcount
+            
+        conn.commit()
+    return {
+        "status": "success",
+        "node_id": node_id,
+        "telemetry_deleted": telemetry_deleted
+    }
 
 @app.get("/api/v1/data")
 @app.get("/api/data")
