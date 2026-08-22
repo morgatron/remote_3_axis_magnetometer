@@ -308,12 +308,13 @@ async def ingest_batch(batch: BatchTelemetry):
 @app.get("/api/v1/nodes")
 @app.get("/api/nodes")
 def list_nodes():
-    """List all registered nodes, geographic coordinates, and latest readings."""
+    """List all registered nodes, geographic coordinates, record counts, and latest readings."""
     with get_db() as conn:
         cursor = conn.execute("""
         SELECT n.node_id, n.name, n.lat, n.lon, n.elevation_m, n.last_seen,
                n.sensor_model, COALESCE(n.cycle_count, 200) as cycle_count,
                n.baseline_x, n.baseline_y, n.baseline_z, n.notes,
+               COALESCE((SELECT COUNT(*) FROM telemetry WHERE node_id = n.node_id), 0) AS record_count,
                t.x, t.y, t.z, t.temp, t.vbat, t.rssi, t.status_flags
         FROM nodes n
         LEFT JOIN telemetry t ON t.id = (
@@ -343,6 +344,33 @@ def update_node(node: NodeUpdate):
         """, (node.node_id, node.name, node.lat, node.lon, node.elevation_m, node.baseline_x, node.baseline_y, node.baseline_z, node.notes))
         conn.commit()
     return {"status": "success", "node_id": node.node_id}
+
+@app.get("/api/v1/nodes/prune/candidates")
+@app.get("/api/nodes/prune/candidates")
+def get_prune_candidates(
+    days: int = Query(30, ge=0, description="Find nodes inactive for more than N days")
+):
+    """List nodes that qualify for pruning with telemetry record counts without deleting them."""
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            SELECT n.node_id, n.name, n.lat, n.lon, n.elevation_m, n.last_seen,
+                   COALESCE((SELECT COUNT(*) FROM telemetry WHERE node_id = n.node_id), 0) AS record_count
+            FROM nodes n
+            WHERE datetime(n.last_seen) <= datetime('now', '-' || ? || ' days') OR n.last_seen IS NULL
+            ORDER BY n.last_seen ASC
+            """,
+            (days,)
+        )
+        candidates = [dict(row) for row in cursor.fetchall()]
+        total_records = sum(c.get("record_count", 0) for c in candidates)
+        return {
+            "status": "success",
+            "days_threshold": days,
+            "candidate_count": len(candidates),
+            "total_records": total_records,
+            "candidates": candidates
+        }
 
 @app.delete("/api/v1/nodes/prune")
 @app.delete("/api/nodes/prune")
