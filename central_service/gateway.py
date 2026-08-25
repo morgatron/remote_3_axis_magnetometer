@@ -85,14 +85,23 @@ if ENABLE_BLE:
         print("[Gateway Notice] 'bleak' package not found. BLE listener will be disabled (install via 'pip install bleak').")
 
 
-# Import shared stream parser from local folder or repository root
+# Import shared stream parser and termux USB driver from local folder or repository root
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(2, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
+
 try:
     from stream_parser import parse_telemetry_line, parse_telemetry_batch
 except ImportError as e:
     print(f"[Gateway Fatal] Could not import 'stream_parser': {e}")
     sys.exit(1)
+
+try:
+    from termux_usb_driver import TermuxUsbDevice
+    HAS_TERMUX_USB = True
+except ImportError:
+    HAS_TERMUX_USB = False
+
 
 # Thread-safe / Async-safe Telemetry Queue
 send_queue = queue.Queue(maxsize=10000)
@@ -208,115 +217,30 @@ def udp_listener_thread():
 # --- 2. Serial / USB Listener ---
 def termux_usb_listener_thread(fd: int):
     """Direct USB Bulk Transfer Reader for unrooted Android via termux-usb."""
-    import ctypes
-    import fcntl
-    import struct
+    if not HAS_TERMUX_USB:
+        print("[Gateway Error] 'termux_usb_driver' module not found. Termux USB listener disabled.")
+        return
 
-    is_64bit = (ctypes.sizeof(ctypes.c_void_p) == 8)
-    if is_64bit:
-        class BulkTransfer(ctypes.Structure):
-            _fields_ = [
-                ('ep', ctypes.c_uint),
-                ('len', ctypes.c_uint),
-                ('timeout', ctypes.c_uint),
-                ('pad', ctypes.c_uint),
-                ('data', ctypes.c_void_p),
-            ]
-        class CtrlTransfer(ctypes.Structure):
-            _fields_ = [
-                ('bRequestType', ctypes.c_uint8),
-                ('bRequest', ctypes.c_uint8),
-                ('wValue', ctypes.c_uint16),
-                ('wIndex', ctypes.c_uint16),
-                ('wLength', ctypes.c_uint16),
-                ('timeout', ctypes.c_uint32),
-                ('pad', ctypes.c_uint32),
-                ('data', ctypes.c_void_p),
-            ]
-    else:
-        class BulkTransfer(ctypes.Structure):
-            _fields_ = [
-                ('ep', ctypes.c_uint),
-                ('len', ctypes.c_uint),
-                ('timeout', ctypes.c_uint),
-                ('data', ctypes.c_void_p),
-            ]
-        class CtrlTransfer(ctypes.Structure):
-            _fields_ = [
-                ('bRequestType', ctypes.c_uint8),
-                ('bRequest', ctypes.c_uint8),
-                ('wValue', ctypes.c_uint16),
-                ('wIndex', ctypes.c_uint16),
-                ('wLength', ctypes.c_uint16),
-                ('timeout', ctypes.c_uint32),
-                ('data', ctypes.c_void_p),
-            ]
-
-    USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(CtrlTransfer) << 16) | (ord('U') << 8) | 0
-    USBDEVFS_BULK = (3 << 30) | (ctypes.sizeof(BulkTransfer) << 16) | (ord('U') << 8) | 2
-    USBDEVFS_CLAIMINTERFACE = (1 << 30) | (4 << 16) | (ord('U') << 8) | 15
-
-    print(f"[Gateway Termux USB] Active on File Descriptor {fd}. Initializing CDC...")
-    
-    # Claim interfaces 0 and 1
-    for iface in (0, 1):
-        try:
-            fcntl.ioctl(fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", iface))
-        except Exception:
-            pass
-
-    # Send CDC Set Control Line State (DTR=1, RTS=1)
-    ctrl = CtrlTransfer()
-    ctrl.bRequestType = 0x21
-    ctrl.bRequest = 0x22  # SET_CONTROL_LINE_STATE
-    ctrl.wValue = 0x03    # DTR | RTS
-    ctrl.wIndex = 0
-    ctrl.wLength = 0
-    ctrl.timeout = 1000
-    ctrl.data = None
     try:
-        fcntl.ioctl(fd, USBDEVFS_CONTROL, ctrl)
-    except Exception:
-        pass
+        dev = TermuxUsbDevice(fd=fd, baudrate=SERIAL_BAUD)
+    except Exception as e:
+        print(f"[Gateway Error] Failed to initialize Termux USB device on FD {fd}: {e}")
+        return
 
-    # Probe for active Bulk IN endpoint (common: 0x81, 0x82, 0x83)
-    candidate_endpoints = [0x81, 0x82, 0x83, 0x84, 0x85]
-    active_ep = None
-    buf = ctypes.create_string_buffer(4096)
-    
-    print(f"[Gateway Termux USB] Probing Bulk IN endpoints {candidate_endpoints}...")
-    for ep in candidate_endpoints:
-        transfer = BulkTransfer()
-        transfer.ep = ep
-        transfer.len = 4096
-        transfer.timeout = 200
-        transfer.data = ctypes.addressof(buf)
-        try:
-            res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
-            if res >= 0:
-                active_ep = ep
-                print(f"[Gateway Termux USB] Connected on Endpoint 0x{ep:02X}!")
-                break
-        except Exception:
-            continue
+    print(f"[Gateway Termux USB] Connected: {dev.chipset}")
+    print(f"                     Bulk IN EP: 0x{dev.in_ep:02X} | DTR=1, RTS=0 (Normal Run)")
 
-    if active_ep is None:
-        active_ep = 0x81
-        print(f"[Gateway Termux USB] Defaulting to Endpoint 0x{active_ep:02X}...")
+    # Kickstart MCU telemetry stream in case CLI is in idle mode
+    time.sleep(0.1)
+    dev.write(b"\r\nSTREAM ON\r\n")
 
     rx_buf = ""
     rx_count = 0
     while True:
         try:
-            transfer = BulkTransfer()
-            transfer.ep = active_ep
-            transfer.len = 4096
-            transfer.timeout = 1000
-            transfer.data = ctypes.addressof(buf)
-            res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
-            if res > 0:
-                chunk = buf.raw[:res].decode("utf-8", errors="ignore")
-                rx_buf += chunk
+            chunk = dev.read(size=4096, timeout_ms=500)
+            if chunk:
+                rx_buf += chunk.decode("utf-8", errors="ignore")
                 while "\n" in rx_buf:
                     line, rx_buf = rx_buf.split("\n", 1)
                     line = line.strip()
@@ -328,6 +252,8 @@ def termux_usb_listener_thread(fd: int):
                                 print(f"[Gateway Termux USB RX #{rx_count}] {sample['node_id']} -> |B| = {math.sqrt(sample['x']**2 + sample['y']**2 + sample['z']**2):.1f} nT (RSSI: {sample.get('rssi')} dBm)")
                             if not send_queue.full():
                                 send_queue.put(sample)
+            else:
+                time.sleep(0.01)
         except Exception:
             time.sleep(0.05)
 
@@ -356,8 +282,11 @@ def serial_listener_thread(port, baud):
             print(f"[Gateway Serial] Opening {target_port} at {baud} baud...")
             ser = serial.Serial(target_port, baud, timeout=1.0)
             ser.dtr = True
-            ser.rts = True
+            ser.rts = False # CRITICAL: RTS must be False for ESP32 run mode
             print(f"[Gateway Serial Connected] Active on {target_port}")
+
+            # Send STREAM ON trigger
+            ser.write(b"\r\nSTREAM ON\r\n")
 
             while True:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
@@ -372,6 +301,7 @@ def serial_listener_thread(port, baud):
         except Exception as e:
             print(f"[Gateway Serial Disconnected] {target_port}: {e}. Retrying in 2.0s...")
             time.sleep(2.0)
+
 
 
 # --- 3. BLE Listener (Async) ---

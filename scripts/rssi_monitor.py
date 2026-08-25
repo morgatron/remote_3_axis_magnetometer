@@ -10,7 +10,7 @@ Features:
 - Live visual RSSI signal quality bars (dBm & percentage rating)
 - Real-time magnetic field magnitude |B| and battery voltage
 - Node tracking with running min/max/average RSSI statistics
-- Dual-mode: standard pyserial (Desktop) or direct USBDEVFS ioctl (Termux)
+- Direct USBDEVFS ioctl (Termux) or standard pyserial (Desktop)
 """
 
 import sys
@@ -24,9 +24,10 @@ from typing import Optional, Dict, Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
-# Try importing shared parser
+# Try importing shared parser and termux USB driver
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "central_service")))
 sys.path.insert(1, os.path.dirname(__file__))
+
 try:
     from stream_parser import parse_telemetry_line
 except ImportError:
@@ -51,6 +52,12 @@ except ImportError:
             except Exception:
                 return None
         return None
+
+try:
+    from termux_usb_driver import TermuxUsbDevice
+    HAS_TERMUX_USB_DRIVER = True
+except ImportError:
+    HAS_TERMUX_USB_DRIVER = False
 
 
 def format_rssi_bar(rssi: Optional[int], width: int = 10) -> str:
@@ -83,7 +90,7 @@ def format_rssi_bar(rssi: Optional[int], width: int = 10) -> str:
 class StreamStats:
     def __init__(self):
         self.start_time = time.time()
-        self.node_stats = {}  # node_id -> {count, rssi_list, mag_list, last_ts}
+        self.node_stats = {}  # node_id -> {count, rssi_list, mag_list, last_vbat}
         self.total_samples = 0
 
     def record(self, sample: Dict[str, Any]):
@@ -141,128 +148,46 @@ class StreamStats:
         print("=" * 90 + "\n")
 
 
-def run_termux_usb_monitor(fd: int):
+def run_termux_usb_monitor(fd: int, baud: int = 921600):
     """Direct Termux USB reader using USBDEVFS ioctl bulk transfer."""
-    import ctypes
-    import fcntl
-    import struct
+    if not HAS_TERMUX_USB_DRIVER:
+        print("[ERROR] 'termux_usb_driver' module not found.")
+        return
 
-    is_64bit = (ctypes.sizeof(ctypes.c_void_p) == 8)
-    if is_64bit:
-        class BulkTransfer(ctypes.Structure):
-            _fields_ = [
-                ('ep', ctypes.c_uint),
-                ('len', ctypes.c_uint),
-                ('timeout', ctypes.c_uint),
-                ('pad', ctypes.c_uint),
-                ('data', ctypes.c_void_p),
-            ]
-        class CtrlTransfer(ctypes.Structure):
-            _fields_ = [
-                ('bRequestType', ctypes.c_uint8),
-                ('bRequest', ctypes.c_uint8),
-                ('wValue', ctypes.c_uint16),
-                ('wIndex', ctypes.c_uint16),
-                ('wLength', ctypes.c_uint16),
-                ('timeout', ctypes.c_uint32),
-                ('pad', ctypes.c_uint32),
-                ('data', ctypes.c_void_p),
-            ]
-    else:
-        class BulkTransfer(ctypes.Structure):
-            _fields_ = [
-                ('ep', ctypes.c_uint),
-                ('len', ctypes.c_uint),
-                ('timeout', ctypes.c_uint),
-                ('data', ctypes.c_void_p),
-            ]
-        class CtrlTransfer(ctypes.Structure):
-            _fields_ = [
-                ('bRequestType', ctypes.c_uint8),
-                ('bRequest', ctypes.c_uint8),
-                ('wValue', ctypes.c_uint16),
-                ('wIndex', ctypes.c_uint16),
-                ('wLength', ctypes.c_uint16),
-                ('timeout', ctypes.c_uint32),
-                ('data', ctypes.c_void_p),
-            ]
-
-    USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(CtrlTransfer) << 16) | (ord('U') << 8) | 0
-    USBDEVFS_BULK = (3 << 30) | (ctypes.sizeof(BulkTransfer) << 16) | (ord('U') << 8) | 2
-    USBDEVFS_CLAIMINTERFACE = (1 << 30) | (4 << 16) | (ord('U') << 8) | 15
-
-    print(f"\n[Termux USB] Attached to USB file descriptor {fd}.")
-    
-    # Claim interfaces 0 and 1
-    for iface in (0, 1):
-        try:
-            fcntl.ioctl(fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", iface))
-        except Exception:
-            pass
-
-    # Send CDC Set Control Line State (DTR=1, RTS=1)
-    ctrl = CtrlTransfer()
-    ctrl.bRequestType = 0x21
-    ctrl.bRequest = 0x22
-    ctrl.wValue = 0x03
-    ctrl.wIndex = 0
-    ctrl.wLength = 0
-    ctrl.timeout = 1000
-    ctrl.data = None
     try:
-        fcntl.ioctl(fd, USBDEVFS_CONTROL, ctrl)
-    except Exception:
-        pass
+        dev = TermuxUsbDevice(fd=fd, baudrate=baud)
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize Termux USB device on FD {fd}: {e}")
+        return
 
-    # Probe Bulk IN endpoints
-    candidate_endpoints = [0x81, 0x82, 0x83, 0x84, 0x85]
-    active_ep = None
-    buf = ctypes.create_string_buffer(4096)
-    for ep in candidate_endpoints:
-        transfer = BulkTransfer()
-        transfer.ep = ep
-        transfer.len = 4096
-        transfer.timeout = 200
-        transfer.data = ctypes.addressof(buf)
-        try:
-            res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
-            if res >= 0:
-                active_ep = ep
-                break
-        except Exception:
-            continue
-
-    if active_ep is None:
-        active_ep = 0x81
-
-    print(f"[Termux USB] Streaming live telemetry on Endpoint 0x{active_ep:02X}...\n")
+    print(f"\n[Termux USB] Connected: {dev.chipset}")
+    print(f"             Bulk IN EP: 0x{dev.in_ep:02X} | Baud: {baud}")
+    print(f"             Control lines: DTR=1, RTS=0 (Normal Run)")
+    print(f"[Termux USB] Streaming live telemetry...\n")
     print_monitor_header()
+
+    # Trigger MCU stream in case it is in CLI idle mode
+    time.sleep(0.1)
+    dev.write(b"\r\nSTREAM ON\r\n")
 
     stats = StreamStats()
     rx_buf = ""
 
     try:
         while True:
-            transfer = BulkTransfer()
-            transfer.ep = active_ep
-            transfer.len = 4096
-            transfer.timeout = 1000
-            transfer.data = ctypes.addressof(buf)
-            try:
-                res = fcntl.ioctl(fd, USBDEVFS_BULK, transfer)
-                if res > 0:
-                    chunk = buf.raw[:res].decode("utf-8", errors="ignore")
-                    rx_buf += chunk
-                    while "\n" in rx_buf:
-                        line, rx_buf = rx_buf.split("\n", 1)
-                        line = line.strip()
-                        if line:
-                            sample = parse_telemetry_line(line)
-                            if sample:
-                                stats.record(sample)
-                                print_sample_row(sample, stats.total_samples)
-            except Exception:
-                time.sleep(0.02)
+            chunk = dev.read(size=4096, timeout_ms=500)
+            if chunk:
+                rx_buf += chunk.decode("utf-8", errors="ignore")
+                while "\n" in rx_buf:
+                    line, rx_buf = rx_buf.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        sample = parse_telemetry_line(line)
+                        if sample:
+                            stats.record(sample)
+                            print_sample_row(sample, stats.total_samples)
+            else:
+                time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
@@ -280,7 +205,7 @@ def run_serial_monitor(port: str, baud: int):
     print(f"\n[Desktop Serial] Opening {port} at {baud} baud...\n")
     ser = serial.Serial(port, baud, timeout=1.0)
     ser.dtr = True
-    ser.rts = True
+    ser.rts = False # CRITICAL: RTS must be False for ESP32 run mode
     ser.reset_input_buffer()
 
     print_monitor_header()
@@ -343,7 +268,7 @@ def main():
         termux_fd = int(sys.argv[1])
 
     if termux_fd is not None:
-        run_termux_usb_monitor(termux_fd)
+        run_termux_usb_monitor(termux_fd, args.baud)
     else:
         run_serial_monitor(args.port, args.baud)
 
