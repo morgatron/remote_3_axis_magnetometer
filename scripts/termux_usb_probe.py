@@ -11,59 +11,57 @@ import os
 import time
 import argparse
 
-# Ensure unbuffered stdout
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(line_buffering=True)
-
 sys.path.insert(0, os.path.dirname(__file__))
 from termux_usb_driver import TermuxUsbDevice
 
 
 def probe_device(fd: int, baudrate: int = 921600):
-    print("=" * 80)
-    print("            TERMUX USB HARDWARE DIAGNOSTIC & PROBE")
-    print("=" * 80)
+    print("=" * 80, flush=True)
+    print("            TERMUX USB HARDWARE DIAGNOSTIC & PROBE", flush=True)
+    print("=" * 80, flush=True)
 
+    print(f"[1/4] Opening USB file descriptor {fd}...", flush=True)
     try:
         dev = TermuxUsbDevice(fd=fd, baudrate=baudrate)
     except Exception as e:
-        print(f"[ERROR] Failed to initialize USB device on FD {fd}: {e}")
+        print(f"[ERROR] Failed to initialize USB device on FD {fd}: {e}", flush=True)
         sys.exit(1)
 
-    print(f"  Chipset:         {dev.chipset}")
-    print(f"  USB ID:          VID: 0x{dev.vid:04X} | PID: 0x{dev.pid:04X}")
-    print(f"  Interfaces:      {dev.interfaces}")
-    print(f"  Bulk IN EP:      0x{dev.in_ep:02X} ({dev.in_ep})")
-    print(f"  Bulk OUT EP:     0x{dev.out_ep:02X} ({dev.out_ep})")
-    print(f"  Baud Rate:       {baudrate}")
-    print(f"  DTR / RTS State: DTR=1 (Active), RTS=0 (Normal Run / No Reset)")
-    print("=" * 80)
-    print("Listening for incoming bytes... (Press Ctrl+C to exit)\n")
+    print(f"[2/4] Chipset:         {dev.chipset}", flush=True)
+    print(f"      USB ID:          VID: 0x{dev.vid:04X} | PID: 0x{dev.pid:04X}", flush=True)
+    print(f"      Interfaces:      {dev.interfaces}", flush=True)
+    print(f"      Bulk IN EP:      0x{dev.in_ep:02X} ({dev.in_ep})", flush=True)
+    print(f"      Bulk OUT EP:     0x{dev.out_ep:02X} ({dev.out_ep})", flush=True)
+    print(f"[3/4] Line Config:     {baudrate} baud | DTR=1 (Active), RTS=0 (Normal Run)", flush=True)
+    print("=" * 80, flush=True)
+    print("[4/4] Sending 'STREAM ON' trigger to MCU...", flush=True)
 
-    # Send a newline and 'STREAM ON' in case the MCU CLI is awaiting trigger
-    time.sleep(0.2)
+    # Send trigger to start streaming
+    time.sleep(0.1)
     dev.write(b"\r\nSTREAM ON\r\n")
+
+    print("\n--- LIVE USB RAW STREAM (Press Ctrl+C to exit) ---\n", flush=True)
 
     total_bytes = 0
     start_time = time.time()
 
     try:
         while True:
-            chunk = dev.read(size=4096, timeout_ms=500)
+            chunk = dev.read(size=4096, timeout_ms=300)
             if chunk:
                 total_bytes += len(chunk)
                 text = chunk.decode("utf-8", errors="replace")
                 sys.stdout.write(text)
                 sys.stdout.flush()
             else:
-                time.sleep(0.02)
+                time.sleep(0.01)
     except KeyboardInterrupt:
-        print("\n\n[INFO] Probe stopped by user.")
+        print("\n\n[INFO] Probe stopped by user.", flush=True)
     finally:
         elapsed = time.time() - start_time
-        print("\n" + "=" * 80)
-        print(f"  Total Bytes Received: {total_bytes} bytes in {elapsed:.1f}s")
-        print("=" * 80 + "\n")
+        print("\n" + "=" * 80, flush=True)
+        print(f"  Total Bytes Received: {total_bytes} bytes in {elapsed:.1f}s", flush=True)
+        print("=" * 80 + "\n", flush=True)
 
 
 def main():
@@ -85,11 +83,10 @@ def main():
         termux_fd = int(args.pos_fd)
 
     if termux_fd is None:
-        print("[ERROR] No USB file descriptor provided. Launch via 'run_termux_probe.sh'.")
+        print("[ERROR] No USB file descriptor provided. Launch via 'run_termux_probe.sh'.", flush=True)
         sys.exit(1)
 
     probe_device(termux_fd, args.baud)
-
 
 
 if __name__ == "__main__":
