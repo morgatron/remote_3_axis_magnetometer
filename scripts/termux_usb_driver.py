@@ -25,6 +25,7 @@ USBDEVFS_BULK = 0xc0185502
 USBDEVFS_CLAIMINTERFACE = 0x8004550f
 USBDEVFS_RELEASEINTERFACE = 0x80045510
 USBDEVFS_DISCONNECT = 0x5516
+USBDEVFS_IOCTL = 0xc0105512
 
 IS_64BIT = (ctypes.sizeof(ctypes.c_void_p) == 8)
 
@@ -48,6 +49,12 @@ if IS_64BIT:
             ('pad', ctypes.c_uint32),
             ('data', ctypes.c_void_p),
         ]
+    class UsbdevfsIoctl(ctypes.Structure):
+        _fields_ = [
+            ('ifno', ctypes.c_int),
+            ('ioctl_code', ctypes.c_int),
+            ('data', ctypes.c_void_p),
+        ]
 else:
     class BulkTransfer(ctypes.Structure):
         _fields_ = [
@@ -64,6 +71,12 @@ else:
             ('wIndex', ctypes.c_uint16),
             ('wLength', ctypes.c_uint16),
             ('timeout', ctypes.c_uint32),
+            ('data', ctypes.c_void_p),
+        ]
+    class UsbdevfsIoctl(ctypes.Structure):
+        _fields_ = [
+            ('ifno', ctypes.c_int),
+            ('ioctl_code', ctypes.c_int),
             ('data', ctypes.c_void_p),
         ]
 
@@ -124,7 +137,6 @@ class TermuxUsbDevice:
         return b""
 
     def _parse_descriptors(self):
-        # 1. Device Descriptor (Type 1)
         dev_desc = self._get_descriptor(1, 0, 18)
         if len(dev_desc) >= 18:
             try:
@@ -134,7 +146,6 @@ class TermuxUsbDevice:
             except Exception:
                 pass
 
-        # 2. Configuration Descriptor (Type 2)
         cfg_desc = self._get_descriptor(2, 0, 512)
         offset = 0
         in_eps = []
@@ -187,14 +198,24 @@ class TermuxUsbDevice:
         except Exception:
             pass
 
-        # Claim Interfaces
-        for iface in self.interfaces:
+        # 1. Detach any attached kernel driver and Claim Interfaces
+        for iface in (self.interfaces if self.interfaces else [0, 1]):
+            try:
+                # Detach kernel driver (ignore error if not attached)
+                cmd = UsbdevfsIoctl()
+                cmd.ifno = iface
+                cmd.ioctl_code = USBDEVFS_DISCONNECT
+                cmd.data = None
+                fcntl.ioctl(self.fd, USBDEVFS_IOCTL, cmd)
+            except Exception:
+                pass
+
             try:
                 fcntl.ioctl(self.fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", iface))
             except Exception:
                 pass
 
-        # Apply Chipset-specific initialization & Line Coding
+        # 2. Apply Chipset-specific initialization & Line Coding
         if self.vid == 0x10C4: # CP210x
             self._control_transfer(0x41, 0x00, 0x0001, 0) # IFC_ENABLE
             baud_bytes = struct.pack("<I", self.baudrate)
@@ -211,7 +232,27 @@ class TermuxUsbDevice:
             # 2. SET_CONTROL_LINE_STATE (0x22): DTR=1, RTS=0 (CRITICAL: RTS must be 0 for ESP32!)
             self._control_transfer(0x21, 0x22, 0x0001, 0)
 
-    def read(self, size: int = 4096, timeout_ms: int = 500) -> bytes:
+        # 3. Auto-probe which Bulk IN endpoint is active if descriptor had multiple
+        candidate_eps = [self.in_ep, 0x82, 0x81, 0x83, 0x84]
+        seen = set()
+        unique_eps = [x for x in candidate_eps if not (x in seen or seen.add(x))]
+        
+        probe_buf = ctypes.create_string_buffer(4096)
+        for ep in unique_eps:
+            t = BulkTransfer()
+            t.ep = ep
+            t.len = 4096
+            t.timeout = 100
+            t.data = ctypes.addressof(probe_buf)
+            try:
+                res = fcntl.ioctl(self.fd, USBDEVFS_BULK, t)
+                if res > 0:
+                    self.in_ep = ep
+                    break
+            except Exception:
+                continue
+
+    def read(self, size: int = 4096, timeout_ms: int = 300) -> bytes:
         """Reads raw bytes from the Bulk IN endpoint."""
         buf = ctypes.create_string_buffer(size)
         transfer = BulkTransfer()
@@ -228,7 +269,7 @@ class TermuxUsbDevice:
             pass
         return b""
 
-    def write(self, data: bytes, timeout_ms: int = 500) -> int:
+    def write(self, data: bytes, timeout_ms: int = 300) -> int:
         """Writes raw bytes to the Bulk OUT endpoint."""
         buf = ctypes.create_string_buffer(data, len(data))
         transfer = BulkTransfer()
