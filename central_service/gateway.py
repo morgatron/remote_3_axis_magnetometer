@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Unified Sensor Gateway Service (`gateway.py`)
 

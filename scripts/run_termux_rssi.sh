@@ -45,7 +45,6 @@ if not devices:
     sys.exit(1)
 
 if arg:
-    # Match exact path, padded number (e.g. 2 -> 002), or suffix
     padded = f'{int(arg):03d}' if arg.isdigit() else arg
     matched = [d for d in devices if d.endswith(f'/{padded}') or d.endswith(f'/{arg}') or arg in d]
     if not matched:
@@ -63,4 +62,5 @@ else:
 echo "[Monitor Launcher] Target USB device: $DEV_PATH"
 echo "[Monitor Launcher] Launching RSSI monitor via termux-usb..."
 
-exec termux-usb -r -E -e "python -u $SCRIPT_DIR/rssi_monitor.py" "$DEV_PATH"
+chmod +x "$SCRIPT_DIR/rssi_monitor.py"
+exec termux-usb -r -e "$SCRIPT_DIR/rssi_monitor.py" "$DEV_PATH"

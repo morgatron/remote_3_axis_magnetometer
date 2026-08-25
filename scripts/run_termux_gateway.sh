@@ -46,7 +46,6 @@ if not devices:
     sys.exit(1)
 
 if arg:
-    # Match exact path, padded number (e.g. 2 -> 002), or suffix
     padded = f'{int(arg):03d}' if arg.isdigit() else arg
     matched = [d for d in devices if d.endswith(f'/{padded}') or d.endswith(f'/{arg}') or arg in d]
     if not matched:
@@ -64,5 +63,6 @@ else:
 echo "[Launcher] Target USB device: $DEV_PATH"
 echo "[Launcher] Launching gateway via termux-usb..."
 
+chmod +x "$REPO_ROOT/central_service/gateway.py"
 cd "$REPO_ROOT/central_service"
-exec termux-usb -r -E -e "python -u gateway.py" "$DEV_PATH"
+exec termux-usb -r -e "$REPO_ROOT/central_service/gateway.py" "$DEV_PATH"

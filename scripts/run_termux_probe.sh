@@ -62,4 +62,5 @@ else:
 echo "[Probe Launcher] Target USB device: $DEV_PATH"
 echo "[Probe Launcher] Launching hardware diagnostic probe via termux-usb..."
 
-exec termux-usb -r -E -e "python -u $SCRIPT_DIR/termux_usb_probe.py" "$DEV_PATH"
+chmod +x "$SCRIPT_DIR/termux_usb_probe.py"
+exec termux-usb -r -e "$SCRIPT_DIR/termux_usb_probe.py" "$DEV_PATH"
