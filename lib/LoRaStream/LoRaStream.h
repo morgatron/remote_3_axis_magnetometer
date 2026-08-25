@@ -48,6 +48,18 @@ public:
     bool transmit(const uint8_t *data, size_t len);
 
     /**
+     * @brief Put SX1262 transceiver into ultra-low-power sleep mode (<1 uA).
+     * @param retainConfig Keep register configuration in retention memory (default true)
+     * @return true if sleep command accepted
+     */
+    bool sleep(bool retainConfig = true);
+
+    /**
+     * @brief Wake SX1262 transceiver into standby mode.
+     */
+    bool standby();
+
+    /**
      * @brief Set receiver continuous mode.
      */
     bool startReceive();

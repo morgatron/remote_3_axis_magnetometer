@@ -14,6 +14,8 @@
 #include "ReceiverCLI.h"
 #include "OLEDDisplay.h"
 
+float g_cachedBatteryVoltage = 0.0f;
+
 // Global Receiver State Variables
 QueueHandle_t telemetryQueue = NULL;
 NodeTracker nodeTracker;

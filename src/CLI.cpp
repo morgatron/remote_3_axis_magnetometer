@@ -42,6 +42,11 @@ void CLI::printHelp() {
 }
 
 void CLI::handleCommand(String cmd) {
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    extern uint32_t lastOledActivityMs;
+    lastOledActivityMs = millis(); // Refresh OLED wake timer upon user CLI interaction
+#endif
+
     String originalCmd = cmd;
     originalCmd.trim();
 

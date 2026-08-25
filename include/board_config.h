@@ -57,11 +57,96 @@
 
 #define RESET_PIN   -1
 
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+// Battery Measurement Pins for Heltec WiFi LoRa 32 V3 / V4 (ESP32-S3)
+#define VBAT_ADC_PIN   1
+#define VBAT_CTRL_PIN  37
+#define VBAT_DIVIDER_RATIO 4.90f // 390k / 100k divider + P-FET drop compensation (4.90x)
+#endif
+
+// Global battery cache
+extern float g_cachedBatteryVoltage;
+
+/**
+ * @brief Measures real battery voltage via ADC and updates global cache.
+ *        Should be called during the 10-second radio burst wake window.
+ */
+inline float sampleBatteryVoltage() {
+#if defined(VBAT_ADC_PIN) && defined(VBAT_CTRL_PIN)
+    pinMode(VBAT_CTRL_PIN, OUTPUT);
+    digitalWrite(VBAT_CTRL_PIN, LOW); // Active-LOW gate on Heltec V3/V4 P-MOSFET
+    delay(5);                          // 5ms required for 390k/100k RC filter capacitor to charge
+
+    int raw = analogRead(VBAT_ADC_PIN);
+    uint32_t rawMv = analogReadMilliVolts(VBAT_ADC_PIN);
+
+    // Polarity fallback: if reading is ~0, check if this PCB revision uses active-HIGH control
+    if (raw < 50) {
+        digitalWrite(VBAT_CTRL_PIN, HIGH);
+        delay(5);
+        int rawHigh = analogRead(VBAT_ADC_PIN);
+        if (rawHigh > raw) {
+            raw = rawHigh;
+            rawMv = analogReadMilliVolts(VBAT_ADC_PIN);
+        }
+    }
+
+    pinMode(VBAT_CTRL_PIN, INPUT); // Disconnect divider to eliminate quiescent sleep drain
+
+    if (raw > 50) {
+        // eFuse factory-calibrated millivolt scaling with 4.90x divider factor
+        float measured = (float)rawMv * (VBAT_DIVIDER_RATIO / 1000.0f);
+        // Fallback for non-calibrated eFuse: standard 12-bit ADC scaling (raw / 238.7)
+        if (measured < 2.0f && raw > 50) {
+            measured = (float)raw / 238.7f;
+        }
+
+        if (g_cachedBatteryVoltage <= 0.0f) {
+            g_cachedBatteryVoltage = measured;
+        } else {
+            g_cachedBatteryVoltage = 0.75f * g_cachedBatteryVoltage + 0.25f * measured; // Low-pass filter
+        }
+    }
+
+    return (g_cachedBatteryVoltage > 0.0f) ? g_cachedBatteryVoltage : 0.0f;
+#elif defined(VBAT_ADC_PIN)
+    uint32_t rawMv = analogReadMilliVolts(VBAT_ADC_PIN);
+    g_cachedBatteryVoltage = (float)rawMv * (2.0f / 1000.0f);
+    return g_cachedBatteryVoltage;
+#else
+    g_cachedBatteryVoltage = 3.70f;
+    return 3.70f;
+#endif
+}
+
+/**
+ * @brief Returns the cached battery voltage instantly (0ms latency, zero ADC/sleep overhead).
+ */
+inline float getBatteryVoltage() {
+    return (g_cachedBatteryVoltage > 0.0f) ? g_cachedBatteryVoltage : 3.70f;
+}
+
+inline uint16_t sampleBatteryMilliVolts() {
+    float v = sampleBatteryVoltage();
+    return (uint16_t)(v * 1000.0f);
+}
+
+inline uint16_t getBatteryMilliVolts() {
+    return (uint16_t)(getBatteryVoltage() * 1000.0f);
+}
+
+// Backward-compatible aliases
+inline float readBatteryVoltage() { return getBatteryVoltage(); }
+inline uint16_t readBatteryMilliVolts() { return getBatteryMilliVolts(); }
+
 inline void initBoardPower() {
 #ifdef VEXT_PIN
     pinMode(VEXT_PIN, OUTPUT);
     digitalWrite(VEXT_PIN, LOW); // Pull Vext LOW to enable external power rail on Heltec V3/V4
     delay(50);
+#endif
+#ifdef VBAT_CTRL_PIN
+    pinMode(VBAT_CTRL_PIN, INPUT); // Default to High-Z / off
 #endif
 }
 

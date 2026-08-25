@@ -11,6 +11,8 @@
 #include "MockSensor.h"
 #include "OLEDDisplay.h"
 
+float g_cachedBatteryVoltage = 0.0f;
+
 void configurePowerManagement() {
 #if defined(ESP_PLATFORM)
     esp_pm_config_t pm_config;
@@ -249,7 +251,7 @@ void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, 
             uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
             if (countToSend > 0) {
                 batch.status = (uint16_t)(status & 0xFFFF);
-                batch.vbat_mv = 3300;
+                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
 
                 bleStream.clearBatchAck();
                 bleStream.notifyBatchBinary(batch);
@@ -282,6 +284,7 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
         pkt.z_nT = z;
         pkt.status = (uint16_t)(status & 0xFFFF);
         loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
+        loraStream.sleep();
     } else {
         // Batched telemetry mode (e.g. 10 samples per burst every 10 seconds)
         uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
@@ -297,8 +300,9 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
             uint8_t countToSend = loraRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
             if (countToSend > 0) {
                 batch.status = (uint16_t)(status & 0xFFFF);
-                batch.vbat_mv = 3300;
+                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
                 loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
+                loraStream.sleep(); // Put SX1262 into ultra-low-power sleep during idle gap
                 loraRingBuffer.confirmAck(countToSend);
                 lastLoraBurstTxMs = millis();
             }
@@ -400,12 +404,18 @@ void recoverSensor() {
 }
 
 
+uint32_t lastOledActivityMs = 0;
+bool oledScreenActive = true;
+
 void setup() {
     initBoardPower();
+    sampleBatteryVoltage(); // Measure initial voltage once at boot to prime cache
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
+    pinMode(0, INPUT_PULLUP); // PRG / USER button on Heltec V4 for OLED wake
     oledDisplay.begin(17, 18, 21, 36);
-    oledDisplay.updateSensorScreen("BOOTING...", "INITIALIZING", 0.0f, 0, 3.70f, "INIT");
+    oledDisplay.updateSensorScreen("BOOTING...", "INITIALIZING", 0.0f, 0, getBatteryVoltage(), "INIT");
+    lastOledActivityMs = millis();
 #endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
@@ -501,7 +511,9 @@ void setup() {
 
     if (outputMode == MODE_LORA) {
         #if defined(BOARD_HAS_LORA)
-        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN)) {
+            loraStream.sleep(); // Deep sleep SX1262 until first packet transmission
+        }
         #endif
     }
 
@@ -513,31 +525,66 @@ void loop() {
     checkBleAckTask();
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
-    static uint32_t lastOledUpdateMs = 0;
-    if (millis() - lastOledUpdateMs >= 500) {
-        lastOledUpdateMs = millis();
-        const char* modeNames[] = {"SERIAL", "WIFI", "BOTH", "BLE", "LORA"};
-        oledDisplay.updateSensorScreen(
-            deviceID.c_str(),
-            sensor ? sensor->getSensorName().c_str() : "NONE",
-            lastBmag_nT,
-            sampleCounter,
-            3.70f,
-            modeNames[outputMode % 5]
-        );
+    // Check USER/PRG button press (GPIO 0) to wake OLED screen
+    static bool lastBtnState = HIGH;
+    bool btnState = digitalRead(0);
+    if (btnState == LOW && lastBtnState == HIGH) {
+        lastOledActivityMs = millis();
+        if (!oledScreenActive) {
+            oledDisplay.displayOn();
+            oledScreenActive = true;
+        }
+    }
+    lastBtnState = btnState;
+
+    // Auto-sleep OLED display after 10 seconds of inactivity (~20 mA power saving)
+    if (millis() - lastOledActivityMs > 10000) {
+        if (oledScreenActive) {
+            oledDisplay.displayOff();
+            oledScreenActive = false;
+        }
+    } else {
+        if (!oledScreenActive) {
+            oledDisplay.displayOn();
+            oledScreenActive = true;
+        }
+
+        static uint32_t lastOledUpdateMs = 0;
+        if (millis() - lastOledUpdateMs >= 500) {
+            lastOledUpdateMs = millis();
+            const char* modeNames[] = {"SERIAL", "WIFI", "BOTH", "BLE", "LORA"};
+            oledDisplay.updateSensorScreen(
+                deviceID.c_str(),
+                sensor ? sensor->getSensorName().c_str() : "NONE",
+                lastBmag_nT,
+                sampleCounter,
+                getBatteryVoltage(), // 0ms instantaneous read from cache
+                modeNames[outputMode % 5]
+            );
+        }
     }
 #endif
 
-    // Non-blocking LED blink
+    // Fallback periodic refresh when unbatched streaming (batch_size == 1)
+    static uint32_t lastUnbatchedVbatMs = 0;
+    if (batchSizeConfig == 1 && (millis() - lastUnbatchedVbatMs >= 10000)) {
+        lastUnbatchedVbatMs = millis();
+        sampleBatteryVoltage();
+    }
+
+    // Low-power status LED pulse (crisp 20 ms flash every 10s instead of 50% continuous burn)
 #if LED_PIN >= 0
-    static unsigned long lastBlinkTime = 0;
-    static bool ledState = false;
+    static unsigned long lastPulseStartMs = 0;
+    static bool ledActive = false;
     unsigned long currentMillis = millis();
 
-    if (currentMillis - lastBlinkTime >= 1000) {
-        lastBlinkTime = currentMillis;
-        ledState = !ledState;
-        digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    if (ledActive && (currentMillis - lastPulseStartMs >= 20)) {
+        digitalWrite(LED_PIN, LOW);
+        ledActive = false;
+    } else if (!ledActive && (currentMillis - lastPulseStartMs >= 10000)) {
+        lastPulseStartMs = currentMillis;
+        digitalWrite(LED_PIN, HIGH);
+        ledActive = true;
     }
 #endif
 
@@ -618,4 +665,7 @@ void loop() {
             }
         }
     }
+
+    // Yield to FreeRTOS IDLE task to enable automatic dynamic CPU clock gating
+    vTaskDelay(pdMS_TO_TICKS(1));
 }

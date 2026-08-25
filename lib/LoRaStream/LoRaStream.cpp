@@ -77,6 +77,18 @@ bool LoRaStream::transmit(const uint8_t *data, size_t len) {
     return (state == RADIOLIB_ERR_NONE);
 }
 
+bool LoRaStream::sleep(bool retainConfig) {
+    if (!_initialized || !pRadio) return false;
+    int state = pRadio->sleep(retainConfig);
+    return (state == RADIOLIB_ERR_NONE);
+}
+
+bool LoRaStream::standby() {
+    if (!_initialized || !pRadio) return false;
+    int state = pRadio->standby();
+    return (state == RADIOLIB_ERR_NONE);
+}
+
 bool LoRaStream::startReceive() {
     if (!_initialized || !pRadio) return false;
     int state = pRadio->startReceive();

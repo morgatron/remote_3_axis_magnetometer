@@ -4,6 +4,7 @@
   "sensor": "RM3100",
   "device_id": "",
   "output_mode": "BOTH",
+  "batch_size": 10,
   "wifi": {
     "ssid": "NetComm 2927",
     "password": "zakuystuhs",
