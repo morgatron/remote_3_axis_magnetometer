@@ -249,6 +249,7 @@ def print_sample_row(sample: Dict[str, Any], count: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Live RSSI & Telemetry Monitor for Remote Magnetometers")
+    parser.add_argument("pos_fd", nargs="?", type=str, default=None, help="Termux USB file descriptor (positional)")
     parser.add_argument("--port", type=str, default="/dev/ttyACM0", help="Serial port path (default: /dev/ttyACM0)")
     parser.add_argument("--baud", type=int, default=921600, help="Baud rate (default: 921600)")
     parser.add_argument("--fd", type=int, default=None, help="Termux USB file descriptor")
@@ -264,13 +265,14 @@ def main():
             pass
     elif args.fd is not None:
         termux_fd = args.fd
-    elif len(sys.argv) > 1 and sys.argv[1].isdigit():
-        termux_fd = int(sys.argv[1])
+    elif args.pos_fd is not None and args.pos_fd.isdigit():
+        termux_fd = int(args.pos_fd)
 
     if termux_fd is not None:
         run_termux_usb_monitor(termux_fd, args.baud)
     else:
         run_serial_monitor(args.port, args.baud)
+
 
 
 if __name__ == "__main__":

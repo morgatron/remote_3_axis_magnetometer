@@ -68,6 +68,7 @@ def probe_device(fd: int, baudrate: int = 921600):
 
 def main():
     parser = argparse.ArgumentParser(description="Termux USB Hardware Diagnostic Probe")
+    parser.add_argument("pos_fd", nargs="?", type=str, default=None, help="Termux USB file descriptor (positional)")
     parser.add_argument("--baud", type=int, default=921600, help="Baud rate (default: 921600)")
     parser.add_argument("--fd", type=int, default=None, help="Termux USB file descriptor")
     args = parser.parse_args()
@@ -80,14 +81,15 @@ def main():
             pass
     elif args.fd is not None:
         termux_fd = args.fd
-    elif len(sys.argv) > 1 and sys.argv[1].isdigit():
-        termux_fd = int(sys.argv[1])
+    elif args.pos_fd is not None and args.pos_fd.isdigit():
+        termux_fd = int(args.pos_fd)
 
     if termux_fd is None:
         print("[ERROR] No USB file descriptor provided. Launch via 'run_termux_probe.sh'.")
         sys.exit(1)
 
     probe_device(termux_fd, args.baud)
+
 
 
 if __name__ == "__main__":
