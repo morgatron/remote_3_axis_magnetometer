@@ -26,7 +26,7 @@ volatile uint32_t udpRxCount = 0;
 volatile uint32_t loraRxCount = 0;
 volatile uint32_t relayedPacketCount = 0;
 
-uint8_t egressModeConfig = MODE_EGRESS_BOTH; // 0 = Serial, 1 = WiFi, 2 = Both
+uint8_t egressModeConfig = MODE_EGRESS_BLE; // 0 = Serial, 1 = WiFi, 2 = Both, 3 = BLE
 String wifiSSID = "";
 String wifiPass = "";
 String targetServerIP = "255.255.255.255";
@@ -49,7 +49,7 @@ void saveReceiverSettings() {
 
 void loadReceiverSettings() {
     prefs.begin("rcvr_v0", true);
-    egressModeConfig = prefs.getUChar("mode", MODE_EGRESS_BOTH);
+    egressModeConfig = prefs.getUChar("mode", MODE_EGRESS_BLE);
     wifiSSID = prefs.getString("ssid", "");
     wifiPass = prefs.getString("pass", "");
     targetServerIP = prefs.getString("target_ip", "255.255.255.255");
@@ -66,7 +66,7 @@ void setupSoftAP() {
     delay(100);
 
     uint8_t mac[6];
-    WiFi.softAPmacAddress(mac);
+    WiFi.macAddress(mac);
     char buf[32];
     snprintf(buf, sizeof(buf), "MAG_GATEWAY_%02X%02X", mac[4], mac[5]);
     apSSID = String(buf);
@@ -93,10 +93,18 @@ uint32_t lastOledActivityMs = 0;
 bool oledScreenActive = true;
 
 void connectEgressWiFi() {
-    if (egressModeConfig == MODE_EGRESS_SERIAL) {
+    if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BLE) {
         WiFi.mode(WIFI_OFF);
-        Serial.println(F("[POWER] Egress mode is SERIAL. Wi-Fi radio turned OFF (~80mA saved)."));
+        Serial.printf("[POWER] Egress mode is %s. Wi-Fi radio turned OFF (~80mA saved).\r\n",
+                      (egressModeConfig == MODE_EGRESS_BLE) ? "BLE (1M GATT Relay)" : "SERIAL");
+        if (egressModeConfig == MODE_EGRESS_BLE) {
+            BLEEgress::begin("MAG_GATEWAY");
+        }
         return;
+    }
+
+    if (egressModeConfig == MODE_EGRESS_BOTH) {
+        BLEEgress::begin("MAG_GATEWAY");
     }
 
     setupSoftAP();
@@ -240,6 +248,8 @@ void loop() {
         lastOledActivityMs = millis();
     }
     receiverCLI.process();
+
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     // Poll all active multi-protocol receivers (UDP socket, LoRa SPI, etc.)
     for (auto* rcvr : receivers) {

@@ -6,11 +6,13 @@
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include "TelemetryPacket.h"
+#include "BLEEgress.h"
 
 enum EgressMode {
     MODE_EGRESS_SERIAL = 0,
     MODE_EGRESS_WIFI = 1,
-    MODE_EGRESS_BOTH = 2
+    MODE_EGRESS_BOTH = 2,
+    MODE_EGRESS_BLE = 3
 };
 
 extern QueueHandle_t telemetryQueue;
@@ -52,11 +54,16 @@ private:
                 lastOledActivityMs = millis(); // Refresh OLED screen activity timer on valid packet arrival
 
                 // 1. Serial Egress (USB CDC output to host PC / gateway.py)
-                if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH) {
+                if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH || egressModeConfig == MODE_EGRESS_BLE) {
                     Serial.print(item.line);
                 }
 
-                // 2. WiFi Egress (Forward to Central Server or UDP listener over WiFi network)
+                // 2. BLE 1M GATT Egress (Direct notification stream to laptop / desktop client over 1Mbps BLE)
+                if (egressModeConfig == MODE_EGRESS_BLE || egressModeConfig == MODE_EGRESS_BOTH) {
+                    BLEEgress::notify(item.line, strlen(item.line));
+                }
+
+                // 3. WiFi Egress (Forward to Central Server or UDP listener over WiFi network)
                 if ((egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) && wifiRelayConnected) {
                     size_t lineLen = strlen(item.line);
                     if (batchLen + lineLen >= sizeof(batchBuf) - 1) {

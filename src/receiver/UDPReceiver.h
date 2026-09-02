@@ -17,6 +17,11 @@ public:
     explicit UDPReceiver(uint16_t port = 9876) : _port(port) {}
 
     void begin() override {
+        extern uint8_t egressModeConfig;
+        if (egressModeConfig == 0 || egressModeConfig == 3) {
+            Serial.println(F("[UDP RECEIVER] Disabled in BLE/Serial mode (Wi-Fi radio OFF)."));
+            return;
+        }
         _udp.begin(_port);
         Serial.printf("[UDP RECEIVER SUCCESS] Active listening on UDP Port %d\r\n", _port);
     }

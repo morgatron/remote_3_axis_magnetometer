@@ -133,15 +133,17 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
 class BLEReceiver : public ITelemetryReceiver {
 public:
     void begin() override {
-        NimBLEDevice::init("MAG_GATEWAY_RECEIVER");
+        if (!NimBLEDevice::isInitialized()) {
+            NimBLEDevice::init("MAG_GATEWAY");
+        }
         NimBLEScan* pScan = NimBLEDevice::getScan();
         pScan->setScanCallbacks(new BLEReceiverCallbacks());
         pScan->setDuplicateFilter(false);
         pScan->setActiveScan(true);
-        pScan->setInterval(100);
-        pScan->setWindow(99);
+        pScan->setInterval(160); // 160 ms scan interval
+        pScan->setWindow(40);    // 40 ms scan window (25% low-power duty cycle)
         pScan->start(0, false);
-        Serial.println(F("[BLE RECEIVER SUCCESS] Active LE Coded PHY scanning enabled."));
+        Serial.println(F("[BLE RECEIVER SUCCESS] Active LE Coded PHY 25% low-power scan enabled."));
     }
 
     const char* getName() const override {

@@ -1,9 +1,9 @@
 {
   "port": "/dev/ttyACM0",
   "baud": 921600,
-  "sensor": "RM3100",
+  "sensor": "MOCK",
   "device_id": "",
-  "output_mode": "BOTH",
+  "output_mode": "LORA",
   "batch_size": 10,
   "wifi": {
     "ssid": "NetComm 2927",

@@ -1,5 +1,6 @@
 #include "ReceiverCLI.h"
 #include <WiFi.h>
+#include "BLEEgress.h"
 
 extern volatile uint32_t espnowRxCount;
 extern volatile uint32_t bleRxCount;
@@ -46,7 +47,7 @@ void ReceiverCLI::printHelp() {
     Serial.println(F(" Commands:"));
     Serial.println(F("   HELP / STATUS       - Show system status, configuration, & stats"));
     Serial.println(F("   NODES               - Display active remote sensor node table"));
-    Serial.println(F("   MODE <SERIAL|WIFI|BOTH> - Set egress forwarding mode"));
+    Serial.println(F("   MODE <SERIAL|WIFI|BOTH|BLE> - Set egress forwarding mode"));
     Serial.println(F("   WIFI <ssid> <pass>  - Set egress router WiFi credentials"));
     Serial.println(F("   TARGET <ip> [port]  - Set target server IP & port for WiFi egress"));
     Serial.println(F("   CHANNEL <1-13>      - Set ESP-NOW WiFi radio channel"));
@@ -61,7 +62,9 @@ void ReceiverCLI::printStatus() {
     Serial.println(F("=========================================="));
     Serial.printf(" Uptime:               %.1f sec\r\n", millis() / 1000.0f);
     Serial.printf(" Egress Mode:          %s\r\n", 
-        (egressModeConfig == 0) ? "SERIAL (USB CDC)" : (egressModeConfig == 1) ? "WIFI" : "BOTH (Serial + WiFi)");
+        (egressModeConfig == 0) ? "SERIAL (USB CDC)" : 
+        (egressModeConfig == 1) ? "WIFI" : 
+        (egressModeConfig == 2) ? "BOTH (Serial + WiFi + BLE)" : "BLE (1Mbps GATT Relay, Wi-Fi OFF)");
     Serial.printf(" WiFi Router:          %s (%s, Local IP: %s)\r\n", wifiSSID.c_str(), wifiRelayConnected ? "CONNECTED" : "DISCONNECTED", WiFi.localIP().toString().c_str());
     Serial.printf(" Target Server IP:     %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
     Serial.printf(" ESP-NOW Channel:      %d\r\n", espNowChannel);
@@ -90,15 +93,22 @@ void ReceiverCLI::handleCommand(const String &cmd) {
         modeStr.trim();
         if (modeStr == "SERIAL") {
             egressModeConfig = 0;
-            Serial.println(F("[CLI] Egress Mode set to: SERIAL"));
+            WiFi.mode(WIFI_OFF);
+            Serial.println(F("[CLI] Egress Mode set to: SERIAL (Wi-Fi OFF)"));
         } else if (modeStr == "WIFI") {
             egressModeConfig = 1;
             Serial.println(F("[CLI] Egress Mode set to: WIFI"));
         } else if (modeStr == "BOTH") {
             egressModeConfig = 2;
-            Serial.println(F("[CLI] Egress Mode set to: BOTH"));
+            BLEEgress::begin("MAG_GATEWAY");
+            Serial.println(F("[CLI] Egress Mode set to: BOTH (Serial + WiFi + BLE)"));
+        } else if (modeStr == "BLE") {
+            egressModeConfig = 3;
+            WiFi.mode(WIFI_OFF);
+            BLEEgress::begin("MAG_GATEWAY");
+            Serial.println(F("[CLI] Egress Mode set to: BLE (1Mbps GATT Relay, Wi-Fi OFF ~80mA saved)"));
         } else {
-            Serial.println(F("[CLI ERROR] Invalid mode. Use SERIAL, WIFI, or BOTH."));
+            Serial.println(F("[CLI ERROR] Invalid mode. Use SERIAL, WIFI, BOTH, or BLE."));
         }
         if (_saveCallback) _saveCallback();
     } else if (upper.startsWith("WIFI ")) {

@@ -18,6 +18,12 @@ public:
     explicit ESPNowReceiver(uint8_t channel = 1) : _channel(channel) {}
 
     void begin() override {
+        extern uint8_t egressModeConfig;
+        if (egressModeConfig == 0 || egressModeConfig == 3) {
+            Serial.println(F("[ESP-NOW] Disabled in BLE/Serial mode (Wi-Fi radio OFF)."));
+            return;
+        }
+
         if (WiFi.getMode() == WIFI_OFF) {
             WiFi.mode(WIFI_STA);
         }
