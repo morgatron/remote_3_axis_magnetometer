@@ -79,10 +79,29 @@ typedef struct __attribute__((packed)) {
     char          device_id[8];         // Null-terminated identifier (e.g. "NODE_3A8")
     uint32_t      latest_sample_age_ms; // Age in ms of newest sample (samples[sample_count-1]) at instant of TX
     uint16_t      sample_interval_ms;   // Time between samples in ms (e.g. 1000 ms = 1 Hz)
-    uint8_t       sample_count;         // Number of samples in batch (up to 10)
+    uint8_t       sample_count;         // Number of samples in batch (up to 18)
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
-    CompactSample samples[10];          // Array of up to 10 compact samples (120 bytes)
+    CompactSample samples[18];          // Array of up to 18 compact samples (216 bytes, total = 235 bytes)
 } SensorBatchPacket;
+
+/**
+ * @brief Gateway 1M Extended Advertising Telemetry Broadcast Packet.
+ * Total size: 27 bytes header + up to 18 samples (12 bytes each) = 39 to 243 bytes.
+ * Fits within standard 251-byte Bluetooth 5.0 LE Extended Advertising auxiliary PDU.
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t      company_id;           // 0xFFFF (Test / Non-registered company identifier)
+    uint8_t       magic[2];             // 0x4D, 0x47 ("MG" for Mag Gateway)
+    uint8_t       packet_seq;           // Transmission sequence counter (0-255)
+    char          node_id[8];           // Field node identifier (null-terminated)
+    uint64_t      timestamp_us;         // Microsecond timestamp of newest sample
+    uint16_t      sample_interval_ms;   // Sample interval in ms (e.g. 1000)
+    uint8_t       sample_count;         // Number of samples in packet (0 to 18)
+    uint16_t      status;               // Status word
+    uint16_t      vbat_mv;              // Battery voltage in mV
+    int8_t        rssi;                 // Signal strength from node to gateway in dBm
+    CompactSample samples[18];          // Array of up to 18 samples (x, y, z in nT)
+} GatewayAdvPacket;
 
 #endif // TELEMETRY_PACKET_H

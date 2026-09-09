@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include "board_config.h"
 #include "TelemetryPacket.h"
+#include "ReceiverContext.h"
 #include "NodeTracker.h"
 #include "ESPNowReceiver.h"
 #include "BLEReceiver.h"
@@ -10,6 +11,7 @@
 #if defined(BOARD_HAS_LORA)
 #include "LoRaReceiver.h"
 #endif
+#include "BLEEgress.h"
 #include "RelayEgress.h"
 #include "ReceiverCLI.h"
 #include "OLEDDisplay.h"
@@ -19,6 +21,8 @@ float g_cachedBatteryVoltage = 0.0f;
 // Global Receiver State Variables
 QueueHandle_t telemetryQueue = NULL;
 NodeTracker nodeTracker;
+bool g_debugScheduler = true; // Can be toggled at runtime via DEBUG ON/OFF in ReceiverCLI
+bool g_dfsEnabled = true;     // Dynamic Frequency Scaling: 40MHz during sleep, 80MHz during burst/RX
 
 volatile uint32_t espnowRxCount = 0;
 volatile uint32_t bleRxCount = 0;
@@ -150,12 +154,12 @@ void setup() {
     pinMode(0, INPUT_PULLUP); // PRG / USER button on Heltec V4 for OLED wake
     lastOledActivityMs = millis();
 
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
+    Serial.begin(921600);
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3) || defined(ARDUINO_USB_CDC_ON_BOOT)
     Serial.setTxTimeoutMs(0);
 #endif
-    Serial.begin(921600);
     unsigned long startWait = millis();
-    while (!Serial && (millis() - startWait < 3000)) delay(10);
+    while (!Serial && (millis() - startWait < 500)) delay(10);
 
     Serial.println(F("\r\n========================================================="));
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));
@@ -254,6 +258,11 @@ void loop() {
     // Poll all active multi-protocol receivers (UDP socket, LoRa SPI, etc.)
     for (auto* rcvr : receivers) {
         rcvr->poll();
+    }
+
+    // Poll BLE Egress watchdog to guarantee advertising stays active when not connected
+    if (egressModeConfig == MODE_EGRESS_BLE || egressModeConfig == MODE_EGRESS_BOTH) {
+        BLEEgress::poll();
     }
 
     delay(2);

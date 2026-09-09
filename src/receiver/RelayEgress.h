@@ -2,101 +2,20 @@
 #define RELAY_EGRESS_H
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <WiFiUdp.h>
-#include <HTTPClient.h>
 #include "TelemetryPacket.h"
-#include "BLEEgress.h"
-
-enum EgressMode {
-    MODE_EGRESS_SERIAL = 0,
-    MODE_EGRESS_WIFI = 1,
-    MODE_EGRESS_BOTH = 2,
-    MODE_EGRESS_BLE = 3
-};
-
-extern QueueHandle_t telemetryQueue;
-extern uint8_t egressModeConfig;
-extern String wifiSSID;
-extern String wifiPass;
-extern String targetServerIP;
-extern uint16_t targetServerPort;
-extern bool wifiRelayConnected;
-extern volatile uint32_t relayedPacketCount;
+#include "ReceiverContext.h"
 
 class RelayEgress {
 public:
-    static void begin() {
-        xTaskCreatePinnedToCore(
-            relayTask,
-            "RelayEgressTask",
-            8192,
-            NULL,
-            2,
-            NULL,
-            tskNO_AFFINITY
-        );
-        Serial.println(F("[RELAY EGRESS SUCCESS] FreeRTOS Egress Relay Task Spawned"));
-    }
+    static void begin();
 
 private:
-    static void relayTask(void *pvParameters) {
-        TelemetryItem item;
-        WiFiUDP egressUdp;
-        static char batchBuf[2048];
-        static size_t batchLen = 0;
-        static uint32_t lastBatchFlushMs = 0;
-
-        for (;;) {
-            if (xQueueReceive(telemetryQueue, &item, pdMS_TO_TICKS(50)) == pdTRUE) {
-                relayedPacketCount++;
-                extern uint32_t lastOledActivityMs;
-                lastOledActivityMs = millis(); // Refresh OLED screen activity timer on valid packet arrival
-
-                // 1. Serial Egress (USB CDC output to host PC / gateway.py)
-                if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH || egressModeConfig == MODE_EGRESS_BLE) {
-                    Serial.print(item.line);
-                }
-
-                // 2. BLE 1M GATT Egress (Direct notification stream to laptop / desktop client over 1Mbps BLE)
-                if (egressModeConfig == MODE_EGRESS_BLE || egressModeConfig == MODE_EGRESS_BOTH) {
-                    BLEEgress::notify(item.line, strlen(item.line));
-                }
-
-                // 3. WiFi Egress (Forward to Central Server or UDP listener over WiFi network)
-                if ((egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) && wifiRelayConnected) {
-                    size_t lineLen = strlen(item.line);
-                    if (batchLen + lineLen >= sizeof(batchBuf) - 1) {
-                        flushWiFiBatch(egressUdp, batchBuf, batchLen);
-                        batchLen = 0;
-                    }
-                    memcpy(batchBuf + batchLen, item.line, lineLen);
-                    batchLen += lineLen;
-                    batchBuf[batchLen] = '\0';
-                }
-            }
-
-            // Flush pending WiFi batch every 500ms
-            if (batchLen > 0 && (millis() - lastBatchFlushMs >= 500)) {
-                if (wifiRelayConnected) {
-                    flushWiFiBatch(egressUdp, batchBuf, batchLen);
-                }
-                batchLen = 0;
-                lastBatchFlushMs = millis();
-            }
-        }
-    }
-
-    static void flushWiFiBatch(WiFiUDP &udp, const char* buf, size_t len) {
-        if (len == 0 || targetServerIP.length() == 0) return;
-
-        IPAddress addr;
-        if (addr.fromString(targetServerIP)) {
-            udp.beginPacket(addr, targetServerPort);
-            udp.write((const uint8_t*)buf, len);
-            udp.endPacket();
-        }
-    }
+    static void dispatchSerialWiFi(const TelemetryItem &item, WiFiUDP &egressUdp, char *batchBuf, size_t &batchLen);
+    static void initAdvPacket(GatewayAdvPacket &advPkt, const TelemetryItem &item);
+    static void appendSampleToAdvPacket(GatewayAdvPacket &advPkt, const TelemetryItem &item);
+    static void relayTask(void *pvParameters);
+    static void flushWiFiBatch(WiFiUDP &udp, const char* buf, size_t len);
 };
 
 #endif // RELAY_EGRESS_H

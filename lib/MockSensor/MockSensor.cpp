@@ -49,7 +49,7 @@ void MockSensor::setContinuousMode(bool enable, uint8_t rate_code) {
         case 0x92: _sampleIntervalUs = 1666;  break; // 600 Hz
         default:   _sampleIntervalUs = 13333; break; // Default 75 Hz
     }
-    _lastSampleTimeUs = micros();
+    _lastSampleTimeUs = esp_timer_get_time();
 }
 
 String MockSensor::getStatusString() {
@@ -57,7 +57,7 @@ String MockSensor::getStatusString() {
 }
 
 void MockSensor::generateSample() {
-    uint64_t now = micros();
+    uint64_t now = esp_timer_get_time();
     _lastSampleTimeUs = now;
 
     // Generate realistic 3-axis geomagnetic field components (in nT with 0.01 nT precision)

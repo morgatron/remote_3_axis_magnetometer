@@ -7,19 +7,16 @@
 #include <esp_wifi.h>
 #include "ITelemetryReceiver.h"
 #include "TelemetryPacket.h"
+#include "ReceiverContext.h"
 #include "NodeTracker.h"
-
-extern QueueHandle_t telemetryQueue;
-extern NodeTracker nodeTracker;
-extern volatile uint32_t espnowRxCount;
+#include "IngestionPipeline.h"
 
 class ESPNowReceiver : public ITelemetryReceiver {
 public:
     explicit ESPNowReceiver(uint8_t channel = 1) : _channel(channel) {}
 
     void begin() override {
-        extern uint8_t egressModeConfig;
-        if (egressModeConfig == 0 || egressModeConfig == 3) {
+        if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BLE) {
             Serial.println(F("[ESP-NOW] Disabled in BLE/Serial mode (Wi-Fi radio OFF)."));
             return;
         }
@@ -59,48 +56,22 @@ private:
 
     static void processPacket(const uint8_t *mac, const uint8_t *incomingData, int len, int rssi) {
         if (len <= 0 || incomingData == nullptr) return;
-        espnowRxCount++;
+        espnowRxCount = espnowRxCount + 1;
 
-        TelemetryItem item;
-        memset(&item, 0, sizeof(item));
-        if (mac) memcpy(item.mac, mac, 6);
-        item.rssi = rssi;
-        strncpy(item.protocol, "ESP-NOW", sizeof(item.protocol) - 1);
-
-        if (len == sizeof(SensorBinaryPacket)) {
+        if (len == sizeof(SensorBatchPacket)) {
+            SensorBatchPacket batch;
+            memcpy(&batch, incomingData, sizeof(batch));
+            IngestionPipeline::ingestBatch(batch, mac, rssi, "ESP-NOW");
+        } else if (len == sizeof(SensorBinaryPacket)) {
             SensorBinaryPacket pkt;
             memcpy(&pkt, incomingData, sizeof(pkt));
-
-            if (pkt.device_id[0] != '\0') {
-                strncpy(item.node_id, pkt.device_id, sizeof(item.node_id) - 1);
-            } else {
-                snprintf(item.node_id, sizeof(item.node_id), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
-            }
-
-            uint32_t now_ms = millis();
-            uint32_t sample_ts_ms = (now_ms >= pkt.packet_age_ms) ? (now_ms - pkt.packet_age_ms) : 0;
-            item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
-            item.x = pkt.x_nT; item.y = pkt.y_nT; item.z = pkt.z_nT;
-            item.status = pkt.status;
-
-            bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "ESP-NOW", sample_ts_ms);
-            if (isNewSample) {
-                item.formatCsvLine();
-                if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);
-            }
+            IngestionPipeline::ingestSingle(pkt, mac, rssi, "ESP-NOW");
         } else {
             char rawStr[192];
             int cpyLen = min(len, (int)sizeof(rawStr) - 1);
             memcpy(rawStr, incomingData, cpyLen);
             rawStr[cpyLen] = '\0';
-
-            if (TelemetryItem::parseCsvLine(rawStr, item)) {
-                bool isNewSample = nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "ESP-NOW");
-                if (isNewSample) {
-                    item.formatCsvLine();
-                    if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);
-                }
-            }
+            IngestionPipeline::ingestCsv(rawStr, mac, rssi, "ESP-NOW");
         }
     }
 };

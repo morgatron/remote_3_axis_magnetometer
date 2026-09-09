@@ -135,9 +135,9 @@ To support a new board (e.g. ESP32-S3 DevKit or Raspberry Pi Pico 2 W):
    - Keeping the APB clock powered ON (`light_sleep_enable = false`) guarantees **sub-microsecond (< 1 µs) interrupt latency with 0% sample loss**, while DFS throttles idle CPU power to 20 MHz (~3.5 mA system current).
 
 5. **Low-Power Gateway Receiver Optimizations**:
-   - **80 MHz CPU Scaling**: CPU frequency reduced from 240 MHz to **80 MHz** (`setCpuFrequencyMhz(80)`), saving ~28 mA.
+   - **Dynamic Frequency Scaling (DFS)**: Automatically throttles CPU from 80 MHz down to **40 MHz** (`setCpuFrequencyMhz(40)`) during the 8.5-second radio-off sleep window once egress broadcast completes, cutting baseline MCU power by >50% without dropping baseband registers or incurring wake jitter. Dynamically restores CPU to 80 MHz with 400ms lead time before the next scheduled burst.
    - **30-Second OLED Auto-Sleep**: Display controller sleeps after 30s of inactivity (~20 mA savings); wakes instantly via the **PRG / USER button (GPIO 0)** or Serial CLI input.
-   - **Smart Wi-Fi Off**: Automatically turns off Wi-Fi radio when operating in USB Serial Egress mode (`MODE SERIAL`), saving ~80 mA.
+   - **Smart Wi-Fi Off**: Automatically turns off Wi-Fi radio when operating in USB Serial Egress mode (`MODE SERIAL`) or connectionless BLE mode (`MODE BLE`), saving ~80 mA.
 
 ---
 
@@ -147,11 +147,13 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 
 ### Key Receiver Features
 1. **Multi-Protocol Wireless Ingestion**:
+   - **Slotted Rendezvous BLE Coded PHY Receiver**: Tracks remote node transmission burst periods, dynamically calculates sleep intervals, and powers OFF the BLE radio between bursts (~98.6% radio sleep duty cycle), waking with a 400ms lead time to capture incoming bursts in ~100–150ms.
    - **ESP-NOW**: Ultra-low power, fast connectionless MAC-layer protocol (handles binary struct `SensorBinaryPacket` and string CSV payloads).
-   - **BLE / BLE Coded PHY**: Bluetooth 5 Long Range advertisement and Nordic UART Service observer.
+   - **BLE / BLE Coded PHY**: Bluetooth 5 Long Range advertisement observer.
    - **WiFi UDP**: Listens on UDP port 9876 for field sensor broadcast packets.
-2. **Dual Egress Relay**:
+2. **Triple Egress Relay**:
    - **USB Serial (CDC)**: Output formatted CSV stream at 921,600 baud directly to `gateway.py` or host PC.
+   - **BLE 1Mbps Connectionless Extended Advertising**: Broadcasts telemetry bursts using BLE 5 Extended Advertising Auxiliary PDUs (up to 18 samples per packet, company ID `0xFFFF`, magic `b"MG"`). 100% connectionless, no GATT handshakes, pairing, or supervision timeouts.
    - **WiFi Egress**: Forwards batched payloads to Central Server HTTP endpoint or target UDP IP.
 3. **Active Node Tracking**:
    - In-memory Node Table (`NODES` command) tracks device IDs, MAC addresses, RSSI signal strength, packet counts, last-seen timestamps, battery voltages, and ambient temperatures.
@@ -159,9 +161,11 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 ### Receiver CLI Commands
 | Command | Description |
 | :--- | :--- |
-| `HELP` / `STATUS` | Display receiver status, protocol packet counts, and network info |
+| `HELP` / `STATUS` | Display receiver status, protocol packet counts, DFS clock, and network info |
 | `NODES` | Print real-time table of all active remote sensor nodes with RSSI & Vbat |
-| `MODE <SERIAL\|WIFI\|BOTH>` | Select egress relay destination (USB Serial, WiFi Network, or Dual Egress) |
+| `MODE <SERIAL\|WIFI\|BOTH\|BLE>` | Select egress relay destination (USB Serial, WiFi Network, Both, or BLE Connectionless) |
+| `DEBUG [ON\|OFF]` | Toggle BLE rendezvous and discovery debug logging |
+| `DFS [ON\|OFF]` | Toggle Dynamic Frequency Scaling (40MHz sleep / 80MHz burst) |
 | `WIFI <ssid> <pass>` | Save egress router credentials and connect to WiFi |
 | `TARGET <ip> [port]` | Configure target Central Server IP and port for WiFi forwarding |
 | `CHANNEL <1-13>` | Set ESP-NOW WiFi radio channel |

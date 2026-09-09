@@ -118,6 +118,8 @@ void CLI::handleCommand(String cmd) {
             newType = 1;
             sensor = &sensorFLC100;
             _current_rate = 0x06; // ADS131 default rate 1 kSPS
+            extern uint16_t current_downsample;
+            if (current_downsample <= 1) current_downsample = 1000;
         } else if (sub == "MOCK" || sub == "2") {
             newType = 2;
             sensor = &sensorMock;
@@ -139,11 +141,24 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd == "STATUS") {
         extern String deviceID;
         extern uint8_t batchSizeConfig;
+        extern uint8_t outputMode;
+        extern uint16_t current_downsample;
         Serial.print("Device ID: "); Serial.println(deviceID);
         Serial.print("Streaming: "); Serial.println(_streaming ? "ON" : "OFF");
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
+        Serial.print("Output Mode: ");
+        switch(outputMode) {
+            case 0: Serial.println("SERIAL"); break;
+            case 1: Serial.println("WIFI"); break;
+            case 2: Serial.println("BOTH (Serial+WiFi)"); break;
+            case 3: Serial.println("BLE (Bluetooth 5.0 Long Range)"); break;
+            case 4: Serial.println("LORA"); break;
+            default: Serial.println(outputMode); break;
+        }
+        Serial.print("Downsample: "); Serial.print(current_downsample); Serial.println("x");
+        Serial.printf("CPU Frequency: %d MHz\r\n", getCpuFrequencyMhz());
         Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
-        Serial.print("BLE Batch Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
+        Serial.print("Batch Burst Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
         Serial.println(_sensor->getStatusString());
     } else if (cmd.startsWith("ID ")) {
         String newID = cmd.substring(3);
@@ -288,13 +303,17 @@ void CLI::handleCommand(String cmd) {
             }
         } else if (modeStr == "BLE") {
             outputMode = 3;
+            WiFi.mode(WIFI_OFF);
+            wifiConnected = false;
             extern String deviceID;
             extern BLEStream bleStream;
             bleStream.begin(deviceID);
             Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
         } else if (modeStr == "LORA") {
-            #if defined(BOARD_HAS_LORA)
             outputMode = 4;
+            WiFi.mode(WIFI_OFF);
+            wifiConnected = false;
+            #if defined(BOARD_HAS_LORA)
             extern LoRaStream loraStream;
             loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
             Serial.println("Output Mode set to LORA (Sub-GHz SX1262 LoRa).");
@@ -305,6 +324,9 @@ void CLI::handleCommand(String cmd) {
             Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE|LORA>");
         }
         _saveCallback();
+    } else if (cmd == "SAVE") {
+        if (_saveCallback) _saveCallback();
+        Serial.println("Configuration saved to NVS.");
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");
         Serial.println(cmd);

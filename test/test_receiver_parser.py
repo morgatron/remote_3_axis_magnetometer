@@ -9,8 +9,8 @@ import os
 import sys
 import unittest
 
-# Add root directory to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Add central_service directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "central_service")))
 from stream_parser import parse_telemetry_line, parse_telemetry_batch
 
 class TestReceiverFormat(unittest.TestCase):

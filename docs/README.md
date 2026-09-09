@@ -1,68 +1,31 @@
-# Remote 3-Axis Magnetometer Acquisition System — User Documentation
+# Remote 3-Axis Magnetometer System — Documentation
 
-Welcome to the user documentation for the **Remote 3-Axis Magnetometer Acquisition System**.
-
-This system is designed for high-resolution, battery-powered remote magnetic field monitoring. It includes universal field sensor firmware, multi-protocol receiver gateway firmware, an edge relay service, a PySide6 desktop plotting application, and a lightweight central time-series server with a real-time Web GUI.
+Welcome to the documentation for the **Remote 3-Axis Magnetometer Acquisition System**.
 
 ---
 
-## 📚 User Documentation Sitemap
+## 📚 Core Manuals
 
-1. [**Getting Started & System Overview**](getting_started.md)
-   - System architecture diagram
-   - Conda environment setup & installation
-   - End-to-end 5-minute quickstart guide
-2. [**Firmware Flashing & Hardware Guide**](firmware_guide.md)
-   - Supported hardware targets (Heltec V4, ESP32-C6, ESP32-C3)
-   - Flashing sensor nodes and receiver gateways using PlatformIO
-   - Interactive Serial CLI command reference (`NODES`, `STATUS`, `MODE`, `WIFI`, `TARGET`)
-   - Radio protocols: Sub-GHz LoRa (SX1262), ESP-NOW, BLE / Coded PHY, WiFi UDP
-3. [**Central Server & Web GUI Guide**](central_server_guide.md)
-   - Running `server.py` and `gateway.py`
-   - Using the Web GUI (`http://localhost:8000`)
-   - REST API v1 reference & WebSockets streaming
-   - Data exports: CSV, Apache Parquet (`.parquet`), NumPy (`.npz`), JSON
-4. [**Server Hardware & Deployment Guide (Raspberry Pi 4 / Laptop)**](SERVER_SETUP_GUIDE.md)
-   - Automated 1-click installer (`install.sh`)
-   - Laptop lid-close sleep prevention & Wi-Fi power-save disabling
-   - Raspberry Pi 4 SD card wear protection (WAL mode, log2ram, USB boot)
-   - Operations management with `manage.sh` (status, live logs, online backups)
-   - Single-command Docker Compose deployment
-5. [**Residential NAT & Remote Access Guide**](NAT_AND_REMOTE_ACCESS.md)
-   - Interactive NAT configuration assistant (`remote_access.sh`)
-   - Tailscale Mesh VPN (Zero-config WireGuard, CGNAT bypass)
-   - Cloudflare Tunnels (Public access & custom domain with free SSL)
-   - Router Port Forwarding & Dynamic DNS (DuckDNS)
-   - CGNAT diagnostic tests
-6. [**Secrets Management & System Security Guide**](SECRETS_AND_SECURITY.md)
-   - Storing server `API_KEY` with restricted file permissions (`0600`)
-   - Cloudflare Tunnel token security & systemd storage
-   - ESP32 dynamic NVS provisioning & hardware flash encryption
-   - Git hygiene and credential leak prevention
-7. [**Desktop Application Guide**](desktop_app_guide.md)
-   - Running the PySide6 Desktop Application (`desktop_app/main.py`)
-   - Real-time time-series plotting & Welch PSD spectral analysis
-   - Device dynamic NVS provisioning & Gzip HDF5 (`.h5`) logging
-8. [**LoRa SX1262 Testing & Setup Guide**](lora_testing_setup.md)
-   - AU915 Band configuration (SF7 / 125 kHz / +22 dBm)
-   - 10-sample batched bursting (`BATCH 10`) with `latest_sample_age_ms` time-on-air compensation
-   - Automated testing tool (`scripts/setup_lora_test.py`)
-9. [**BLE Coded PHY Long-Range Testing Guide**](simple_ble_testing_setup.md)
-   - Bluetooth 5.0 LE Coded PHY S=8 batching
-   - Hardware `AUX_SCAN_REQ` confirmation ACKs
-   - Offline disconnect ring buffer and catch-up flushing
+1. [**1. Getting Started Guide**](1_GETTING_STARTED.md)
+   - System architecture overview
+   - Hardware pinouts & wiring (ESP32-C3, Heltec V4, nRF52840, RM3100, FLC100)
+   - PlatformIO build environments & flashing commands
+   - Provisioning wizard (`provision_node.py` & `provision_receiver.py`)
 
----
+2. [**2. Firmware & Power Optimization Guide**](2_FIRMWARE_AND_POWER_GUIDE.md)
+   - 10-sample binary batching architecture (`SensorBatchPacket`)
+   - Interactive Serial CLI command reference for Sensor and Receiver nodes
+   - Multi-protocol output modes (BLE Coded PHY, LoRa SX1262, ESP-NOW, Wi-Fi UDP)
+   - Low-power techniques (Duty-cycled scanning, SX1262 sleep, OLED auto-sleep, clock gating)
 
-## 🚀 System Architecture Overview
+3. [**3. Wireless & Field Testing Guide**](3_WIRELESS_AND_FIELD_TESTING.md)
+   - Real-time phone monitoring using the **nRF Connect** app (Nordic UART Service)
+   - Understanding signal strength: Sensor-to-Gateway RSSI vs. Gateway-to-Phone RSSI
+   - Laptop Python client (`scripts/ble_gateway.py`)
+   - Wireless range testing & link margin evaluation (`scripts/rssi_monitor.py`)
 
-```
- +------------------------+      Wireless Radio       +--------------------------+     USB Serial / WiFi     +-------------------------+
- |   Field Sensor Node    |  -----------------------> |    ESP32 Receiver Node   |  -----------------------> |   Central Data Server   |
- | (Heltec V4 / ESP32-C6) | (LoRa / ESP-NOW / BLE / UDP)| (Heltec V4 / ESP32-C6) |    (gateway.py / HTTP)    | (http://localhost:8000) |
- +------------------------+                           +--------------------------+                           +-------------------------+
-```
-
-### Supported Sensor Hardware
-1. **PNI RM3100**: High-resolution digital 3-axis SPI magnetometer (Hardware REVID `0x22`).
-2. **FLC-100 Analog Fluxgate Array**: Differential analog fluxgates sampled via external **TI ADS131E08 24-bit 8-channel SPI ADC** (VREF = 2.4V).
+4. [**4. Central Server & Dashboards Guide**](4_CENTRAL_SERVER_AND_DASHBOARDS.md)
+   - Self-contained FastAPI Central Server (`server.py`) and operations manager (`manage.sh`)
+   - Docker Compose deployment & port mappings
+   - REST API endpoints, WebSockets, CSV & HDF5 scientific export
+   - Desktop PyQt5 application (`desktop_app/main.py`)

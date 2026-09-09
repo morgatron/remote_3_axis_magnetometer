@@ -210,43 +210,12 @@ String FLC100_ADS131::getStatusString() {
     s += "VREF:    " + String(_vref, 2) + "V\r\n";
     s += "Gain:    " + String(_gain) + "\r\n";
 
-    sendCommand(ADS131_CMD_RDATAC);
-    delayMicroseconds(10);
+    // Cleanly restore continuous conversion mode
+    setContinuousMode(true, 0x06);
 
-    // Wait for DRDY to go low to capture a fresh, synchronized sample (up to 10ms timeout)
-    uint32_t startWait = millis();
-    while (digitalRead(_drdyPin) == HIGH && (millis() - startWait) < 10) {
-        delayMicroseconds(10);
-    }
-
-    // Read one sample to capture the raw SPI bytes
-    _spi->beginTransaction(_spiSettings);
-    digitalWrite(_csPin, LOW);
-    uint8_t buffer[27];
-    for (int i = 0; i < 27; i++) {
-        buffer[i] = _spi->transfer(0x00);
-    }
-    digitalWrite(_csPin, HIGH);
-    _spi->endTransaction();
-
-    s += "Raw SPI Bytes: ";
-    for (int i = 0; i < 12; i++) {
-        char buf[8];
-        sprintf(buf, "%02X ", buffer[i]);
-        s += buf;
-    }
-    s += "\r\n";
-
-    int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
-    if (rawX & 0x800000) rawX |= 0xFF000000;
-    int32_t rawY = (int32_t)((buffer[6] << 16) | (buffer[7] << 8) | buffer[8]);
-    if (rawY & 0x800000) rawY |= 0xFF000000;
-    int32_t rawZ = (int32_t)((buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
-    if (rawZ & 0x800000) rawZ |= 0xFF000000;
-
-    s += "CH1 Raw Count: " + String(rawX) + "\r\n";
-    s += "CH2 Raw Count: " + String(rawY) + "\r\n";
-    s += "CH3 Raw Count: " + String(rawZ) + "\r\n";
+    s += "Last X (nT): " + String(_lastValidX) + "\r\n";
+    s += "Last Y (nT): " + String(_lastValidY) + "\r\n";
+    s += "Last Z (nT): " + String(_lastValidZ) + "\r\n";
 
     return s;
 }

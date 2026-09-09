@@ -1,21 +1,10 @@
 #include "ReceiverCLI.h"
 #include <WiFi.h>
 #include "BLEEgress.h"
+#include "PowerManager.h"
 
-extern volatile uint32_t espnowRxCount;
-extern volatile uint32_t bleRxCount;
-extern volatile uint32_t udpRxCount;
-extern volatile uint32_t loraRxCount;
-extern volatile uint32_t relayedPacketCount;
-extern uint8_t egressModeConfig;
-extern String wifiSSID;
-extern String wifiPass;
-extern String targetServerIP;
-extern uint16_t targetServerPort;
-extern uint8_t espNowChannel;
-extern bool wifiRelayConnected;
-extern String apSSID;
-extern NodeTracker nodeTracker;
+#include "ReceiverContext.h"
+#include "NodeTracker.h"
 
 ReceiverCLI::ReceiverCLI(SaveCallback saveCb) : _saveCallback(saveCb) {
     _inputBuffer.reserve(128);
@@ -47,10 +36,13 @@ void ReceiverCLI::printHelp() {
     Serial.println(F(" Commands:"));
     Serial.println(F("   HELP / STATUS       - Show system status, configuration, & stats"));
     Serial.println(F("   NODES               - Display active remote sensor node table"));
+    Serial.println(F("   DEBUG <ON|OFF>      - Enable/Disable rendezvous diagnostic logging"));
+    Serial.println(F("   DFS <ON|OFF>        - Enable/Disable Dynamic Frequency Scaling (40MHz sleep)"));
     Serial.println(F("   MODE <SERIAL|WIFI|BOTH|BLE> - Set egress forwarding mode"));
     Serial.println(F("   WIFI <ssid> <pass>  - Set egress router WiFi credentials"));
     Serial.println(F("   TARGET <ip> [port]  - Set target server IP & port for WiFi egress"));
     Serial.println(F("   CHANNEL <1-13>      - Set ESP-NOW WiFi radio channel"));
+    Serial.println(F("   TESTADV [1-10]      - Broadcast test BLE egress advertisement packet"));
     Serial.println(F("   SAVE                - Save settings to Flash NVS"));
     Serial.println(F("   REBOOT              - Reboot receiver MCU"));
     Serial.println(F("=================================================================\r\n"));
@@ -64,7 +56,14 @@ void ReceiverCLI::printStatus() {
     Serial.printf(" Egress Mode:          %s\r\n", 
         (egressModeConfig == 0) ? "SERIAL (USB CDC)" : 
         (egressModeConfig == 1) ? "WIFI" : 
-        (egressModeConfig == 2) ? "BOTH (Serial + WiFi + BLE)" : "BLE (1Mbps GATT Relay, Wi-Fi OFF)");
+        (egressModeConfig == 2) ? "BOTH (Serial + WiFi + BLE)" : "BLE (1Mbps Extended Advertising Broadcast, Wi-Fi OFF)");
+    if (egressModeConfig == 2 || egressModeConfig == 3) {
+        Serial.println(F(" BLE Egress Link:      BROADCASTING (1M Extended Advertising, Connectionless)"));
+    }
+    Serial.printf(" Debug Logs:           %s\r\n", g_debugScheduler ? "ENABLED" : "DISABLED");
+    Serial.printf(" Dynamic Clock (DFS):  %s (Current: %d MHz)\r\n", 
+                  g_dfsEnabled ? "ENABLED (40MHz sleep / 80MHz burst)" : "DISABLED (Static 80MHz)", 
+                  getCpuFrequencyMhz());
     Serial.printf(" WiFi Router:          %s (%s, Local IP: %s)\r\n", wifiSSID.c_str(), wifiRelayConnected ? "CONNECTED" : "DISCONNECTED", WiFi.localIP().toString().c_str());
     Serial.printf(" Target Server IP:     %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
     Serial.printf(" ESP-NOW Channel:      %d\r\n", espNowChannel);
@@ -88,6 +87,49 @@ void ReceiverCLI::handleCommand(const String &cmd) {
         printStatus();
     } else if (upper == "NODES") {
         nodeTracker.printNodeTable(Serial);
+    } else if (upper == "DEBUG ON") {
+        g_debugScheduler = true;
+        Serial.println(F("[CLI] BLE Rendezvous debug logging ENABLED."));
+    } else if (upper == "DEBUG OFF") {
+        g_debugScheduler = false;
+        Serial.println(F("[CLI] BLE Rendezvous debug logging DISABLED."));
+    } else if (upper == "DEBUG") {
+        g_debugScheduler = !g_debugScheduler;
+        Serial.printf("[CLI] BLE Rendezvous debug logging %s.\r\n", g_debugScheduler ? "ENABLED" : "DISABLED");
+    } else if (upper == "DFS ON") {
+        PowerManager::setDfsEnabled(true);
+        Serial.println(F("[CLI] Dynamic Frequency Scaling (DFS) ENABLED (40MHz sleep, 80MHz burst)."));
+    } else if (upper == "DFS OFF") {
+        PowerManager::setDfsEnabled(false);
+        Serial.println(F("[CLI] Dynamic Frequency Scaling (DFS) DISABLED (Static 80MHz)."));
+    } else if (upper == "DFS") {
+        PowerManager::setDfsEnabled(!PowerManager::isDfsEnabled());
+        Serial.printf("[CLI] Dynamic Frequency Scaling (DFS) %s.\r\n", PowerManager::isDfsEnabled() ? "ENABLED" : "DISABLED");
+    } else if (upper.startsWith("TESTADV")) {
+        int n = cmd.substring(7).toInt();
+        if (n <= 0) n = 18;
+        if (n > 18) n = 18;
+        GatewayAdvPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.company_id = 0xFFFF;
+        pkt.magic[0] = 'M';
+        pkt.magic[1] = 'G';
+        static uint8_t tSeq = 0;
+        pkt.packet_seq = ++tSeq;
+        strncpy(pkt.node_id, "TESTNODE", sizeof(pkt.node_id) - 1);
+        pkt.timestamp_us = (uint64_t)millis() * 1000ULL;
+        pkt.sample_interval_ms = 1000;
+        pkt.sample_count = n;
+        pkt.status = 0x004D4F;
+        pkt.vbat_mv = 3900;
+        pkt.rssi = -55;
+        for (int i = 0; i < n; i++) {
+            pkt.samples[i].x_nT = 1000.0f + i * 10.0f;
+            pkt.samples[i].y_nT = -2000.0f + i * 10.0f;
+            pkt.samples[i].z_nT = 3000.0f + i * 10.0f;
+        }
+        Serial.printf("[TEST] Calling BLEEgress::broadcast with %d samples...\r\n", n);
+        BLEEgress::broadcast(pkt);
     } else if (upper.startsWith("MODE ")) {
         String modeStr = upper.substring(5);
         modeStr.trim();

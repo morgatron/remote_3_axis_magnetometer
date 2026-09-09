@@ -13,22 +13,7 @@
 
 float g_cachedBatteryVoltage = 0.0f;
 
-void configurePowerManagement() {
-#if defined(ESP_PLATFORM)
-    esp_pm_config_t pm_config;
-    memset(&pm_config, 0, sizeof(pm_config));
-    pm_config.max_freq_mhz = 160;
-    pm_config.min_freq_mhz = 20;
-    pm_config.light_sleep_enable = false; // APB clock kept ON to ensure zero DRDY interrupt latency & 0% sample loss
-
-    esp_err_t err = esp_pm_configure(&pm_config);
-    if (err == ESP_OK) {
-        Serial.println(F("[POWER] DFS Enabled (20MHz-160MHz, APB ON, 0% sample loss)."));
-    } else {
-        Serial.printf("[POWER] Power management config info: 0x%X\n", err);
-    }
-#endif
-}
+void configurePowerManagement();
 
 RM3100 sensorRM3100(CS_PIN, DRDY_PIN);
 FLC100_ADS131 sensorFLC100(CS_PIN, DRDY_PIN, RESET_PIN);
@@ -66,6 +51,18 @@ String wifiSSID = "";
 String wifiPass = "";
 bool wifiConnected = false;
 String deviceID = "";
+
+void configurePowerManagement() {
+#if defined(ESP_PLATFORM)
+    if (outputMode == MODE_BLE) {
+        setCpuFrequencyMhz(40);
+        Serial.printf("[POWER] Low-Power BLE Mode: CPU @ %d MHz (Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
+    } else {
+        setCpuFrequencyMhz(80);
+        Serial.printf("[POWER] CPU Frequency set to %d MHz (80MHz APB retained, zero SPI latency).\r\n", getCpuFrequencyMhz());
+    }
+#endif
+}
 
 void saveSettings() {
     prefs.begin("mcu_v0", false);
@@ -143,11 +140,10 @@ void connectWiFi() {
 
 void loadSettings() {
     prefs.begin("mcu_v0", true);
-    streaming = prefs.getBool("streaming", true);
-    current_rate = prefs.getUChar("rate", DEFAULT_RATE);
-    current_downsample = prefs.getUShort("downsample", 1);
     sensorTypeConfig = prefs.getUChar("sensor_type", 1);
-    outputMode = prefs.getUChar("mode", MODE_BOTH);
+    current_rate = prefs.getUChar("rate", DEFAULT_RATE);
+    current_downsample = prefs.getUShort("downsample", (sensorTypeConfig == 1) ? 1000 : 1);
+    outputMode = prefs.getUChar("mode", MODE_BLE);
     batchSizeConfig = prefs.getUChar("batch_size", 10);
     if (batchSizeConfig < 1 || batchSizeConfig > 10) batchSizeConfig = 10;
     wifiSSID = prefs.getString("ssid", "");
@@ -176,6 +172,9 @@ void loadSettings() {
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
         bleStream.begin(deviceID);
         delay(150); // Allow NimBLE BTDM controller memory allocation to complete cleanly before Wi-Fi init
+        if (outputMode == MODE_BLE) {
+            bleStream.powerDownModem();
+        }
     }
 
     if (outputMode == MODE_WIFI || outputMode == MODE_BOTH) {
@@ -184,6 +183,7 @@ void loadSettings() {
         }
     } else {
         WiFi.mode(WIFI_OFF);
+        wifiConnected = false;
     }
 }
 
@@ -203,60 +203,84 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
 
 static TelemetryRingBuffer telemetryRingBuffer;
 static uint8_t lastSentCount = 0;
-static uint32_t lastBurstTxMs = 0;
+static uint32_t nextBurstTxMs = 0;
 static bool isTxActive = false;
 static uint32_t txStartMs = 0;
 static uint8_t txRetryCount = 0;
 
+#ifndef DEBUG_BLE_TX
+#define DEBUG_BLE_TX 1 // Set to 0 (or pass -D DEBUG_BLE_TX=0 in platformio.ini) to disable TX debug prints
+#endif
+
+#if DEBUG_BLE_TX
+  #define TX_DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+  #define TX_DEBUG_PRINTF(...) ((void)0)
+#endif
+
 void checkBleAckTask() {
     if (isTxActive) {
-        if (bleStream.isBatchAcked()) {
-            bleStream.stopAdvertising();
-            isTxActive = false;
-            txRetryCount = 0;
-            telemetryRingBuffer.confirmAck(lastSentCount);
-            lastSentCount = 0;
-        } else if (millis() - txStartMs >= 1500) {
-            // Burst timeout (receiver offline or missed hardware ACK)
-            bleStream.stopAdvertising();
-            isTxActive = false;
-            txRetryCount++;
-
-            // If burst failed to receive ACK after 2 retries, advance ring tail to prevent indefinite queue stalls
-            if (txRetryCount >= 2) {
-                telemetryRingBuffer.confirmAck(lastSentCount);
-                lastSentCount = 0;
-                txRetryCount = 0;
+        bool acked = bleStream.isBatchAcked();
+        if ((millis() - txStartMs >= 300 && acked) || (millis() - txStartMs >= 1000)) {
+            bleStream.powerDownModem();
+            if (outputMode == MODE_BLE) {
+                setCpuFrequencyMhz(40);
             }
+            isTxActive = false;
+            if (acked) {
+                TX_DEBUG_PRINTF("[TX] Burst ACKED! Cleared %d samples.\n", lastSentCount);
+                txRetryCount = 0;
+                telemetryRingBuffer.confirmAck(lastSentCount);
+            } else {
+                txRetryCount++;
+                TX_DEBUG_PRINTF("[TX] Burst NOT ACKED (timeout). Retry count: %d. Backlog: %d\n", txRetryCount, telemetryRingBuffer.getUnackedCount());
+            }
+            lastSentCount = 0;
         }
     }
 }
 
 void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
-    // 1. Insert new sample into 10-minute circular buffer
+    // Insert new sample into 10-minute circular buffer
     uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
     telemetryRingBuffer.push(ts_ms, x, y, z);
+}
 
-    // 2. Check ACK/timeout status of in-flight burst
+void checkBleBurstTransmission() {
     checkBleAckTask();
 
-    // 3. Transmit batch ONLY when target batch size is reached OR catch-up flushing offline backlog
-    if (!isTxActive) {
-        uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 10) ? batchSizeConfig : 10;
+    if (!isTxActive && (outputMode == MODE_BLE || outputMode == MODE_BOTH)) {
+        uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 18) ? batchSizeConfig : 10;
         uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
         uint16_t unacked = telemetryRingBuffer.getUnackedCount();
 
-        if (unacked >= targetBatchSize || (unacked > 0 && millis() - lastBurstTxMs >= minBurstIntervalMs)) {
+        if (unacked > 0 && (unacked >= targetBatchSize || !streaming) && (millis() >= nextBurstTxMs)) {
+            // Dynamically expand batch up to 18 samples if un-ACKed backlog exists
+            uint8_t countToPack = targetBatchSize;
+            if (unacked > targetBatchSize) {
+                countToPack = min((uint16_t)18, unacked);
+            }
+
             SensorBatchPacket batch;
-            uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
+            uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), countToPack);
             if (countToSend > 0) {
-                batch.status = (uint16_t)(status & 0xFFFF);
+                batch.status = (uint16_t)(sensor ? 0x004D4F : 0);
+
+                // 1. Restore CPU to 80 MHz before enabling radio & sampling battery
+                setCpuFrequencyMhz(80);
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
 
+                // 2. Power up BLE modem and broadcast Coded PHY burst
+                bleStream.powerUpModem(deviceID);
                 bleStream.clearBatchAck();
                 bleStream.notifyBatchBinary(batch);
                 lastSentCount = countToSend;
-                lastBurstTxMs = millis();
+
+                // Drift-free periodic schedule on exact 10.0s grid
+                nextBurstTxMs += minBurstIntervalMs;
+                if (nextBurstTxMs <= millis()) {
+                    nextBurstTxMs = millis() + minBurstIntervalMs;
+                }
                 txStartMs = millis();
                 isTxActive = true;
             }
@@ -295,7 +319,7 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
         uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
         uint16_t unacked = loraRingBuffer.getUnackedCount();
 
-        if (unacked >= targetBatchSize || (unacked > 0 && millis() - lastLoraBurstTxMs >= minBurstIntervalMs)) {
+        if (unacked > 0 && (unacked >= targetBatchSize || !streaming) && (millis() - lastLoraBurstTxMs >= minBurstIntervalMs)) {
             SensorBatchPacket batch;
             uint8_t countToSend = loraRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
             if (countToSend > 0) {
@@ -507,6 +531,7 @@ void setup() {
 
 #if LED_PIN >= 0
     pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LED_OFF);
 #endif
 
     if (outputMode == MODE_LORA) {
@@ -517,12 +542,18 @@ void setup() {
         #endif
     }
 
+    // Stagger initial burst transmission based on MAC address to prevent multi-sensor collisions
+    uint8_t staMac[6];
+    esp_read_mac(staMac, ESP_MAC_WIFI_STA);
+    uint32_t slotOffsetMs = (staMac[5] % 8) * 1250;
+    nextBurstTxMs = millis() + slotOffsetMs + 10000;
+
     // Enable Automatic Tickless Light Sleep and Dynamic Frequency Scaling
     configurePowerManagement();
 }
 
 void loop() {
-    checkBleAckTask();
+    checkBleBurstTransmission();
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     // Check USER/PRG button press (GPIO 0) to wake OLED screen
@@ -579,11 +610,11 @@ void loop() {
     unsigned long currentMillis = millis();
 
     if (ledActive && (currentMillis - lastPulseStartMs >= 20)) {
-        digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_PIN, LED_OFF);
         ledActive = false;
     } else if (!ledActive && (currentMillis - lastPulseStartMs >= 10000)) {
         lastPulseStartMs = currentMillis;
-        digitalWrite(LED_PIN, HIGH);
+        digitalWrite(LED_PIN, LED_ON);
         ledActive = true;
     }
 #endif

@@ -13,6 +13,8 @@
 #define DRDY_PIN     38
 #define CS_PIN       39
 #define LED_PIN      35
+#define LED_ON       HIGH
+#define LED_OFF      LOW
 #define VEXT_PIN     36
 
 // LoRa Radio Pins for Heltec V4
@@ -25,24 +27,32 @@
 #define LORA_MISO_PIN 11
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
-// Custom ESP32-C6 RISC-V PCB Pinout
-#define BOARD_NAME   "ESP32-C6 RISC-V PCB"
-#define SCK_PIN      6
-#define MOSI_PIN     7
-#define MISO_PIN     2
-#define DRDY_PIN     3
-#define CS_PIN       10
-#define LED_PIN      -1
+// Seeed Studio XIAO ESP32-C6 Pinout (in Supermini carrier socket)
+#define BOARD_NAME   "Seeed Studio XIAO ESP32-C6"
+#define SCK_PIN      1   // SCLK
+#define MOSI_PIN     2   // MOSI
+#define CS_PIN       23  // CS
+#define MISO_PIN     19  // MISO
+#define DRDY_PIN     20  // nDRDY
+#define LED_PIN      15  // Yellow User LED on XIAO ESP32-C6 (Active-LOW)
+#define LED_ON       LOW
+#define LED_OFF      HIGH
+#define VBAT_ADC_PIN 0   // GPIO0 (ADC1_CH0) for Battery Voltage Divider
+#define VBAT_DIVIDER_RATIO 2.0f // Factor of 2 voltage divider
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
-// Custom ESP32-C3 RISC-V PCB Pinout
-#define BOARD_NAME   "ESP32-C3 RISC-V PCB"
+// ESP32-C3 Supermini Pinout
+#define BOARD_NAME   "ESP32-C3 Supermini"
 #define SCK_PIN      6
 #define MOSI_PIN     7
 #define MISO_PIN     2
 #define DRDY_PIN     3
 #define CS_PIN       10
-#define LED_PIN      -1
+#define LED_PIN      8   // Blue User LED on ESP32-C3 Supermini (Active-LOW)
+#define LED_ON       LOW
+#define LED_OFF      HIGH
+#define VBAT_ADC_PIN 0   // GPIO0 (ADC1_CH0) for Battery Voltage Divider
+#define VBAT_DIVIDER_RATIO 2.0f // Factor of 2 voltage divider
 
 #else
 // Legacy ESP32 Dev Module Pinout [DEPRECATED]
@@ -53,6 +63,8 @@
 #define CS_PIN       5
 #define DRDY_PIN     4
 #define LED_PIN      2
+#define LED_ON       HIGH
+#define LED_OFF      LOW
 #endif
 
 #define RESET_PIN   -1
@@ -71,7 +83,16 @@ extern float g_cachedBatteryVoltage;
  * @brief Measures real battery voltage via ADC and updates global cache.
  *        Should be called during the 10-second radio burst wake window.
  */
-inline float sampleBatteryVoltage() {
+inline float sampleBatteryVoltage(bool force = false) {
+    static uint32_t lastSampleMs = 0;
+    uint32_t now = millis();
+
+    // Only perform physical ADC conversion once every 60 seconds (~every 6 batches)
+    if (!force && lastSampleMs > 0 && (now - lastSampleMs < 60000)) {
+        return (g_cachedBatteryVoltage > 0.0f) ? g_cachedBatteryVoltage : 0.0f;
+    }
+    lastSampleMs = now;
+
 #if defined(VBAT_ADC_PIN) && defined(VBAT_CTRL_PIN)
     pinMode(VBAT_CTRL_PIN, OUTPUT);
     digitalWrite(VBAT_CTRL_PIN, LOW); // Active-LOW gate on Heltec V3/V4 P-MOSFET
@@ -110,8 +131,29 @@ inline float sampleBatteryVoltage() {
 
     return (g_cachedBatteryVoltage > 0.0f) ? g_cachedBatteryVoltage : 0.0f;
 #elif defined(VBAT_ADC_PIN)
-    uint32_t rawMv = analogReadMilliVolts(VBAT_ADC_PIN);
-    g_cachedBatteryVoltage = (float)rawMv * (2.0f / 1000.0f);
+    pinMode(VBAT_ADC_PIN, INPUT);
+    analogSetPinAttenuation(VBAT_ADC_PIN, ADC_11db);
+
+    // 4-sample averaging to smooth out ADC noise
+    uint32_t sumMv = 0;
+    for (int i = 0; i < 4; i++) {
+        sumMv += analogReadMilliVolts(VBAT_ADC_PIN);
+        delayMicroseconds(50);
+    }
+    uint32_t rawMv = sumMv / 4;
+
+    #ifndef VBAT_DIVIDER_RATIO
+    #define VBAT_DIVIDER_RATIO 2.0f
+    #endif
+
+    float measured = (float)rawMv * (VBAT_DIVIDER_RATIO / 1000.0f);
+
+    if (g_cachedBatteryVoltage <= 0.0f) {
+        g_cachedBatteryVoltage = measured;
+    } else {
+        g_cachedBatteryVoltage = 0.75f * g_cachedBatteryVoltage + 0.25f * measured; // Low-pass filter
+    }
+
     return g_cachedBatteryVoltage;
 #else
     g_cachedBatteryVoltage = 3.70f;
@@ -126,8 +168,8 @@ inline float getBatteryVoltage() {
     return (g_cachedBatteryVoltage > 0.0f) ? g_cachedBatteryVoltage : 3.70f;
 }
 
-inline uint16_t sampleBatteryMilliVolts() {
-    float v = sampleBatteryVoltage();
+inline uint16_t sampleBatteryMilliVolts(bool force = false) {
+    float v = sampleBatteryVoltage(force);
     return (uint16_t)(v * 1000.0f);
 }
 

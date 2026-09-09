@@ -6,19 +6,16 @@
 #include <WiFiUdp.h>
 #include "ITelemetryReceiver.h"
 #include "TelemetryPacket.h"
+#include "ReceiverContext.h"
 #include "NodeTracker.h"
-
-extern QueueHandle_t telemetryQueue;
-extern NodeTracker nodeTracker;
-extern volatile uint32_t udpRxCount;
+#include "IngestionPipeline.h"
 
 class UDPReceiver : public ITelemetryReceiver {
 public:
     explicit UDPReceiver(uint16_t port = 9876) : _port(port) {}
 
     void begin() override {
-        extern uint8_t egressModeConfig;
-        if (egressModeConfig == 0 || egressModeConfig == 3) {
+        if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BLE) {
             Serial.println(F("[UDP RECEIVER] Disabled in BLE/Serial mode (Wi-Fi radio OFF)."));
             return;
         }
@@ -42,24 +39,9 @@ public:
         char *line = strtok(buf, "\r\n");
         while (line != NULL) {
             if (strlen(line) > 10) {
-                udpRxCount++;
-                TelemetryItem item;
-                memset(&item, 0, sizeof(item));
-                item.rssi = rssi;
-                strncpy(item.protocol, "WIFI_UDP", sizeof(item.protocol) - 1);
-
+                udpRxCount = udpRxCount + 1;
                 uint8_t mac[6] = { remoteIP[0], remoteIP[1], remoteIP[2], remoteIP[3], 0x00, 0x00 };
-                memcpy(item.mac, mac, 6);
-
-                if (TelemetryItem::parseCsvLine(line, item)) {
-                    item.formatCsvLine();
-                } else {
-                    snprintf(item.node_id, sizeof(item.node_id), "IP_%d_%d_%d_%d", remoteIP[0], remoteIP[1], remoteIP[2], remoteIP[3]);
-                    snprintf(item.line, sizeof(item.line), "%s\n", line);
-                }
-
-                nodeTracker.recordPacket(item.node_id, item.mac, item.rssi, item.x, item.y, item.z, item.temp, item.vbat, "WIFI_UDP");
-                if (telemetryQueue) xQueueSend(telemetryQueue, &item, 0);
+                IngestionPipeline::ingestCsv(line, mac, rssi, "WIFI_UDP");
             }
             line = strtok(NULL, "\r\n");
         }
