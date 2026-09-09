@@ -38,9 +38,11 @@ class ExtAdvCallbacks : public NimBLEExtAdvertisingCallbacks {
 static ExtAdvCallbacks extAdvCallbacks;
 #endif
 
-BLEStream::BLEStream() : _initialized(false) {}
+BLEStream::BLEStream() : _initialized(false), _savedDeviceName("") {}
 
 void BLEStream::stopAdvertising() {
+    if (!NimBLEDevice::isInitialized()) return;
+
 #if CONFIG_BT_NIMBLE_EXT_ADV
     NimBLEExtAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
     if (pAdvertising) {
@@ -55,17 +57,40 @@ void BLEStream::stopAdvertising() {
 }
 
 void BLEStream::powerDownModem() {
+    if (deviceConnected) return; // Preserve active connection if central is connected
+
     stopAdvertising();
+
+#if defined(ESP_PLATFORM)
+    if (NimBLEDevice::isInitialized()) {
+        NimBLEDevice::deinit(true);
+        pServer = nullptr;
+        pTxCharacteristic = nullptr;
+    }
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        esp_bt_controller_disable();
+    }
+#endif
+    _initialized = false;
 }
 
 void BLEStream::powerUpModem(const String &deviceName) {
-    if (_initialized) return;
+    if (_initialized && NimBLEDevice::isInitialized()) return;
 
+    if (deviceName.length() > 0) {
+        _savedDeviceName = deviceName;
+    }
+
+#if defined(ESP_PLATFORM)
     if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
         esp_bt_controller_enable(ESP_BT_MODE_BLE);
     }
+#endif
 
-    NimBLEDevice::init(deviceName.c_str());
+    const char *nameToUse = (_savedDeviceName.length() > 0) ? _savedDeviceName.c_str() : "CREEK";
+    if (!NimBLEDevice::isInitialized()) {
+        NimBLEDevice::init(nameToUse);
+    }
     NimBLEDevice::setPower(BLEConfig::TX_POWER_DBM);
 
 #if CONFIG_BT_NIMBLE_EXT_ADV
@@ -86,7 +111,12 @@ void BLEStream::clearBatchAck() {
 }
 
 void BLEStream::begin(const String &deviceName) {
+    _savedDeviceName = deviceName;
     powerUpModem(deviceName);
+}
+
+bool BLEStream::isModemPowered() const {
+    return _initialized;
 }
 
 void BLEStream::notify(const char *data) {

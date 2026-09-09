@@ -65,7 +65,7 @@ public:
     /**
      * @brief Power up and re-initialize BLE modem and Coded PHY advertising.
      */
-    void powerUpModem(const String &deviceName);
+    void powerUpModem(const String &deviceName = "");
 
     /**
      * @brief Check if a central client is connected.
@@ -73,8 +73,14 @@ public:
      */
     bool isConnected() const;
 
+    /**
+     * @brief Check if BLE modem controller is currently powered up.
+     */
+    bool isModemPowered() const;
+
 private:
     bool _initialized;
+    String _savedDeviceName;
 };
 
 extern BLEStream bleStream;

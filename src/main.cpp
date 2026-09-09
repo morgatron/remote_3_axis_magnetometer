@@ -208,6 +208,10 @@ static bool isTxActive = false;
 static uint32_t txStartMs = 0;
 static uint8_t txRetryCount = 0;
 
+static bool isModemWarming = false;
+static uint32_t warmupStartMs = 0;
+const uint32_t BLE_WARMUP_MS = 150; // 150ms pre-burst warmup for RF PLL and baseband stabilization
+
 #ifndef DEBUG_BLE_TX
 #define DEBUG_BLE_TX 1 // Set to 0 (or pass -D DEBUG_BLE_TX=0 in platformio.ini) to disable TX debug prints
 #endif
@@ -227,6 +231,7 @@ void checkBleAckTask() {
                 setCpuFrequencyMhz(40);
             }
             isTxActive = false;
+            isModemWarming = false;
             if (acked) {
                 TX_DEBUG_PRINTF("[TX] Burst ACKED! Cleared %d samples.\n", lastSentCount);
                 txRetryCount = 0;
@@ -253,9 +258,19 @@ void checkBleBurstTransmission() {
         uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 18) ? batchSizeConfig : 10;
         uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
         uint16_t unacked = telemetryRingBuffer.getUnackedCount();
+        bool readyToSend = (unacked > 0 && (unacked >= targetBatchSize || !streaming));
 
-        if (unacked > 0 && (unacked >= targetBatchSize || !streaming) && (millis() >= nextBurstTxMs)) {
-            // Dynamically expand batch up to 18 samples if un-ACKed backlog exists
+        // Phase 1: Pre-burst Wakeup (150 ms lead time)
+        // Re-enables the BLE controller and RF PLL so oscillators stabilize before packet transmission
+        if (!isModemWarming && readyToSend && (millis() + BLE_WARMUP_MS >= nextBurstTxMs)) {
+            setCpuFrequencyMhz(80);
+            bleStream.powerUpModem(deviceID);
+            isModemWarming = true;
+            warmupStartMs = millis();
+        }
+
+        // Phase 2: Transmit Burst once target time is reached and stabilization period has completed
+        if (isModemWarming && (millis() >= nextBurstTxMs || (millis() - warmupStartMs >= BLE_WARMUP_MS))) {
             uint8_t countToPack = targetBatchSize;
             if (unacked > targetBatchSize) {
                 countToPack = min((uint16_t)18, unacked);
@@ -265,24 +280,26 @@ void checkBleBurstTransmission() {
             uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), countToPack);
             if (countToSend > 0) {
                 batch.status = (uint16_t)(sensor ? 0x004D4F : 0);
+                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during burst wakeup
 
-                // 1. Restore CPU to 80 MHz before enabling radio & sampling battery
-                setCpuFrequencyMhz(80);
-                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
-
-                // 2. Power up BLE modem and broadcast Coded PHY burst
-                bleStream.powerUpModem(deviceID);
                 bleStream.clearBatchAck();
                 bleStream.notifyBatchBinary(batch);
                 lastSentCount = countToSend;
 
                 // Drift-free periodic schedule on exact 10.0s grid
                 nextBurstTxMs += minBurstIntervalMs;
-                if (nextBurstTxMs <= millis()) {
+                if (nextBurstTxMs <= millis() + BLE_WARMUP_MS) {
                     nextBurstTxMs = millis() + minBurstIntervalMs;
                 }
                 txStartMs = millis();
                 isTxActive = true;
+                isModemWarming = false;
+            } else {
+                bleStream.powerDownModem();
+                if (outputMode == MODE_BLE) {
+                    setCpuFrequencyMhz(40);
+                }
+                isModemWarming = false;
             }
         }
     }
