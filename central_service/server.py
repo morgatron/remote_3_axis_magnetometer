@@ -301,6 +301,8 @@ async def ingest_sample(point: TelemetryPoint):
         "temp": point.temp,
         "vbat": point.vbat,
         "rssi": point.rssi,
+        "status_flags": point.status_flags,
+        "extra_json": point.extra_json,
         "sensor_model": point.sensor_model or "RM3100",
         "cycle_count": point.cycle_count or 200
     })
@@ -333,6 +335,8 @@ async def ingest_batch(batch: BatchTelemetry):
             "temp": p.temp,
             "vbat": p.vbat,
             "rssi": p.rssi,
+            "status_flags": p.status_flags,
+            "extra_json": p.extra_json,
             "sensor_model": p.sensor_model or "RM3100",
             "cycle_count": p.cycle_count or 200
         })
@@ -348,7 +352,7 @@ def list_nodes():
                n.sensor_model, COALESCE(n.cycle_count, 200) as cycle_count,
                n.baseline_x, n.baseline_y, n.baseline_z, n.notes,
                COALESCE((SELECT COUNT(*) FROM telemetry WHERE node_id = n.node_id), 0) AS record_count,
-               t.x, t.y, t.z, t.temp, t.vbat, t.rssi, t.status_flags
+               t.x, t.y, t.z, t.temp, t.vbat, t.rssi, t.status_flags, t.extra_json
         FROM nodes n
         LEFT JOIN telemetry t ON t.id = (
             SELECT id FROM telemetry WHERE node_id = n.node_id ORDER BY timestamp DESC LIMIT 1

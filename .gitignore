@@ -40,3 +40,4 @@ provision_receiver_config.json
 .cloudflared/
 *.token
 *.lck
+*.log

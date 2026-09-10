@@ -313,9 +313,15 @@
             <div class="logo-icon">M</div>
             <h1>Magnetometer Regional Network</h1>
         </div>
-        <div class="status-badge" id="net-status">
-            <div class="pulse-dot"></div>
-            <span id="status-text">Connecting...</span>
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div class="status-badge" id="gw-status" style="display: none; border-color: rgba(56, 189, 248, 0.5); background: rgba(15, 23, 42, 0.8);">
+                <span style="font-size: 0.85rem;">⚡</span>
+                <span id="gw-text">GW: --</span>
+            </div>
+            <div class="status-badge" id="net-status">
+                <div class="pulse-dot"></div>
+                <span id="status-text">Connecting...</span>
+            </div>
         </div>
     </header>
 
@@ -336,8 +342,11 @@
 
             <!-- Right Side: Live & Historical Timeseries Chart -->
             <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title" id="selected-node-title">Telemetry Viewer</span>
+                <div class="panel-header" style="flex-wrap: wrap; gap: 0.5rem;">
+                    <div style="display: flex; flex-direction: column; gap: 2px;">
+                        <span class="panel-title" id="selected-node-title">Telemetry Viewer</span>
+                        <span id="selected-node-quickstats" style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;"></span>
+                    </div>
                     <div class="chart-controls">
                         <!-- Time Range Selector -->
                         <select id="time-range-selector" onchange="onTimeRangeChange()">
@@ -352,6 +361,8 @@
                             <optgroup label="Single Node View">
                                 <option value="all">3-Axis Vectors (X, Y, Z)</option>
                                 <option value="mag">Total Magnitude (|B|)</option>
+                                <option value="vbat">Battery Voltage (Vbat mV)</option>
+                                <option value="temp">Temperature (°C)</option>
                                 <option value="rssi">Signal Strength (RSSI dBm)</option>
                                 <option value="x">X Axis Only</option>
                                 <option value="y">Y Axis Only</option>
@@ -359,6 +370,8 @@
                             </optgroup>
                             <optgroup label="Multi-Node Overlay Comparison">
                                 <option value="overlay_mag">Overlay: All Nodes (|B| Magnitude)</option>
+                                <option value="overlay_vbat">Overlay: All Nodes (Battery mV)</option>
+                                <option value="overlay_temp">Overlay: All Nodes (Temperature °C)</option>
                                 <option value="overlay_bz">Overlay: All Nodes (Bz Field)</option>
                                 <option value="overlay_rssi">Overlay: All Nodes (RSSI Signal)</option>
                             </optgroup>
@@ -458,7 +471,9 @@
                         { label: 'By (nT)', borderColor: '#a855f7', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                         { label: 'Bz (nT)', borderColor: '#22c55e', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                         { label: 'Magnitude (nT)', borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
-                        { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
+                        { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                        { label: 'Battery (mV)', borderColor: '#10b981', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                        { label: 'Temperature (°C)', borderColor: '#f97316', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
                     ]
                 },
                 options: {
@@ -529,7 +544,9 @@
                         x: r.x_nT !== undefined ? r.x_nT : r.x,
                         y: r.y_nT !== undefined ? r.y_nT : r.y,
                         z: r.z_nT !== undefined ? r.z_nT : r.z,
-                        rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi
+                        rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi,
+                        vbat: r.vbat_mv !== undefined ? r.vbat_mv : r.vbat,
+                        temp: r.temp_c !== undefined ? r.temp_c : r.temp
                     };
                 });
 
@@ -559,7 +576,9 @@
                             x: r.x_nT !== undefined ? r.x_nT : r.x,
                             y: r.y_nT !== undefined ? r.y_nT : r.y,
                             z: r.z_nT !== undefined ? r.z_nT : r.z,
-                            rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi
+                            rssi: r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi,
+                            vbat: r.vbat_mv !== undefined ? r.vbat_mv : r.vbat,
+                            temp: r.temp_c !== undefined ? r.temp_c : r.temp
                         };
                     });
                 } catch (e) {
@@ -602,6 +621,10 @@
                         datasetData = pts.map(s => s.z);
                     } else if (mode === 'overlay_rssi') {
                         datasetData = pts.map(s => s.rssi !== undefined && s.rssi !== null ? s.rssi : null);
+                    } else if (mode === 'overlay_vbat') {
+                        datasetData = pts.map(s => s.vbat !== undefined && s.vbat !== null ? s.vbat : null);
+                    } else if (mode === 'overlay_temp') {
+                        datasetData = pts.map(s => s.temp !== undefined && s.temp !== null ? s.temp : null);
                     }
 
                     return {
@@ -618,14 +641,16 @@
                 return;
             }
 
-            // Single Node Standard Mode: restore default 5 datasets if replaced by overlay
-            if (chart.data.datasets.length !== 5 || !chart.data.datasets[0].label.startsWith('Bx')) {
+            // Single Node Standard Mode: restore default 7 datasets if replaced by overlay
+            if (chart.data.datasets.length !== 7 || !chart.data.datasets[0].label.startsWith('Bx')) {
                 chart.data.datasets = [
                     { label: 'Bx (nT)', borderColor: '#38bdf8', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                     { label: 'By (nT)', borderColor: '#a855f7', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                     { label: 'Bz (nT)', borderColor: '#22c55e', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [] },
                     { label: 'Magnitude (nT)', borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
-                    { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
+                    { label: 'RSSI (dBm)', borderColor: '#f59e0b', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                    { label: 'Battery (mV)', borderColor: '#10b981', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true },
+                    { label: 'Temperature (°C)', borderColor: '#f97316', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, data: [], hidden: true }
                 ];
             }
 
@@ -634,8 +659,54 @@
             chart.data.datasets[2].hidden = (mode !== 'all' && mode !== 'z');
             chart.data.datasets[3].hidden = (mode !== 'mag');
             chart.data.datasets[4].hidden = (mode !== 'rssi');
+            chart.data.datasets[5].hidden = (mode !== 'vbat');
+            chart.data.datasets[6].hidden = (mode !== 'temp');
             
             refreshChartForNode();
+        }
+
+        function updateGatewayStatus(extraJson) {
+            if (!extraJson) return;
+            try {
+                const extra = typeof extraJson === 'string' ? JSON.parse(extraJson) : extraJson;
+                if (extra.gw_vbat_mv !== undefined && extra.gw_vbat_mv !== null) {
+                    const gwEl = document.getElementById('gw-status');
+                    const gwText = document.getElementById('gw-text');
+                    if (gwEl && gwText) {
+                        const gwId = extra.gw_id || 'MAG_GATEWAY';
+                        const gwV = (extra.gw_vbat_mv / 1000.0).toFixed(2);
+                        let gwColor = '#22c55e';
+                        if (gwV < 3.5) gwColor = '#ef4444';
+                        else if (gwV < 3.7) gwColor = '#f59e0b';
+                        gwEl.style.display = 'inline-flex';
+                        gwEl.style.borderColor = gwColor;
+                        gwText.innerHTML = `⚡ GW <b>${gwId}</b>: <span style="color:${gwColor}; font-weight:600;">${gwV}V</span>`;
+                    }
+                }
+            } catch (e) {}
+        }
+
+        function updateSelectedNodeQuickStats() {
+            const el = document.getElementById('selected-node-quickstats');
+            if (!el) return;
+            if (!selectedNodeId || !nodesData[selectedNodeId]) {
+                el.innerHTML = '';
+                return;
+            }
+            const n = nodesData[selectedNodeId];
+            const vbatV = (n.vbat !== undefined && n.vbat !== null) ? (n.vbat / 1000.0).toFixed(2) : null;
+            const vbatStr = vbatV ? `${vbatV}V (${n.vbat} mV)` : 'N/A';
+            let vbatColor = 'var(--text-main)';
+            if (vbatV) {
+                if (vbatV >= 3.7) vbatColor = '#22c55e';
+                else if (vbatV >= 3.5) vbatColor = '#f59e0b';
+                else vbatColor = '#ef4444';
+            }
+            const rssiStr = (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'N/A';
+            const tempStr = (n.temp !== undefined && n.temp !== null) ? `${n.temp.toFixed(1)}°C` : 'N/A';
+            const statusStr = n.status_flags || 'N/A';
+
+            el.innerHTML = `🔋 <b>Batt:</b> <span style="color:${vbatColor}; font-weight:600;">${vbatStr}</span> &nbsp;|&nbsp; 📶 <b>RSSI:</b> ${rssiStr} &nbsp;|&nbsp; 🌡️ <b>Temp:</b> ${tempStr} &nbsp;|&nbsp; ⚙️ <b>Status:</b> <code>${statusStr}</code>`;
         }
 
         function renderNodeList() {
@@ -662,6 +733,15 @@
                 const mockBadge = isMock ? '<span style="background:#f59e0b;color:#000;font-size:0.65rem;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:6px;vertical-align:middle;">MOCK</span>' : '';
                 const displayName = n.name && n.name !== n.node_id ? `${n.name} <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">(${n.node_id})</span>` : n.node_id;
                 
+                const vbatV = (n.vbat !== undefined && n.vbat !== null) ? (n.vbat / 1000.0).toFixed(2) : null;
+                const vbatStr = vbatV ? `${vbatV}V` : (n.vbat ? `${n.vbat} mV` : 'N/A');
+                let vbatColor = 'var(--text-muted)';
+                if (vbatV) {
+                    if (vbatV >= 3.7) vbatColor = '#22c55e';
+                    else if (vbatV >= 3.5) vbatColor = '#f59e0b';
+                    else vbatColor = '#ef4444';
+                }
+
                 let timeStr = 'N/A';
                 if (n.last_seen) {
                     const d = new Date(n.last_seen);
@@ -674,8 +754,9 @@
                             <span class="node-name">${displayName}${mockBadge} ${hasCoords ? '📍' : ''}</span>
                             <span class="node-time">${timeStr}</span>
                         </div>
-                        <div class="node-metrics">
+                        <div class="node-metrics" style="flex-wrap: wrap; gap: 0.4rem 0.75rem;">
                             <span>|B|: <span class="metric-val">${mag} nT</span></span>
+                            <span>Batt: <span class="metric-val" style="color: ${vbatColor}; font-weight:600;">${vbatStr}</span></span>
                             <span>RSSI: <span class="metric-val">${n.rssi !== undefined && n.rssi !== null ? n.rssi + ' dBm' : 'N/A'}</span></span>
                         </div>
                     </div>
@@ -697,6 +778,7 @@
                 document.getElementById('selected-node-title').innerText = `Telemetry Viewer: ${titleStr}`;
             }
             renderNodeList();
+            updateSelectedNodeQuickStats();
             updateMapMarkers();
 
             // If node has marker on map, open its popup
@@ -730,7 +812,9 @@
                         const y = r.y_nT !== undefined ? r.y_nT : r.y;
                         const z = r.z_nT !== undefined ? r.z_nT : r.z;
                         const rssi = r.rssi_dbm !== undefined ? r.rssi_dbm : r.rssi;
-                        return { timeLabel, x, y, z, rssi };
+                        const vbat = r.vbat_mv !== undefined ? r.vbat_mv : r.vbat;
+                        const temp = r.temp_c !== undefined ? r.temp_c : r.temp;
+                        return { timeLabel, x, y, z, rssi, vbat, temp };
                     });
                     if (!timeSeriesStore[nodeId] || timeSeriesStore[nodeId].length < loaded.length) {
                         timeSeriesStore[nodeId] = loaded;
@@ -756,21 +840,26 @@
             const storeToUse = isHistorical ? historicalStore : timeSeriesStore;
             const series = storeToUse[selectedNodeId] || [];
 
-            if (chart.data.datasets.length === 5 && chart.data.datasets[0].label.startsWith('Bx')) {
+            if (chart.data.datasets.length === 7 && chart.data.datasets[0].label.startsWith('Bx')) {
                 chart.data.labels = series.map(s => s.timeLabel);
                 chart.data.datasets[0].data = series.map(s => s.x);
                 chart.data.datasets[1].data = series.map(s => s.y);
                 chart.data.datasets[2].data = series.map(s => s.z);
-                chart.data.datasets[3].data = series.map(s => Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z));
+                chart.data.datasets[3].data = series.map(s => (s.x != null && s.y != null && s.z != null) ? Math.sqrt(s.x*s.x + s.y*s.y + s.z*s.z) : null);
                 chart.data.datasets[4].data = series.map(s => s.rssi !== undefined && s.rssi !== null ? s.rssi : null);
+                chart.data.datasets[5].data = series.map(s => s.vbat !== undefined && s.vbat !== null ? s.vbat : null);
+                chart.data.datasets[6].data = series.map(s => s.temp !== undefined && s.temp !== null ? s.temp : null);
 
                 chart.data.datasets[0].hidden = (mode !== 'all' && mode !== 'x');
                 chart.data.datasets[1].hidden = (mode !== 'all' && mode !== 'y');
                 chart.data.datasets[2].hidden = (mode !== 'all' && mode !== 'z');
                 chart.data.datasets[3].hidden = (mode !== 'mag');
                 chart.data.datasets[4].hidden = (mode !== 'rssi');
+                chart.data.datasets[5].hidden = (mode !== 'vbat');
+                chart.data.datasets[6].hidden = (mode !== 'temp');
                 chart.update();
             }
+            updateSelectedNodeQuickStats();
         }
 
         function pushTelemetryData(pt) {
@@ -792,8 +881,14 @@
                 temp: pt.temp,
                 vbat: pt.vbat,
                 rssi: pt.rssi,
+                status_flags: pt.status_flags || existing.status_flags,
+                extra_json: pt.extra_json || existing.extra_json,
                 last_seen: pt.timestamp || new Date().toISOString()
             };
+
+            if (pt.extra_json) {
+                updateGatewayStatus(pt.extra_json);
+            }
 
             if (!timeSeriesStore[nodeId]) {
                 timeSeriesStore[nodeId] = [];
@@ -803,7 +898,9 @@
                 x: pt.x,
                 y: pt.y,
                 z: pt.z,
-                rssi: pt.rssi
+                rssi: pt.rssi,
+                vbat: pt.vbat,
+                temp: pt.temp
             });
 
             if (timeSeriesStore[nodeId].length > maxDataPoints) {
@@ -829,6 +926,9 @@
                         ...(nodesData[n.node_id] || {}),
                         ...n
                     };
+                    if (n.extra_json) {
+                        updateGatewayStatus(n.extra_json);
+                    }
                 });
                 renderNodeList();
                 
@@ -899,12 +999,24 @@
                 const bz = n.z !== undefined ? n.z : 0;
                 const mag = Math.sqrt(bx*bx + by*by + bz*bz).toFixed(1);
                 const elevStr = (n.elevation_m !== undefined && n.elevation_m !== null) ? `${n.elevation_m}m` : 'N/A';
-                const vbatStr = n.vbat ? `${n.vbat} mV` : 'N/A';
+                const vbatV = (n.vbat !== undefined && n.vbat !== null) ? (n.vbat / 1000.0).toFixed(2) : null;
+                const vbatStr = vbatV ? `${vbatV}V (${n.vbat} mV)` : 'N/A';
                 const rssiStr = (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'N/A';
+                const tempStr = (n.temp !== undefined && n.temp !== null) ? `${n.temp.toFixed(1)}°C` : 'N/A';
                 const statusInt = n.status_flags ? parseInt(n.status_flags, 16) : 0;
                 const isMock = ((statusInt & 0x8000) !== 0) || (String(n.status_flags || '').toUpperCase().includes('MOCK'));
                 const mockBadge = isMock ? '<span style="background:#f59e0b;color:#000;font-size:0.65rem;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:6px;vertical-align:middle;">MOCK</span>' : '';
                 const stationName = n.name || n.node_id;
+
+                let gwVbatStr = '';
+                if (n.extra_json) {
+                    try {
+                        const extra = typeof n.extra_json === 'string' ? JSON.parse(n.extra_json) : n.extra_json;
+                        if (extra.gw_vbat_mv) {
+                            gwVbatStr = `<div><b>GW Batt:</b> ${(extra.gw_vbat_mv / 1000.0).toFixed(2)}V</div>`;
+                        }
+                    } catch (e) {}
+                }
 
                 const markerColor = isSelected ? '#a855f7' : (isOnline ? '#22c55e' : '#f59e0b');
                 const markerRadius = isSelected ? 12 : 8;
@@ -920,8 +1032,10 @@
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.8rem; margin-bottom: 8px;">
                             <div><b>|B|:</b> ${mag} nT</div>
                             <div><b>Bz:</b> ${typeof bz === 'number' ? bz.toFixed(1) : bz} nT</div>
-                            <div><b>Battery:</b> ${vbatStr}</div>
+                            <div><b>Node Batt:</b> ${vbatStr}</div>
                             <div><b>RSSI:</b> ${rssiStr}</div>
+                            <div><b>Temp:</b> ${tempStr}</div>
+                            ${gwVbatStr}
                         </div>
                         ${n.notes ? `<div style="font-size: 0.75rem; color: var(--text-muted); font-style: italic; margin-bottom: 6px;">${n.notes}</div>` : ''}
                         <button onclick="selectNode('${n.node_id}')" style="width: 100%; padding: 4px 8px; font-size: 0.8rem; border-radius: 4px; background: linear-gradient(135deg, var(--accent-blue), #0284c7);">
