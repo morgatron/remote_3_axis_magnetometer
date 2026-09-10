@@ -101,6 +101,7 @@ typedef struct __attribute__((packed)) {
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
     int8_t        rssi;                 // Signal strength from node to gateway in dBm
+    uint16_t      gw_vbat_mv;           // Gateway battery voltage in mV
     CompactSample samples[18];          // Array of up to 18 samples (x, y, z in nT)
 } GatewayAdvPacket;
 

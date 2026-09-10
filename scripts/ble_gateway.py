@@ -88,13 +88,24 @@ class BleGatewayScanner:
         rssi = struct.unpack_from("<b", raw, 26)[0]
         vbat = vbat_mv / 1000.0
 
+        # Gateway battery voltage (offset 27 when 29-byte header is present)
+        gw_vbat_mv = struct.unpack_from("<H", raw, 27)[0] if len(raw) >= 29 else 0
+        gw_vbat = gw_vbat_mv / 1000.0 if gw_vbat_mv > 0 else 0.0
+        header_size = 29 if len(raw) >= 29 else 27
+
         if sample_count == 0:
             # Heartbeat packet from gateway (no sensor samples)
+            gw_disp_vbat = gw_vbat if gw_vbat > 0 else vbat
+            gw_vbat_str = f"{gw_disp_vbat:.2f}V" if gw_disp_vbat > 0 else "--"
+            print(f">>> [GATEWAY HEARTBEAT] ID: '{node_id}' | Gateway Battery: {gw_vbat_str} | Seq: {seq}")
             return
+
+        gw_vbat_str = f" | GW Battery: {gw_vbat:.2f}V" if gw_vbat > 0 else ""
+        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}' ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str})")
 
         # Unpack each sample in the batch
         for i in range(sample_count):
-            offset = 27 + i * 12
+            offset = header_size + i * 12
             if offset + 12 > len(raw):
                 break
             x, y, z = struct.unpack_from("<fff", raw, offset)

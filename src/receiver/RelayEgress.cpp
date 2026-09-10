@@ -1,6 +1,7 @@
 #include "RelayEgress.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include "board_config.h"
 #include "BLEEgress.h"
 #include "PowerManager.h"
 
@@ -54,6 +55,7 @@ void RelayEgress::initAdvPacket(GatewayAdvPacket &advPkt, const TelemetryItem &i
     advPkt.status = (uint16_t)item.status;
     advPkt.vbat_mv = (uint16_t)(item.vbat * 1000.0f);
     advPkt.rssi = (int8_t)item.rssi;
+    advPkt.gw_vbat_mv = getBatteryMilliVolts();
     advPkt.samples[0].x_nT = item.x;
     advPkt.samples[0].y_nT = item.y;
     advPkt.samples[0].z_nT = item.z;

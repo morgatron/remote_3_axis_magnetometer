@@ -62,10 +62,10 @@ void BLEEgress::broadcast(const GatewayAdvPacket &pkt, uint32_t durationMs) {
 
 void BLEEgress::poll() {
     if (!_initialized || !NimBLEDevice::isInitialized()) return;
-    if (nodeTracker.getNodeCount() > 0) return; // In active tracking mode, telemetry bursts replace heartbeats
     uint32_t now = millis();
-    // Send a periodic heartbeat beacon if quiet for >= 5000 ms
-    if (now - _lastBroadcastMs >= 5000) {
+    // Send a periodic heartbeat beacon if quiet for >= 10000 ms (or 5000 ms if no nodes ever seen)
+    uint32_t quietTimeoutMs = (nodeTracker.getNodeCount() > 0) ? 10000 : 5000;
+    if (now - _lastBroadcastMs >= quietTimeoutMs) {
         GatewayAdvPacket hb;
         memset(&hb, 0, sizeof(hb));
         hb.company_id = 0xFFFF;
@@ -80,6 +80,7 @@ void BLEEgress::poll() {
         hb.status = 0x0001;
         hb.vbat_mv = getBatteryMilliVolts();
         hb.rssi = 0;
+        hb.gw_vbat_mv = getBatteryMilliVolts();
 
         broadcast(hb);
     }
