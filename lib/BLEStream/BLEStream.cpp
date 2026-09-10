@@ -60,6 +60,7 @@ void BLEStream::powerDownModem() {
     if (deviceConnected) return; // Preserve active connection if central is connected
 
     stopAdvertising();
+    delay(50); // Grace period for Bluetooth Link Layer to settle to standby
 
 #if defined(ESP_PLATFORM)
     if (NimBLEDevice::isInitialized()) {

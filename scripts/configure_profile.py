@@ -176,16 +176,22 @@ def flash_firmware(env: str, port: str):
     print(f"[SUCCESS] Environment '{env}' flashed successfully.\n")
 
 
-def configure_device(port: str, commands: list):
+def configure_device(port: str, commands: list, is_mock: bool = False):
     print(f"[*] Connecting to {port} @ 921600 baud to configure parameters...")
-    time.sleep(1.5)  # Wait for USB reset after flashing
+    time.sleep(2.0)  # Wait for USB reset after flashing
     try:
-        s = serial.Serial(port, 921600, timeout=1.0)
+        s = serial.Serial()
+        s.port = port
+        s.baudrate = 921600
+        s.timeout = 1.0
+        s.dtr = False
+        s.rts = False
+        s.open()
     except Exception as e:
         print(f"[ERROR] Unable to open serial port {port}: {e}")
         sys.exit(1)
 
-    time.sleep(0.5)
+    time.sleep(1.0)
     s.reset_input_buffer()
     s.write(b"\n")
     time.sleep(0.3)
@@ -193,10 +199,24 @@ def configure_device(port: str, commands: list):
     for cmd in commands:
         print(f"  -> Sending: {cmd}")
         s.write((cmd + "\n").encode("utf-8"))
-        time.sleep(0.3)
+        time.sleep(0.35)
 
-    time.sleep(0.8)
+    time.sleep(1.0)
     response = s.read_all().decode("utf-8", errors="replace")
+
+    # If physical sensor was requested but response indicates MOCK or failure, retry SENSOR command
+    if not is_mock and any(c.startswith("SENSOR ") and not "MOCK" in c for c in commands):
+        target_sensor_cmd = [c for c in commands if c.startswith("SENSOR ")][0]
+        if "failed initialization" in response or "MOCK_SENSOR_ACTIVE" in response or "Sensor: Mock" in response:
+            print(f"\n[WARNING] Sensor initialization reported failure on initial probe. Retrying '{target_sensor_cmd}'...")
+            time.sleep(0.5)
+            s.write((target_sensor_cmd + "\n").encode("utf-8"))
+            time.sleep(0.5)
+            s.write(b"SAVE\nSTATUS\n")
+            time.sleep(1.0)
+            retry_resp = s.read_all().decode("utf-8", errors="replace")
+            response += "\n--- Retry Output ---\n" + retry_resp
+
     s.close()
 
     print("\n--- Device Serial Output ---")
@@ -204,6 +224,12 @@ def configure_device(port: str, commands: list):
         if line.strip():
             print(f"  {line}")
     print("----------------------------\n")
+
+    if not is_mock and any(c.startswith("SENSOR ") and not "MOCK" in c for c in commands):
+        if "MOCK_SENSOR_ACTIVE" in response or "Sensor: Mock" in response:
+            print("\n[ERROR] Device is still running in MOCK mode! Check hardware seating and power.")
+        else:
+            print("\n[SUCCESS] Physical sensor successfully verified active on hardware.")
 
 
 def print_power_summary(profile_name: str):
@@ -251,6 +277,7 @@ def main():
     if args.mock and profile["role"] == "sensor":
         commands = [c if not c.startswith("SENSOR ") else "SENSOR MOCK" for c in commands]
         commands = [c if not c.startswith("DOWNSAMPLE ") else "DOWNSAMPLE 75" for c in commands]
+        print("[NOTICE] Configuring device with --mock (synthetic test data).")
 
     print("\n" + "=" * 80)
     print(f"  CONFIGURING TARGET: [{args.profile}] on port {port}")
@@ -259,7 +286,7 @@ def main():
     if not args.no_flash:
         flash_firmware(profile["pio_env"], port)
 
-    configure_device(port, commands)
+    configure_device(port, commands, is_mock=args.mock)
     print_power_summary(args.profile)
 
 

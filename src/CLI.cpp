@@ -125,15 +125,31 @@ void CLI::handleCommand(String cmd) {
             sensor = &sensorMock;
             _current_rate = 0x95; // Synthetic Mock default rate 75 Hz
         }
+        extern void IRAM_ATTR drdyISR();
         sensorTypeConfig = newType;
         _sensor = sensor;
 
         Serial.print("Active sensor set to: ");
         Serial.println(_sensor->getSensorName());
 
+        // Ensure SPI bus is active
+        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
+        pinMode(DRDY_PIN, INPUT_PULLUP);
+
+        if (newType == 2) {
+            detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
+        }
+
         if (!sensor->begin()) {
             Serial.println("Warning: Selected sensor failed initialization!");
         } else {
+            if (newType == 1) {
+                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
+            } else if (newType == 0) {
+                static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
+            }
             sensor->setContinuousMode(true, _current_rate);
             Serial.println("Sensor initialized and continuous mode started.");
         }

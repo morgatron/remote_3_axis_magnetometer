@@ -54,6 +54,11 @@ String deviceID = "";
 
 void configurePowerManagement() {
 #if defined(ESP_PLATFORM)
+#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
+    // ESP32-C6 Bluetooth baseband & hardware encryption controller require active PLL (minimum 80 MHz)
+    setCpuFrequencyMhz(80);
+    Serial.printf("[POWER] ESP32-C6 Low-Power Mode: CPU @ %d MHz (PLL active, Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
+#else
     if (outputMode == MODE_BLE) {
         setCpuFrequencyMhz(40);
         Serial.printf("[POWER] Low-Power BLE Mode: CPU @ %d MHz (Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
@@ -61,6 +66,7 @@ void configurePowerManagement() {
         setCpuFrequencyMhz(80);
         Serial.printf("[POWER] CPU Frequency set to %d MHz (80MHz APB retained, zero SPI latency).\r\n", getCpuFrequencyMhz());
     }
+#endif
 #endif
 }
 
@@ -225,11 +231,13 @@ const uint32_t BLE_WARMUP_MS = 150; // 150ms pre-burst warmup for RF PLL and bas
 void checkBleAckTask() {
     if (isTxActive) {
         bool acked = bleStream.isBatchAcked();
-        if ((millis() - txStartMs >= 300 && acked) || (millis() - txStartMs >= 1000)) {
+        if ((millis() - txStartMs >= 300 && acked) || (millis() - txStartMs >= 1100)) {
             bleStream.powerDownModem();
+#if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
             if (outputMode == MODE_BLE) {
                 setCpuFrequencyMhz(40);
             }
+#endif
             isTxActive = false;
             isModemWarming = false;
             if (acked) {
@@ -296,9 +304,11 @@ void checkBleBurstTransmission() {
                 isModemWarming = false;
             } else {
                 bleStream.powerDownModem();
+#if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
                 if (outputMode == MODE_BLE) {
                     setCpuFrequencyMhz(40);
                 }
+#endif
                 isModemWarming = false;
             }
         }
@@ -476,41 +486,83 @@ void setup() {
 
     loadSettings();
 
-    if (sensorTypeConfig == 2) {
+    // ALWAYS initialize SPI bus and DRDY pin regardless of initial configured sensor
+    Serial.println("Initializing SPI Bus...");
+    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
+    pinMode(DRDY_PIN, INPUT_PULLUP);
+
+    if (sensorTypeConfig == 1) {
+        Serial.println("Configured sensor: FLC100-ADS131E08. Probing hardware...");
+        bool found = false;
+        for (int retry = 0; retry < 5 && !found; retry++) {
+            if (sensorFLC100.begin()) {
+                found = true;
+                break;
+            }
+            delay(150);
+        }
+        if (found) {
+            sensor = &sensorFLC100;
+            static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
+            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
+            Serial.println("Sensor initialized: FLC100-ADS131E08");
+        } else {
+            Serial.println("[ERROR] Physical FLC100 did not respond! Falling back to MOCK for this session.");
+            sensor = &sensorMock;
+            sensor->begin();
+        }
+    } else if (sensorTypeConfig == 0) {
+        Serial.println("Configured sensor: RM3100. Probing hardware...");
+        bool found = false;
+        for (int retry = 0; retry < 5 && !found; retry++) {
+            if (sensorRM3100.begin()) {
+                found = true;
+                break;
+            }
+            delay(150);
+        }
+        if (found) {
+            sensor = &sensorRM3100;
+            static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
+            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
+            Serial.println("Sensor initialized: RM3100");
+        } else {
+            Serial.println("[ERROR] Physical RM3100 did not respond! Falling back to MOCK for this session.");
+            sensor = &sensorMock;
+            sensor->begin();
+        }
+    } else if (sensorTypeConfig == 2) {
         sensor = &sensorMock;
         sensor->begin();
         Serial.println("[MOCK MODE] Explicit Synthetic Sensor Mode Active (Range Testing)");
         Serial.println("Status Header: 0x80MOCK");
     } else {
-        Serial.println("Initializing SPI Bus...");
-        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-        pinMode(DRDY_PIN, INPUT_PULLUP);
-
         Serial.println("Auto-probing physical sensor hardware...");
         bool found = false;
-
-        for (int retry = 0; retry < 3 && !found; retry++) {
-            if (sensorRM3100.begin()) {
-                sensor = &sensorRM3100;
-                sensorTypeConfig = 0;
-                found = true;
-                Serial.println("Auto-detected sensor: RM3100");
-                break;
-            } else if (sensorFLC100.begin()) {
+        for (int retry = 0; retry < 5 && !found; retry++) {
+            if (sensorFLC100.begin()) {
                 sensor = &sensorFLC100;
                 sensorTypeConfig = 1;
                 found = true;
+                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
                 Serial.println("Auto-detected sensor: FLC100-ADS131E08");
+                saveSettings();
+                break;
+            } else if (sensorRM3100.begin()) {
+                sensor = &sensorRM3100;
+                sensorTypeConfig = 0;
+                found = true;
+                static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
+                Serial.println("Auto-detected sensor: RM3100");
+                saveSettings();
                 break;
             }
-            delay(100);
+            delay(150);
         }
 
-        if (found) {
-            saveSettings();
-            // Attach DRDY interrupt with appropriate edge polarity: RM3100 = RISING (Active HIGH), FLC100 = FALLING (Active LOW)
-            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
-        } else {
+        if (!found) {
             Serial.print("[SENSOR NOTICE] No physical SPI sensor detected. Falling back to Synthetic MOCK mode.\r\n");
             Serial.print("[HINT] Connect RM3100 or FLC100-ADS131E08 and reboot, or send 'SENSOR RM3100' / 'SENSOR FLC100'.\r\n");
             sensor = &sensorMock;
@@ -523,20 +575,12 @@ void setup() {
     Serial.println(sensor->getSensorName());
     Serial.println(sensor->getStatusString());
 
-    // Sensor specific setup
-    if (sensorTypeConfig == 0) {
-        static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
-    } else if (sensorTypeConfig == 1) {
-        // Set calibration: VREF = 2.4V (standard for 3.3V systems), Sensitivity = 20.0 uV/nT, Gain = 1
-        static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
-    }
-
     // Resume continuous mode with saved rate
     sensor->setContinuousMode(true, current_rate);
 
     // Create high-priority task for immediate ISR-notified ADC sampling (Pinned to Core 1 to isolate from WiFi on Core 0)
 #if CONFIG_FREERTOS_UNICORE
-    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 0);
+    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, 3, &adcTaskHandle, 0);
 #else
     xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 1);
 #endif
