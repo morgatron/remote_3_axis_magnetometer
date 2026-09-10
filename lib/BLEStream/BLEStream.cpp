@@ -63,9 +63,7 @@ void BLEStream::powerDownModem() {
 
 #if defined(ESP_PLATFORM)
     if (NimBLEDevice::isInitialized()) {
-        NimBLEDevice::deinit(true);
-        pServer = nullptr;
-        pTxCharacteristic = nullptr;
+        NimBLEDevice::deinit(false);
     }
     if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
         esp_bt_controller_disable();
