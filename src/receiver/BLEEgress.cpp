@@ -1,5 +1,6 @@
 #include "BLEEgress.h"
 #include <NimBLEDevice.h>
+#include "board_config.h"
 #include "PowerManager.h"
 #include "ReceiverContext.h"
 #include "NodeTracker.h"
@@ -77,7 +78,7 @@ void BLEEgress::poll() {
         hb.sample_interval_ms = 1000;
         hb.sample_count = 0; // 0 samples indicates idle/heartbeat
         hb.status = 0x0001;
-        hb.vbat_mv = 0;
+        hb.vbat_mv = getBatteryMilliVolts();
         hb.rssi = 0;
 
         broadcast(hb);

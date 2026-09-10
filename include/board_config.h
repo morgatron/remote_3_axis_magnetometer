@@ -51,7 +51,7 @@
 #define LED_PIN      8   // Blue User LED on ESP32-C3 Supermini (Active-LOW)
 #define LED_ON       LOW
 #define LED_OFF      HIGH
-#define VBAT_ADC_PIN 0   // GPIO0 (ADC1_CH0) for Battery Voltage Divider
+#define VBAT_ADC_PIN 4   // GPIO4 (ADC1_CH4) for Battery Voltage Divider
 #define VBAT_DIVIDER_RATIO 2.0f // Factor of 2 voltage divider
 
 #else

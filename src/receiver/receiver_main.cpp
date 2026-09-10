@@ -151,8 +151,13 @@ void setup() {
 #if defined(ESP_PLATFORM)
     setCpuFrequencyMhz(80); // Scale CPU frequency down to 80 MHz to save ~28 mA
 #endif
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     pinMode(0, INPUT_PULLUP); // PRG / USER button on Heltec V4 for OLED wake
+#endif
     lastOledActivityMs = millis();
+
+    // Sample initial battery voltage
+    sampleBatteryVoltage(true);
 
     Serial.begin(921600);
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3) || defined(ARDUINO_USB_CDC_ON_BOOT)
@@ -206,6 +211,7 @@ void setup() {
 }
 
 void loop() {
+#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     // Check USER/PRG Button Press (GPIO 0) to wake OLED screen
     static bool lastBtnState = HIGH;
     bool btnState = digitalRead(0);
@@ -217,6 +223,14 @@ void loop() {
         }
     }
     lastBtnState = btnState;
+#endif
+
+    // Periodic battery voltage sampling (updates cache every 30-60s)
+    static uint32_t lastVbatSampleMs = 0;
+    if (millis() - lastVbatSampleMs >= 30000) {
+        lastVbatSampleMs = millis();
+        sampleBatteryVoltage();
+    }
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     static uint32_t lastReceiverOledMs = 0;

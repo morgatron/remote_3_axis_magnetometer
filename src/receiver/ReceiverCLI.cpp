@@ -1,5 +1,6 @@
 #include "ReceiverCLI.h"
 #include <WiFi.h>
+#include "board_config.h"
 #include "BLEEgress.h"
 #include "PowerManager.h"
 
@@ -53,6 +54,7 @@ void ReceiverCLI::printStatus() {
     Serial.println(F("          RECEIVER NODE STATUS            "));
     Serial.println(F("=========================================="));
     Serial.printf(" Uptime:               %.1f sec\r\n", millis() / 1000.0f);
+    Serial.printf(" Receiver Vbat:        %.2f V (%u mV)\r\n", sampleBatteryVoltage(true), sampleBatteryMilliVolts());
     Serial.printf(" Egress Mode:          %s\r\n", 
         (egressModeConfig == 0) ? "SERIAL (USB CDC)" : 
         (egressModeConfig == 1) ? "WIFI" : 
