@@ -3,6 +3,11 @@
 
 #include <Arduino.h>
 
+// Telemetry Status Word Flags (uint16_t)
+#define STATUS_FLAG_MOCK        0x8000  // Bit 15: 1 = Synthetic Mock Data, 0 = Physical Hardware
+#define STATUS_FLAG_FLC100      0x0001  // Physical FLC100-ADS131E08 Fluxgate Sensor
+#define STATUS_FLAG_RM3100      0x0002  // Physical RM3100 Magneto-Inductive Sensor
+
 /**
  * @brief Telemetry payload struct passed through FreeRTOS queue.
  */

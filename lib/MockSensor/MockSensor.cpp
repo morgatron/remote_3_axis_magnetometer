@@ -1,8 +1,8 @@
 #include "MockSensor.h"
 #include <math.h>
 
-// Status word indicating synthetic mock telemetry (Bit 23 set + ASCII 'M')
-#define MOCK_STATUS_WORD 0x804D4F // 0x80'M''O'
+// Status word indicating synthetic mock telemetry (Bit 23 set for 24-bit, Bit 15 [0x8000] for 16-bit)
+#define MOCK_STATUS_WORD 0x808000
 
 MockSensor::MockSensor() : _enabled(false), _lastSampleTimeUs(0), _phase(0.0f) {}
 

@@ -109,7 +109,7 @@ def on_advertisement(device, advertisement_data):
                 f"sample_time={time.strftime('%H:%M:%S', time.localtime(sample_time_utc))} | "
                 f"B=({x:+10.2f}, {y:+10.2f}, {z:+10.2f}) nT | "
                 f"|B|={bmag:10.2f} nT | "
-                f"status=0x{status:04X} | "
+                f"status={'MOCK' if (status & 0x8000) else f'0x{status:04X}'} | "
                 f"RSSI={rssi} dBm"
             )
 

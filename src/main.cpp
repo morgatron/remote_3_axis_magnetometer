@@ -198,12 +198,29 @@ float lastBmag_nT = 0.0f;
 
 void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len);
 
+inline uint16_t getTelemetryStatusWord(uint32_t rawStatus = 0) {
+    if (sensorTypeConfig == 2 || sensor == &sensorMock) {
+        return STATUS_FLAG_MOCK;
+    }
+    if (sensorTypeConfig == 1) {
+        return (uint16_t)(rawStatus & 0x7FFE) | STATUS_FLAG_FLC100;
+    }
+    if (sensorTypeConfig == 0) {
+        return (uint16_t)(rawStatus & 0x7FFD) | STATUS_FLAG_RM3100;
+    }
+    return 0x0000;
+}
+
 void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
     sampleCounter = sampleCounter + 1;
     lastBmag_nT = sqrtf(x * x + y * y + z * z);
     char line[160];
-    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(status & 0xFFFFFF));
-    sendOutputSample(deviceID, ts, x, y, z, status, line, (size_t)len);
+    uint32_t finalStatus = status;
+    if (sensorTypeConfig == 2 || sensor == &sensorMock) {
+        finalStatus = 0x800000 | STATUS_FLAG_MOCK;
+    }
+    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(finalStatus & 0xFFFFFF));
+    sendOutputSample(deviceID, ts, x, y, z, finalStatus, line, (size_t)len);
 }
 
 
@@ -287,7 +304,7 @@ void checkBleBurstTransmission() {
             SensorBatchPacket batch;
             uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), countToPack);
             if (countToSend > 0) {
-                batch.status = (uint16_t)(sensor ? 0x004D4F : 0);
+                batch.status = getTelemetryStatusWord();
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during burst wakeup
 
                 bleStream.clearBatchAck();
@@ -333,7 +350,7 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
         pkt.x_nT = x;
         pkt.y_nT = y;
         pkt.z_nT = z;
-        pkt.status = (uint16_t)(status & 0xFFFF);
+        pkt.status = getTelemetryStatusWord(status);
         loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
         loraStream.sleep();
     } else {
@@ -350,7 +367,7 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
             SensorBatchPacket batch;
             uint8_t countToSend = loraRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
             if (countToSend > 0) {
-                batch.status = (uint16_t)(status & 0xFFFF);
+                batch.status = getTelemetryStatusWord(status);
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
                 loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
                 loraStream.sleep(); // Put SX1262 into ultra-low-power sleep during idle gap

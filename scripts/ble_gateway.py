@@ -100,8 +100,12 @@ class BleGatewayScanner:
             print(f">>> [GATEWAY HEARTBEAT] ID: '{node_id}' | Gateway Battery: {gw_vbat_str} | Seq: {seq}")
             return
 
+        is_mock = bool(status & 0x8000)
+        mock_tag = " [MOCK DATA]" if is_mock else ""
         gw_vbat_str = f" | GW Battery: {gw_vbat:.2f}V" if gw_vbat > 0 else ""
-        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}' ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str})")
+        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}'{mock_tag} ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str})")
+
+        status_disp = "MOCK" if is_mock else f"{status:04X}"
 
         # Unpack each sample in the batch
         for i in range(sample_count):
@@ -111,7 +115,7 @@ class BleGatewayScanner:
             x, y, z = struct.unpack_from("<fff", raw, offset)
             offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
             sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
-            self.display_and_record_sample(node_id, sample_ts, x, y, z, f"{status:06X}", vbat, rssi)
+            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi)
 
         if self.max_samples and self.total_samples >= self.max_samples:
             self._stop_event.set()
