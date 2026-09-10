@@ -19,9 +19,11 @@ Usage:
 import sys
 import time
 import math
+import json
 import struct
 import asyncio
 import argparse
+from datetime import datetime, timezone
 from typing import Optional
 
 try:
@@ -56,6 +58,13 @@ class BleGatewayScanner:
 
         self.requests_session = None
         if self.forward_url:
+            if not self.forward_url.startswith(("http://", "https://")):
+                self.forward_url = "http://" + self.forward_url
+            cleaned_url = self.forward_url.rstrip("/")
+            if cleaned_url.endswith((":8000", ":8899", "localhost", "127.0.0.1")):
+                self.forward_url = cleaned_url + "/api/v1/telemetry/batch"
+            elif cleaned_url.endswith("/api/v1/telemetry") or cleaned_url.endswith("/api/telemetry"):
+                self.forward_url = cleaned_url + "/batch"
             try:
                 import requests
                 self.requests_session = requests.Session()
@@ -106,6 +115,8 @@ class BleGatewayScanner:
         print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}'{mock_tag} ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str})")
 
         status_disp = "MOCK" if is_mock else f"{status:04X}"
+        batch_points = []
+        arrival_wall_time = time.time()
 
         # Unpack each sample in the batch
         for i in range(sample_count):
@@ -113,9 +124,38 @@ class BleGatewayScanner:
             if offset + 12 > len(raw):
                 break
             x, y, z = struct.unpack_from("<fff", raw, offset)
+            offset_from_newest_sec = ((sample_count - 1 - i) * sample_interval_ms) / 1000.0
+            sample_time_sec = arrival_wall_time - offset_from_newest_sec
+            iso_ts = datetime.fromtimestamp(sample_time_sec, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
             offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
             sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
             self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi)
+
+            batch_points.append({
+                "node_id": node_id,
+                "timestamp": iso_ts,
+                "x": x, "y": y, "z": z,
+                "units": "nT",
+                "status_flags": f"0x{status:06X}",
+                "vbat": vbat_mv,
+                "rssi": rssi,
+                "extra_json": json.dumps({"gw_id": self.target_name, "gw_vbat_mv": gw_vbat_mv}) if gw_vbat_mv > 0 else None
+            })
+
+        # Batch forward to Central Server
+        if self.requests_session and self.forward_url and batch_points:
+            try:
+                if "/batch" in self.forward_url:
+                    payload = {"node_id": node_id, "points": batch_points}
+                    resp = self.requests_session.post(self.forward_url, json=payload, timeout=2.0)
+                else:
+                    for pt in batch_points:
+                        resp = self.requests_session.post(self.forward_url, json=pt, timeout=1.0)
+                if resp.status_code not in (200, 201):
+                    print(f"  [FORWARD WARNING] HTTP {resp.status_code}: {resp.text}")
+            except Exception as e:
+                print(f"  [FORWARD ERROR] Failed to forward telemetry: {e}")
 
         if self.max_samples and self.total_samples >= self.max_samples:
             self._stop_event.set()
@@ -142,21 +182,6 @@ class BleGatewayScanner:
         if self.csv_handle:
             self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{vbat:.2f},{rssi}\n")
             self.csv_handle.flush()
-
-        if self.requests_session and self.forward_url:
-            try:
-                payload = {
-                    "node_id": node_id,
-                    "timestamp_us": ts,
-                    "x": x, "y": y, "z": z,
-                    "status": int(status_hex, 16) if status_hex else 0,
-                    "vbat": vbat,
-                    "rssi": rssi,
-                    "protocol": "BLE_EXT_ADV"
-                }
-                self.requests_session.post(self.forward_url, json=payload, timeout=0.5)
-            except Exception:
-                pass
 
     async def run(self):
         print("\n" + "=" * 92)

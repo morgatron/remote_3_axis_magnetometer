@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import numpy as np
 import pandas as pd
 
@@ -184,15 +184,48 @@ class TelemetryPoint(BaseModel):
     z: float = Field(..., description="Z-axis magnetic field in nT")
     units: Optional[str] = Field("nT", description="Physical unit string")
     temp: Optional[float] = Field(None, description="Temperature in Celsius")
-    vbat: Optional[int] = Field(None, description="Battery voltage in mV")
+    vbat: Optional[Union[int, float]] = Field(None, description="Battery voltage in mV (or V)")
     rssi: Optional[int] = Field(None, description="Signal strength in dBm")
-    status_flags: Optional[str] = Field("0xC00000", description="Hex status flags")
+    status: Optional[Union[str, int]] = Field(None, description="Status code alias")
+    status_flags: Optional[Union[str, int]] = Field("0xC00000", description="Hex status flags")
     lat: Optional[float] = Field(None, description="Latitude in decimal degrees")
     lon: Optional[float] = Field(None, description="Longitude in decimal degrees")
     elevation_m: Optional[float] = Field(None, description="Elevation in meters")
     sensor_model: Optional[str] = Field("RM3100", description="Sensor hardware model")
     cycle_count: Optional[int] = Field(200, description="RM3100 cycle count")
     extra_json: Optional[str] = Field(None, description="Extensible JSON string for custom diagnostics")
+
+    @model_validator(mode="before")
+    @classmethod
+    def preprocess_inputs(cls, data):
+        if isinstance(data, dict):
+            # 1. Map status -> status_flags alias if needed
+            if "status_flags" not in data and "status" in data:
+                data["status_flags"] = data["status"]
+
+            # 2. Normalize vbat: if given in Volts (< 20.0), convert to mV integer
+            if "vbat" in data and data["vbat"] is not None:
+                try:
+                    v = float(data["vbat"])
+                    if v > 0:
+                        data["vbat"] = int(round(v * 1000.0)) if v < 20.0 else int(round(v))
+                    else:
+                        data["vbat"] = None
+                except (ValueError, TypeError):
+                    data["vbat"] = None
+
+            # 3. Normalize status_flags to standard hex string
+            if "status_flags" in data and data["status_flags"] is not None:
+                sf = data["status_flags"]
+                if isinstance(sf, int):
+                    data["status_flags"] = f"0x{sf:06X}"
+                else:
+                    sfs = str(sf).strip()
+                    if sfs.upper() == "MOCK":
+                        data["status_flags"] = "0x008000"
+                    elif not sfs.startswith(("0x", "0X")):
+                        data["status_flags"] = f"0x{sfs}"
+        return data
 
 class BatchTelemetry(BaseModel):
     node_id: str

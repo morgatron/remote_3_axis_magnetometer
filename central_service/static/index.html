@@ -657,6 +657,9 @@
                 const bz = n.z !== undefined ? n.z : 0;
                 const mag = Math.sqrt(bx*bx + by*by + bz*bz).toFixed(1);
                 const hasCoords = (n.lat !== null && n.lat !== undefined && n.lon !== null && n.lon !== undefined);
+                const statusInt = n.status_flags ? parseInt(n.status_flags, 16) : 0;
+                const isMock = ((statusInt & 0x8000) !== 0) || (String(n.status_flags || '').toUpperCase().includes('MOCK'));
+                const mockBadge = isMock ? '<span style="background:#f59e0b;color:#000;font-size:0.65rem;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:6px;vertical-align:middle;">MOCK</span>' : '';
                 const displayName = n.name && n.name !== n.node_id ? `${n.name} <span style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">(${n.node_id})</span>` : n.node_id;
                 
                 let timeStr = 'N/A';
@@ -668,7 +671,7 @@
                 listHtml += `
                     <div class="node-card ${isSel}" onclick="selectNode('${n.node_id}')">
                         <div class="node-card-top">
-                            <span class="node-name">${displayName} ${hasCoords ? '📍' : ''}</span>
+                            <span class="node-name">${displayName}${mockBadge} ${hasCoords ? '📍' : ''}</span>
                             <span class="node-time">${timeStr}</span>
                         </div>
                         <div class="node-metrics">
@@ -898,6 +901,9 @@
                 const elevStr = (n.elevation_m !== undefined && n.elevation_m !== null) ? `${n.elevation_m}m` : 'N/A';
                 const vbatStr = n.vbat ? `${n.vbat} mV` : 'N/A';
                 const rssiStr = (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'N/A';
+                const statusInt = n.status_flags ? parseInt(n.status_flags, 16) : 0;
+                const isMock = ((statusInt & 0x8000) !== 0) || (String(n.status_flags || '').toUpperCase().includes('MOCK'));
+                const mockBadge = isMock ? '<span style="background:#f59e0b;color:#000;font-size:0.65rem;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:6px;vertical-align:middle;">MOCK</span>' : '';
                 const stationName = n.name || n.node_id;
 
                 const markerColor = isSelected ? '#a855f7' : (isOnline ? '#22c55e' : '#f59e0b');
@@ -906,7 +912,7 @@
                 const popupContent = `
                     <div style="min-width: 190px;">
                         <div style="font-weight: 700; font-size: 0.95rem; color: var(--accent-blue); margin-bottom: 4px;">
-                            ${stationName}
+                            ${stationName}${mockBadge}
                         </div>
                         <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px;">
                             ID: <code>${n.node_id}</code> | Elev: ${elevStr}

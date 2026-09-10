@@ -112,15 +112,20 @@ def parse_payload_batch(raw_payload: str, arrival_time: float = None):
     parsed_list = parse_telemetry_batch(raw_payload, arrival_wall_time=arrival_time)
     results = []
     for parsed in parsed_list:
+        vbat_val = parsed.get("vbat")
+        vbat_mv = int(round(vbat_val * 1000.0)) if (vbat_val is not None and vbat_val < 20.0) else (int(round(vbat_val)) if vbat_val is not None else None)
+        status_hex = parsed["status_hex"]
+        status_flags = f"0x{status_hex}" if not status_hex.startswith(("0x", "0X")) else status_hex
+
         results.append({
             "node_id": parsed["node_id"],
             "x": parsed["x"],
             "y": parsed["y"],
             "z": parsed["z"],
-            "status_flags": parsed["status_hex"],
+            "status_flags": status_flags,
             "timestamp": parsed["timestamp_iso"],
             "temp": parsed.get("temp"),
-            "vbat": parsed.get("vbat"),
+            "vbat": vbat_mv,
             "rssi": parsed.get("rssi")
         })
     return results
@@ -129,15 +134,20 @@ def parse_csv_line(line: str):
     """Parses standard CSV line from ESP32 using shared stream_parser module."""
     parsed = parse_telemetry_line(line)
     if parsed:
+        vbat_val = parsed.get("vbat")
+        vbat_mv = int(round(vbat_val * 1000.0)) if (vbat_val is not None and vbat_val < 20.0) else (int(round(vbat_val)) if vbat_val is not None else None)
+        status_hex = parsed["status_hex"]
+        status_flags = f"0x{status_hex}" if not status_hex.startswith(("0x", "0X")) else status_hex
+
         return {
             "node_id": parsed["node_id"],
             "x": parsed["x"],
             "y": parsed["y"],
             "z": parsed["z"],
-            "status_flags": parsed["status_hex"],
+            "status_flags": status_flags,
             "timestamp": parsed["timestamp_iso"],
             "temp": parsed.get("temp"),
-            "vbat": parsed.get("vbat"),
+            "vbat": vbat_mv,
             "rssi": parsed.get("rssi")
         }
     return None
