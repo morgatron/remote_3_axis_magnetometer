@@ -20,6 +20,17 @@ PORT="${PORT:-8000}"
 HOST="${HOST:-0.0.0.0}"
 API_KEY="${API_KEY:-}"
 
+PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    if [ -x "/home/morgan/miniforge3/envs/rm3100/bin/python" ]; then
+        PYTHON_BIN="/home/morgan/miniforge3/envs/rm3100/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v python3)"
+    else
+        PYTHON_BIN="python3"
+    fi
+fi
+
 # Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -88,8 +99,8 @@ function show_status() {
         fi
     else
         # Process check
-        SERVER_PIDS=$(pgrep -f "server.py" || true)
-        GATEWAY_PIDS=$(pgrep -f "gateway.py" || true)
+        SERVER_PIDS=$(pgrep -f "python.*server\.py" || true)
+        GATEWAY_PIDS=$(pgrep -f "python.*gateway\.py" || true)
 
         if [ -n "$SERVER_PIDS" ]; then
             echo -e "  magnetometer-server:  ${GREEN}[RUNNING (PID: $SERVER_PIDS)]${NC}"
@@ -156,9 +167,9 @@ function start_services() {
         sudo systemctl start magnetometer-server.service magnetometer-gateway.service
         echo -e "${GREEN}[+] Services started via systemd.${NC}"
     else
-        echo "Starting server in background..."
-        nohup "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/server.py" > server.log 2>&1 &
-        nohup "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/gateway.py" > gateway.log 2>&1 &
+        echo "Starting server and gateway in background using $PYTHON_BIN..."
+        nohup "$PYTHON_BIN" "${SCRIPT_DIR}/server.py" > server.log 2>&1 &
+        nohup "$PYTHON_BIN" "${SCRIPT_DIR}/gateway.py" > gateway.log 2>&1 &
         echo -e "${GREEN}[+] Services launched in background.${NC}"
     fi
 }
@@ -175,8 +186,8 @@ function stop_services() {
         echo -e "${GREEN}[+] Services stopped.${NC}"
     else
         echo "Stopping background processes..."
-        pkill -f "server.py" || true
-        pkill -f "gateway.py" || true
+        pkill -f "python.*server\.py" || true
+        pkill -f "python.*gateway\.py" || true
         echo -e "${GREEN}[+] Processes terminated.${NC}"
     fi
 }
