@@ -2,7 +2,7 @@
 
 FLC100_ADS131::FLC100_ADS131(int csPin, int drdyPin, int resetPin)
     : _csPin(csPin), _drdyPin(drdyPin), _resetPin(resetPin), _spi(NULL),
-      _spiSettings(2000000, MSBFIRST, SPI_MODE1) {}
+      _spiSettings(8000000, MSBFIRST, SPI_MODE1) {}
 
 bool FLC100_ADS131::begin() {
     return begin(SPI);
@@ -96,21 +96,28 @@ void FLC100_ADS131::readAndPushSample() {
     uint8_t buffer[27];
     uint64_t now = esp_timer_get_time();
 
+#if defined(ESP_PLATFORM)
+    portENTER_CRITICAL(&g_spiFrequencyMux);
+#endif
     _spi->beginTransaction(_spiSettings);
     digitalWrite(_csPin, LOW);
 
-    for (int i = 0; i < 27; i++) {
-        buffer[i] = _spi->transfer(0x00);
-    }
+    _spi->transferBytes(nullptr, buffer, 27);
 
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
+#if defined(ESP_PLATFORM)
+    portEXIT_CRITICAL(&g_spiFrequencyMux);
+#endif
+    delayMicroseconds(1); // Guarantee TI t_CSH (> 1 us) shift register reset
 
     // Status header contains 24-bit fault/channel status flags (e.g. 0xC00000 / 0xC00001)
     uint32_t status = ((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | (uint32_t)buffer[2];
 
     int32_t x, y, z;
-    // Status header validation: ADS131E08 status upper nibble MUST be 0xC
+    bool valid = false;
+
+    // Status header validation: ADS131E08 status upper nibble MUST be 0xC (bits 23:20 = 1100)
     if ((status & 0xF00000) == 0xC00000) {
         int32_t rawX = (int32_t)((buffer[3] << 16) | (buffer[4] << 8) | buffer[5]);
         if (rawX & 0x800000) rawX |= 0xFF000000;
@@ -123,16 +130,44 @@ void FLC100_ADS131::readAndPushSample() {
 
         double scale = ((double)_vref * 1000000.0) / ((double)_gain * 8388608.0 * (double)_sensitivity);
 
-        x = (int32_t)(rawX * scale);
-        y = (int32_t)(rawY * scale);
-        z = (int32_t)(rawZ * scale);
+        int32_t candX = (int32_t)(rawX * scale);
+        int32_t candY = (int32_t)(rawY * scale);
+        int32_t candZ = (int32_t)(rawZ * scale);
 
-        _lastValidX = x;
-        _lastValidY = y;
-        _lastValidZ = z;
-        _lastValidStatus = status;
-    } else {
-        // Discard SPI collision frame and retain previous valid sample
+        // Sanity check for unphysical single-sample jumps (SPI framing glitch / bit shift)
+        // At 1 kSPS (1 ms delta-t), a single-sample jump > 400 nT represents > 400,000 nT/sec
+        bool isSpike = false;
+        if ((_lastValidStatus & 0xF00000) == 0xC00000 && (_lastValidX != 0 || _lastValidY != 0 || _lastValidZ != 0)) {
+            if (abs(candX - _lastValidX) > 400 ||
+                abs(candY - _lastValidY) > 400 ||
+                abs(candZ - _lastValidZ) > 400) {
+                isSpike = true;
+            }
+        }
+
+        if (isSpike && _consecutiveGlitchCount < 2) {
+            // Discard isolated single-sample SPI collision glitch and hold last valid reading
+            _consecutiveGlitchCount++;
+            x = _lastValidX;
+            y = _lastValidY;
+            z = _lastValidZ;
+            status = _lastValidStatus;
+        } else {
+            // Accept valid sample or persistent step change (real physical field change)
+            _consecutiveGlitchCount = 0;
+            x = candX;
+            y = candY;
+            z = candZ;
+            _lastValidX = x;
+            _lastValidY = y;
+            _lastValidZ = z;
+            _lastValidStatus = status;
+        }
+        valid = true;
+    }
+
+    if (!valid) {
+        // Discard corrupted status header frame and retain previous valid sample
         x = _lastValidX;
         y = _lastValidY;
         z = _lastValidZ;
@@ -277,6 +312,7 @@ void FLC100_ADS131::sendCommand(uint8_t cmd) {
     _spi->transfer(cmd);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
+    delayMicroseconds(1);
 }
 
 void FLC100_ADS131::writeRegister(uint8_t reg, uint8_t val) {
@@ -287,6 +323,7 @@ void FLC100_ADS131::writeRegister(uint8_t reg, uint8_t val) {
     _spi->transfer(val);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
+    delayMicroseconds(1);
 }
 
 uint8_t FLC100_ADS131::readRegister(uint8_t reg) {
@@ -297,6 +334,7 @@ uint8_t FLC100_ADS131::readRegister(uint8_t reg) {
     uint8_t val = _spi->transfer(0x00);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
+    delayMicroseconds(1);
     return val;
 }
 

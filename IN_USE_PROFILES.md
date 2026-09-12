@@ -11,9 +11,9 @@ All use battery power unless specified otherwise
 - Seeed Studio Xiao ESP32-C6 Sensor (label: CREEK)
     - connected to FLC100
     - communicates over BLE with coded PHY
-- Supermini ESP32-C3 Sensor (label: CREEK2)
+- Seeed Studio Xiao ESP32-C6 Sensor (label: CREEK_TEST)
     - connected to FLC100
-    - communicates over BLE with coded PHY
+    - communicates over BLE with coded PHY (node ID: _CREEK)
 - Seed Studio Xiao ESP32-C6 (label: CREEK_GATEWAY)
     - Receives using BLE coded PHY only
     - relays data to host computer using BLE

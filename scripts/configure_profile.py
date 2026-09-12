@@ -2,16 +2,18 @@
 """
 Device Profile Configurator & Flasher (`scripts/configure_profile.py`)
 
-Automates building, flashing, and configuring the 4 in-use project profiles:
+Automates building, flashing, and configuring the in-use project profiles:
   1. SPRINGBANK    - Heltec V4 Sensor (ESP32-S3 + FLC100 Fluxgate, LoRa-only batch transmission)
   2. ROOF          - Heltec V4 Receiver (LoRa RX, USB Serial egress to host computer)
   3. CREEK         - Seeed Studio XIAO ESP32-C6 Sensor (FLC100 Fluxgate, BLE Coded PHY batch transmission)
-  4. CREEK_GATEWAY - Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)
+  4. CREEK_TEST    - Seeed Studio XIAO ESP32-C6 Sensor Test Unit (FLC100 Fluxgate, node ID: _CREEK)
+  5. CREEK_GATEWAY - Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)
 
 Usage:
   python3 scripts/configure_profile.py --profile SPRINGBANK [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile ROOF [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile CREEK [--port /dev/ttyACM0]
+  python3 scripts/configure_profile.py --profile CREEK_TEST [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile CREEK_GATEWAY [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile SPRINGBANK --no-flash   # Skip PlatformIO upload
   python3 scripts/configure_profile.py --profile SPRINGBANK --mock       # Run synthetic test data
@@ -74,6 +76,29 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "role": "sensor",
         "cli_commands": [
             "ID CREEK",
+            "MODE BLE",
+            "BATCH 10",
+            "SENSOR FLC100",
+            "DOWNSAMPLE 1000",
+            "START",
+            "SAVE",
+            "STATUS"
+        ],
+        "expected_current": {
+            "idle_sleep": "7 - 9 mA (C6 RISC-V) + 14 mA (FLC100/Boost/ADC) = ~21 - 23 mA",
+            "tx_peak": "50 - 65 mA (+15 dBm BLE Coded PHY burst for 1.0s)",
+            "average": "22 - 25 mA (with real FLC100) / ~8 - 10 mA (mock data)",
+            "runtime_1000mah": "~40 - 45 hours (~1.8 days)",
+            "runtime_3000mah": "~5 - 6 days"
+        }
+    },
+    "CREEK_TEST": {
+        "description": "Seeed Studio XIAO ESP32-C6 Sensor Test Unit + FLC100 (node ID: _CREEK)",
+        "board_type": "Seeed Studio XIAO ESP32-C6 (RISC-V)",
+        "pio_env": "esp32-c6-devkitc-1",
+        "role": "sensor",
+        "cli_commands": [
+            "ID _CREEK",
             "MODE BLE",
             "BATCH 10",
             "SENSOR FLC100",
@@ -256,7 +281,7 @@ def main():
     )
     parser.add_argument(
         "--profile",
-        choices=["SPRINGBANK", "ROOF", "CREEK", "CREEK2", "CREEK_GATEWAY", "SUPERMINI_GATEWAY"],
+        choices=["SPRINGBANK", "ROOF", "CREEK", "CREEK_TEST", "CREEK2", "CREEK_GATEWAY", "SUPERMINI_GATEWAY"],
         required=True,
         help="Target profile name to deploy"
     )

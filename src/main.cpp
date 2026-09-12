@@ -52,18 +52,33 @@ String wifiPass = "";
 bool wifiConnected = false;
 String deviceID = "";
 
+#if defined(ESP_PLATFORM)
+portMUX_TYPE g_spiFrequencyMux = portMUX_INITIALIZER_UNLOCKED;
+
+void safeSetCpuFrequencyMhz(uint32_t freq) {
+    if (getCpuFrequencyMhz() == freq) return;
+    portENTER_CRITICAL(&g_spiFrequencyMux);
+    setCpuFrequencyMhz(freq);
+    portEXIT_CRITICAL(&g_spiFrequencyMux);
+}
+#else
+void safeSetCpuFrequencyMhz(uint32_t freq) {
+    setCpuFrequencyMhz(freq);
+}
+#endif
+
 void configurePowerManagement() {
 #if defined(ESP_PLATFORM)
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
     // ESP32-C6 Bluetooth baseband & hardware encryption controller require active PLL (minimum 80 MHz)
-    setCpuFrequencyMhz(80);
+    safeSetCpuFrequencyMhz(80);
     Serial.printf("[POWER] ESP32-C6 Low-Power Mode: CPU @ %d MHz (PLL active, Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
 #else
     if (outputMode == MODE_BLE) {
-        setCpuFrequencyMhz(40);
+        safeSetCpuFrequencyMhz(40);
         Serial.printf("[POWER] Low-Power BLE Mode: CPU @ %d MHz (Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
     } else {
-        setCpuFrequencyMhz(80);
+        safeSetCpuFrequencyMhz(80);
         Serial.printf("[POWER] CPU Frequency set to %d MHz (80MHz APB retained, zero SPI latency).\r\n", getCpuFrequencyMhz());
     }
 #endif
@@ -252,7 +267,7 @@ void checkBleAckTask() {
             bleStream.powerDownModem();
 #if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
             if (outputMode == MODE_BLE) {
-                setCpuFrequencyMhz(40);
+                safeSetCpuFrequencyMhz(40);
             }
 #endif
             isTxActive = false;
@@ -288,7 +303,7 @@ void checkBleBurstTransmission() {
         // Phase 1: Pre-burst Wakeup (150 ms lead time)
         // Re-enables the BLE controller and RF PLL so oscillators stabilize before packet transmission
         if (!isModemWarming && readyToSend && (millis() + BLE_WARMUP_MS >= nextBurstTxMs)) {
-            setCpuFrequencyMhz(80);
+            safeSetCpuFrequencyMhz(80);
             bleStream.powerUpModem(deviceID);
             isModemWarming = true;
             warmupStartMs = millis();
@@ -323,7 +338,7 @@ void checkBleBurstTransmission() {
                 bleStream.powerDownModem();
 #if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
                 if (outputMode == MODE_BLE) {
-                    setCpuFrequencyMhz(40);
+                    safeSetCpuFrequencyMhz(40);
                 }
 #endif
                 isModemWarming = false;
@@ -597,7 +612,7 @@ void setup() {
 
     // Create high-priority task for immediate ISR-notified ADC sampling (Pinned to Core 1 to isolate from WiFi on Core 0)
 #if CONFIG_FREERTOS_UNICORE
-    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, 3, &adcTaskHandle, 0);
+    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, 10, &adcTaskHandle, 0);
 #else
     xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 1);
 #endif

@@ -5,6 +5,12 @@
 #include <SPI.h>
 #include "Magnetometer.h"
 
+#if defined(ESP_PLATFORM)
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
+extern portMUX_TYPE g_spiFrequencyMux;
+#endif
+
 // ADS131E08 SPI Commands
 #define ADS131_CMD_WAKEUP   0x02
 #define ADS131_CMD_STANDBY  0x04
@@ -83,6 +89,7 @@ private:
     int32_t _lastValidY = 0;
     int32_t _lastValidZ = 0;
     uint32_t _lastValidStatus = 0xC00000;
+    uint8_t _consecutiveGlitchCount = 0;
 
     void sendCommand(uint8_t cmd);
     void stopContinuous();

@@ -92,7 +92,8 @@ def init_db():
             baseline_x REAL DEFAULT 0.0,
             baseline_y REAL DEFAULT 0.0,
             baseline_z REAL DEFAULT 0.0,
-            notes TEXT
+            notes TEXT,
+            record_count INTEGER DEFAULT 0
         );
         """)
 
@@ -104,10 +105,19 @@ def init_db():
                 conn.execute(f"ALTER TABLE telemetry ADD COLUMN {col_name} {col_type};")
 
         existing_node_cols = [row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()]
-        for col_name, col_type in [("elevation_m", "REAL DEFAULT 0.0"), ("sensor_model", "TEXT DEFAULT 'RM3100'"), ("cycle_count", "INTEGER DEFAULT 200"), ("baseline_x", "REAL DEFAULT 0.0"), ("baseline_y", "REAL DEFAULT 0.0"), ("baseline_z", "REAL DEFAULT 0.0"), ("notes", "TEXT")]:
+        for col_name, col_type in [("elevation_m", "REAL DEFAULT 0.0"), ("sensor_model", "TEXT DEFAULT 'RM3100'"), ("cycle_count", "INTEGER DEFAULT 200"), ("baseline_x", "REAL DEFAULT 0.0"), ("baseline_y", "REAL DEFAULT 0.0"), ("baseline_z", "REAL DEFAULT 0.0"), ("notes", "TEXT"), ("record_count", "INTEGER DEFAULT 0")]:
             if col_name not in existing_node_cols:
                 logger.info(f"Applying migration: Adding column '{col_name}' to nodes table")
                 conn.execute(f"ALTER TABLE nodes ADD COLUMN {col_name} {col_type};")
+
+        # One-time population of record_count if missing or all zeros
+        if "record_count" not in existing_node_cols:
+            logger.info("Initializing record_count cache in nodes table...")
+            conn.execute("""
+                UPDATE nodes SET record_count = (
+                    SELECT COUNT(*) FROM telemetry WHERE telemetry.node_id = nodes.node_id
+                );
+            """)
 
         conn.commit()
 
@@ -261,15 +271,16 @@ async def store_telemetry_point(conn, point: TelemetryPoint):
     
     conn.execute(
         """
-        INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count, record_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(node_id) DO UPDATE SET
             last_seen = excluded.last_seen,
             lat = COALESCE(excluded.lat, nodes.lat),
             lon = COALESCE(excluded.lon, nodes.lon),
             elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
             sensor_model = COALESCE(excluded.sensor_model, nodes.sensor_model),
-            cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count)
+            cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count),
+            record_count = COALESCE(nodes.record_count, 0) + 1
         """,
         (point.node_id, point.node_id, point.lat, point.lon, point.elevation_m or 0.0, ts, model, cycle)
     )
@@ -317,9 +328,43 @@ async def ingest_batch(batch: BatchTelemetry):
 
     now_str = datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
+        rows = []
         for p in batch.points:
             p.node_id = batch.node_id
-            await store_telemetry_point(conn, p)
+            ts = p.timestamp or now_str
+            units = p.units or "nT"
+            status_flags = p.status_flags or "0xC00000"
+            rows.append((ts, batch.node_id, p.x, p.y, p.z, units, p.temp, p.vbat, p.rssi, status_flags, p.extra_json))
+
+        conn.executemany(
+            """
+            INSERT INTO telemetry (timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags, extra_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows
+        )
+
+        latest_p = batch.points[-1]
+        latest_ts = latest_p.timestamp or now_str
+        cycle = latest_p.cycle_count or 200
+        model = latest_p.sensor_model or "RM3100"
+        batch_len = len(batch.points)
+
+        conn.execute(
+            """
+            INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count, record_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(node_id) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                lat = COALESCE(excluded.lat, nodes.lat),
+                lon = COALESCE(excluded.lon, nodes.lon),
+                elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
+                sensor_model = COALESCE(excluded.sensor_model, nodes.sensor_model),
+                cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count),
+                record_count = COALESCE(nodes.record_count, 0) + excluded.record_count
+            """,
+            (batch.node_id, batch.node_id, latest_p.lat, latest_p.lon, latest_p.elevation_m or 0.0, latest_ts, model, cycle, batch_len)
+        )
         conn.commit()
 
     # Broadcast all points in batch via WebSockets
@@ -344,14 +389,15 @@ async def ingest_batch(batch: BatchTelemetry):
 
 @app.get("/api/v1/nodes")
 @app.get("/api/nodes")
-def list_nodes():
+def list_nodes(include_counts: bool = Query(False, description="Compute exact live count via full table scan (can be slow on large DBs)")):
     """List all registered nodes, geographic coordinates, record counts, and latest readings."""
     with get_db() as conn:
-        cursor = conn.execute("""
+        count_expr = "COALESCE((SELECT COUNT(*) FROM telemetry WHERE node_id = n.node_id), 0)" if include_counts else "COALESCE(n.record_count, 0)"
+        cursor = conn.execute(f"""
         SELECT n.node_id, n.name, n.lat, n.lon, n.elevation_m, n.last_seen,
                n.sensor_model, COALESCE(n.cycle_count, 200) as cycle_count,
                n.baseline_x, n.baseline_y, n.baseline_z, n.notes,
-               COALESCE((SELECT COUNT(*) FROM telemetry WHERE node_id = n.node_id), 0) AS record_count,
+               {count_expr} AS record_count,
                t.x, t.y, t.z, t.temp, t.vbat, t.rssi, t.status_flags, t.extra_json
         FROM nodes n
         LEFT JOIN telemetry t ON t.id = (
@@ -471,10 +517,17 @@ def query_data(
     node_id: Optional[str] = Query(None, description="Filter by node ID"),
     start: Optional[str] = Query(None, description="Start timestamp (ISO format)"),
     end: Optional[str] = Query(None, description="End timestamp (ISO format)"),
+    limit: Optional[int] = Query(None, ge=1, le=100000, description="Max records to return. Defaults to 5000 if no date range is given. Max 100000."),
     downsample_sec: Optional[int] = Query(None, description="Downsample averaging window in seconds (e.g. 60 for 1-min)"),
     format: str = Query("csv", description="Output format: csv, json, npz, or parquet")
 ):
     """Query time-series telemetry subsets and download in CSV, JSON, NumPy (.npz), or Parquet (.parquet)."""
+    is_bounded = bool(start or end)
+    effective_limit = limit if limit is not None else (None if is_bounded else 5000)
+
+    # When querying latest data (limit specified without a start timestamp), query DESC for index speed
+    use_desc_fetch = bool(node_id and not start and effective_limit)
+
     query = """
     SELECT timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags
     FROM telemetry WHERE 1=1
@@ -491,7 +544,12 @@ def query_data(
         query += " AND timestamp <= ?"
         params.append(end)
         
-    query += " ORDER BY timestamp ASC"
+    if use_desc_fetch:
+        query += f" ORDER BY timestamp DESC LIMIT {effective_limit}"
+    else:
+        query += " ORDER BY timestamp ASC"
+        if effective_limit:
+            query += f" LIMIT {effective_limit}"
 
     with get_db() as conn:
         cursor = conn.execute(query, params)
@@ -502,6 +560,10 @@ def query_data(
             return {"schema_version": "1.0", "count": 0, "data": []}
         elif format == "csv":
             return Response(content="timestamp_utc,node_id,x_nT,y_nT,z_nT,magnitude_nT,temp_c,vbat_mv,rssi_dbm,status_flags\n", media_type="text/csv")
+
+    # If queried in DESC order for index acceleration, reverse back to chronological ASC order
+    if use_desc_fetch:
+        rows = rows[::-1]
 
     data = [dict(r) for r in rows]
     df = pd.DataFrame(data)

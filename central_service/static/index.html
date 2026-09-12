@@ -798,7 +798,7 @@
 
         async function fetchHistoryForNode(nodeId) {
             try {
-                const res = await fetch(`${apiBaseUrl}/api/v1/data?node_id=${nodeId}&format=json`);
+                const res = await fetch(`${apiBaseUrl}/api/v1/data?node_id=${nodeId}&limit=${maxDataPoints}&format=json`);
                 const body = await res.json();
                 const rows = Array.isArray(body) ? body : (body.data || []);
                 
@@ -1155,9 +1155,10 @@
             window.open(url, '_blank');
         }
 
+        // Poll nodes registry every 30s as a fallback (live telemetry arrives via WebSocket)
         setInterval(async () => {
             await fetchInitialNodes();
-        }, 3000);
+        }, 30000);
 
         window.addEventListener('DOMContentLoaded', () => {
             initChart();
