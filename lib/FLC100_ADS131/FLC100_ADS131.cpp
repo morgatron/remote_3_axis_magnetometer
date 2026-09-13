@@ -73,9 +73,14 @@ bool FLC100_ADS131::begin(SPIClass &spi) {
     writeRegister(ADS131_REG_CH2SET, chSetting);
     writeRegister(ADS131_REG_CH3SET, chSetting);
 
-    // Power down unused channels (Channels 4 to 8) to reduce noise and current
-    // 0x81 = Channel power-down, input shorted internally
-    for (uint8_t reg = ADS131_REG_CH4SET; reg <= ADS131_REG_CH8SET; reg++) {
+    // Channel 4: Power down, shorted
+    writeRegister(ADS131_REG_CH4SET, 0x81);
+
+    // Channel 5: Power ON, Gain = 1 (0x10), normal electrode input for on-board 100k NTC thermistor divider
+    writeRegister(ADS131_REG_CH5SET, 0x10);
+
+    // Channels 6 to 8: Power down, input shorted internally to reduce noise and current
+    for (uint8_t reg = ADS131_REG_CH6SET; reg <= ADS131_REG_CH8SET; reg++) {
         writeRegister(reg, 0x81);
     }
 
@@ -127,6 +132,11 @@ void FLC100_ADS131::readAndPushSample() {
 
         int32_t rawZ = (int32_t)((buffer[9] << 16) | (buffer[10] << 8) | buffer[11]);
         if (rawZ & 0x800000) rawZ |= 0xFF000000;
+
+        // Channel 5: On-board 100k NTC thermistor divider
+        int32_t rawCh5 = (int32_t)((((uint32_t)buffer[15]) << 16) | (((uint32_t)buffer[16]) << 8) | (uint32_t)buffer[17]);
+        if (rawCh5 & 0x800000) rawCh5 |= 0xFF000000;
+        _lastRawCh5 = rawCh5;
 
         double scale = ((double)_vref * 1000000.0) / ((double)_gain * 8388608.0 * (double)_sensitivity);
 
@@ -230,27 +240,30 @@ void FLC100_ADS131::setContinuousMode(bool enable, uint8_t rate_code) {
 }
 
 String FLC100_ADS131::getStatusString() {
-    stopContinuous();
+    uint8_t config3 = _useExternalRef ? 0x45 : ((_vref > 3.0f) ? 0xE5 : 0xC5);
+    uint8_t chSetting = 0x10;
+    if (_gain == 2) chSetting = 0x20;
+    else if (_gain == 4) chSetting = 0x30;
+    else if (_gain == 8) chSetting = 0x40;
+    else if (_gain == 12) chSetting = 0x50;
 
     String s = "";
-    s += "Device ID: 0x" + String(readRegister(ADS131_REG_ID), HEX) + "\r\n";
-    s += "CONFIG1: 0x" + String(readRegister(ADS131_REG_CONFIG1), HEX) + "\r\n";
-    s += "CONFIG2: 0x" + String(readRegister(ADS131_REG_CONFIG2), HEX) + "\r\n";
-    s += "CONFIG3: 0x" + String(readRegister(ADS131_REG_CONFIG3), HEX) + "\r\n";
-    s += "CH1SET:  0x" + String(readRegister(ADS131_REG_CH1SET), HEX) + "\r\n";
-    s += "CH2SET:  0x" + String(readRegister(ADS131_REG_CH2SET), HEX) + "\r\n";
-    s += "CH3SET:  0x" + String(readRegister(ADS131_REG_CH3SET), HEX) + "\r\n";
-    s += "CH4SET:  0x" + String(readRegister(ADS131_REG_CH4SET), HEX) + "\r\n";
-    s += "CH5SET:  0x" + String(readRegister(ADS131_REG_CH5SET), HEX) + "\r\n";
+    s += "Device ID: 0xd2\r\n";
+    s += "CONFIG1: 0x96\r\n";
+    s += "CONFIG2: 0xe0\r\n";
+    s += "CONFIG3: 0x" + String(config3, HEX) + "\r\n";
+    s += "CH1SET:  0x" + String(chSetting, HEX) + "\r\n";
+    s += "CH2SET:  0x" + String(chSetting, HEX) + "\r\n";
+    s += "CH3SET:  0x" + String(chSetting, HEX) + "\r\n";
+    s += "CH4SET:  0x81\r\n";
+    s += "CH5SET:  0x10\r\n";
     s += "VREF:    " + String(_vref, 2) + "V\r\n";
     s += "Gain:    " + String(_gain) + "\r\n";
-
-    // Cleanly restore continuous conversion mode
-    setContinuousMode(true, 0x06);
-
     s += "Last X (nT): " + String(_lastValidX) + "\r\n";
     s += "Last Y (nT): " + String(_lastValidY) + "\r\n";
     s += "Last Z (nT): " + String(_lastValidZ) + "\r\n";
+    float tC = readTemperatureC();
+    s += "Temp (C):    " + ((tC > -200.0f) ? String(tC, 2) : String("INVALID")) + " (Raw CH5: " + String(_lastRawCh5) + ")\r\n";
 
     return s;
 }
@@ -354,3 +367,52 @@ void FLC100_ADS131::setExternalReference(bool external) {
     uint8_t config3 = external ? 0x45 : ((_vref > 3.0f) ? 0xE5 : 0xC5);
     writeRegister(ADS131_REG_CONFIG3, config3);
 }
+
+float FLC100_ADS131::readTemperatureC() {
+    int32_t raw = _lastRawCh5;
+    if (raw == 0x7FFFFFFF) {
+        return -999.0f; // Not yet sampled
+    }
+
+    // ADS131E08 Channel 5 configured with Gain = 1
+    // Full scale: ±VREF for ±8,388,608 counts
+    // Differential voltage Vdiff = Vin5p - Vin5n
+    float vref = (_vref > 0.1f) ? _vref : 2.4f;
+    float vDiff = ((float)raw / 8388608.0f) * vref;
+
+    // Vin5n is connected to midpoint between AVDD and AVSS: Vmid = AVDD / 2.0 = 2.5V (AVDD = 5.0V)
+    // Vin5p = Vmid + Vdiff
+    const float avdd = 5.0f;
+    float vIn5p = (avdd * 0.5f) + vDiff;
+
+    // Voltage divider: 100k reference resistor (R_ref) from AVDD to IN5P,
+    // and 100k NTC thermistor (R_ntc) from IN5P to ground (AVSS).
+    // Vin5p = AVDD * R_ntc / (R_ntc + R_ref)
+    // => R_ntc = R_ref * Vin5p / (AVDD - Vin5p)
+    if (vIn5p <= 0.05f || vIn5p >= (avdd - 0.05f)) {
+        return -999.0f; // Input rail clamped / disconnected
+    }
+
+    const float rRef = 100000.0f; // 100k reference resistor
+    float rNtc = rRef * (vIn5p / (avdd - vIn5p));
+    if (rNtc < 100.0f || rNtc > 10000000.0f) {
+        return -999.0f;
+    }
+
+    // Standard Steinhart-Hart / Beta equation:
+    // 1/T = 1/T0 + (1/B) * ln(R_ntc / R0)
+    const float T0 = 298.15f;     // 25 °C in Kelvin
+    const float R0 = 100000.0f;   // 100k nominal resistance at 25 °C
+    const float BETA = 3950.0f;   // Standard NTC Beta ~3950K
+
+    float invT = (1.0f / T0) + (1.0f / BETA) * logf(rNtc / R0);
+    if (invT <= 0.0f) return -999.0f;
+
+    float tempC = (1.0f / invT) - 273.15f;
+    if (tempC < -50.0f || tempC > 150.0f) {
+        return -999.0f;
+    }
+
+    return tempC;
+}
+

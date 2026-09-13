@@ -63,7 +63,7 @@ bool IngestionPipeline::ingestBatch(const SensorBatchPacket &batch, const uint8_
     }
 
     item.status = batch.status;
-    item.temp = 0.0f;
+    item.temp = (batch.temp_c_x100 == 0x7FFF) ? 0.0f : ((float)batch.temp_c_x100 / 100.0f);
     item.vbat = (float)batch.vbat_mv / 1000.0f;
 
     uint32_t now_ms = millis();

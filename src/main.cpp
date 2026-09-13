@@ -234,7 +234,11 @@ void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 
     if (sensorTypeConfig == 2 || sensor == &sensorMock) {
         finalStatus = 0x800000 | STATUS_FLAG_MOCK;
     }
-    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X\n", deviceID.c_str(), (unsigned long long)ts, x, y, z, (unsigned int)(finalStatus & 0xFFFFFF));
+    float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
+    float tVal = (tC > -200.0f && tC < 200.0f) ? tC : 0.0f;
+    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f\n",
+                       deviceID.c_str(), (unsigned long long)ts, x, y, z,
+                       (unsigned int)(finalStatus & 0xFFFFFF), tVal, g_cachedBatteryVoltage);
     sendOutputSample(deviceID, ts, x, y, z, finalStatus, line, (size_t)len);
 }
 
@@ -321,6 +325,8 @@ void checkBleBurstTransmission() {
             if (countToSend > 0) {
                 batch.status = getTelemetryStatusWord();
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during burst wakeup
+                float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
+                batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
 
                 bleStream.clearBatchAck();
                 bleStream.notifyBatchBinary(batch);
@@ -384,6 +390,8 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
             if (countToSend > 0) {
                 batch.status = getTelemetryStatusWord(status);
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
+                float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
+                batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
                 loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
                 loraStream.sleep(); // Put SX1262 into ultra-low-power sleep during idle gap
                 loraRingBuffer.confirmAck(countToSend);

@@ -67,6 +67,10 @@ public:
     bool popSample(ADCSample &sample) override;
     bool isBufferEmpty() const override;
 
+    // Board thermistor temperature API (ADC Channel 5)
+    float readTemperatureC() override;
+    int32_t getLastRawCh5() const { return _lastRawCh5; }
+
 private:
     int _csPin;
     int _drdyPin;
@@ -90,6 +94,7 @@ private:
     int32_t _lastValidZ = 0;
     uint32_t _lastValidStatus = 0xC00000;
     uint8_t _consecutiveGlitchCount = 0;
+    volatile int32_t _lastRawCh5 = 0x7FFFFFFF;
 
     void sendCommand(uint8_t cmd);
     void stopContinuous();

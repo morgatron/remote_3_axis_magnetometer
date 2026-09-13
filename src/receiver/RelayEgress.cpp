@@ -54,6 +54,7 @@ void RelayEgress::initAdvPacket(GatewayAdvPacket &advPkt, const TelemetryItem &i
     advPkt.sample_interval_ms = 1000;
     advPkt.status = (uint16_t)item.status;
     advPkt.vbat_mv = (uint16_t)(item.vbat * 1000.0f);
+    advPkt.temp_c_x100 = (int16_t)roundf(item.temp * 100.0f);
     advPkt.rssi = (int8_t)item.rssi;
     advPkt.gw_vbat_mv = getBatteryMilliVolts();
     advPkt.samples[0].x_nT = item.x;

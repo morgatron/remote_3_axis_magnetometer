@@ -43,8 +43,8 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
         }
 
         // 1. Process SensorBatchPacket (Extended Advertising Coded PHY burst, 1 to 18 samples)
-        if (mlen >= 19 + sizeof(CompactSample)) {
-            size_t minBatchSize = 19 + sizeof(CompactSample);
+        size_t minBatchSize = offsetof(SensorBatchPacket, samples) + sizeof(CompactSample);
+        if (mlen >= minBatchSize) {
             size_t maxOffset = (mlen > minBatchSize) ? min((size_t)4, mlen - minBatchSize) : 0;
             for (size_t offset = 0; offset <= maxOffset; offset++) {
                 SensorBatchPacket batch;

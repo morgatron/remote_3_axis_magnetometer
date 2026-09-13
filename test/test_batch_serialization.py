@@ -21,10 +21,11 @@ class TestBatchSerialization(unittest.TestCase):
         #     uint8_t       sample_count;         // 1 byte
         #     uint16_t      status;               // 2 bytes
         #     uint16_t      vbat_mv;              // 2 bytes
+        #     int16_t       temp_c_x100;          // 2 bytes
         #     CompactSample samples[10];          // 120 bytes
-        # } SensorBatchPacket;                  // Total = 139 bytes
+        # } SensorBatchPacket;                  // Total = 141 bytes
         self.compact_sample_fmt = "<fff" # 3 x float (x, y, z in nT) = 12 bytes
-        self.batch_hdr_fmt = "<8sIHBHH"  # 8s + uint32 + uint16 + uint8 + uint16 + uint16 = 19 bytes header
+        self.batch_hdr_fmt = "<8sIHBHHh"  # 8s + uint32 + uint16 + uint8 + uint16 + uint16 + int16 = 21 bytes header
 
     def test_compact_sample_packing(self):
         """Verify 3-axis sample packing into 12-byte compact struct."""
@@ -45,9 +46,10 @@ class TestBatchSerialization(unittest.TestCase):
         sample_count = 10
         status = 0x4D4F
         vbat_mv = 3300
+        temp_c_x100 = 2350         # 23.50 deg C
 
-        hdr_bytes = struct.pack(self.batch_hdr_fmt, device_id, latest_sample_age_ms, interval_ms, sample_count, status, vbat_mv)
-        self.assertEqual(len(hdr_bytes), 19)
+        hdr_bytes = struct.pack(self.batch_hdr_fmt, device_id, latest_sample_age_ms, interval_ms, sample_count, status, vbat_mv, temp_c_x100)
+        self.assertEqual(len(hdr_bytes), 21)
 
         samples_bytes = bytearray()
         expected_samples = []
@@ -59,15 +61,16 @@ class TestBatchSerialization(unittest.TestCase):
             samples_bytes.extend(struct.pack(self.compact_sample_fmt, x, y, z))
 
         full_payload = hdr_bytes + samples_bytes
-        self.assertEqual(len(full_payload), 19 + 120) # 139 bytes
+        self.assertEqual(len(full_payload), 21 + 120) # 141 bytes
 
         # Unpack header
-        dev_id_out, age_out, interval_out, count_out, status_out, vbat_out = struct.unpack(self.batch_hdr_fmt, full_payload[:19])
+        dev_id_out, age_out, interval_out, count_out, status_out, vbat_out, temp_out = struct.unpack(self.batch_hdr_fmt, full_payload[:21])
         self.assertEqual(dev_id_out.decode('utf-8').rstrip('\x00'), "NODE_3A")
         self.assertEqual(age_out, latest_sample_age_ms)
         self.assertEqual(interval_out, 1000)
         self.assertEqual(count_out, 10)
         self.assertEqual(vbat_out, 3300)
+        self.assertEqual(temp_out, 2350)
 
         # Simulate receiver local time
         rx_arrival_ms = 50000
@@ -75,7 +78,7 @@ class TestBatchSerialization(unittest.TestCase):
 
         # Unpack samples and reconstruct timestamps
         for i in range(count_out):
-            offset = 19 + (i * 12)
+            offset = 21 + (i * 12)
             x, y, z = struct.unpack(self.compact_sample_fmt, full_payload[offset:offset+12])
             offset_from_newest = (count_out - 1 - i) * interval_out
             sample_ts_ms = latest_sample_ts_ms - offset_from_newest

@@ -47,6 +47,14 @@ public:
     }
 
     /**
+     * @brief Read physical board/sensor temperature in degrees Celsius.
+     * @return Temperature in deg C, or -999.0f if not supported / invalid.
+     */
+    virtual float readTemperatureC() {
+        return -999.0f;
+    }
+
+    /**
      * @brief Read sample via SPI and push to ring buffer (called by high-priority sampling task).
      */
     virtual void readAndPushSample() = 0;

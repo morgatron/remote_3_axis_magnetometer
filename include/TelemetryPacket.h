@@ -87,12 +87,13 @@ typedef struct __attribute__((packed)) {
     uint8_t       sample_count;         // Number of samples in batch (up to 18)
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
-    CompactSample samples[18];          // Array of up to 18 compact samples (216 bytes, total = 235 bytes)
+    int16_t       temp_c_x100;          // Temperature in deg C * 100 (e.g. 2350 = 23.50 C, 0x7FFF = invalid/unmeasured)
+    CompactSample samples[18];          // Array of up to 18 compact samples (216 bytes, total = 237 bytes)
 } SensorBatchPacket;
 
 /**
  * @brief Gateway 1M Extended Advertising Telemetry Broadcast Packet.
- * Total size: 27 bytes header + up to 18 samples (12 bytes each) = 39 to 243 bytes.
+ * Total size: 29 bytes header + up to 18 samples (12 bytes each) = 41 to 245 bytes.
  * Fits within standard 251-byte Bluetooth 5.0 LE Extended Advertising auxiliary PDU.
  */
 typedef struct __attribute__((packed)) {
@@ -105,6 +106,7 @@ typedef struct __attribute__((packed)) {
     uint8_t       sample_count;         // Number of samples in packet (0 to 18)
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
+    int16_t       temp_c_x100;          // Temperature in deg C * 100 (0x7FFF = invalid/unmeasured)
     int8_t        rssi;                 // Signal strength from node to gateway in dBm
     uint16_t      gw_vbat_mv;           // Gateway battery voltage in mV
     CompactSample samples[18];          // Array of up to 18 samples (x, y, z in nT)

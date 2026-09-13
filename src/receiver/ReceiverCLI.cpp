@@ -124,6 +124,7 @@ void ReceiverCLI::handleCommand(const String &cmd) {
         pkt.sample_count = n;
         pkt.status = 0x004D4F;
         pkt.vbat_mv = 3900;
+        pkt.temp_c_x100 = 2450; // 24.50 C
         pkt.rssi = -55;
         pkt.gw_vbat_mv = getBatteryMilliVolts();
         for (int i = 0; i < n; i++) {
