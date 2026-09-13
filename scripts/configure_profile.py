@@ -139,12 +139,12 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         }
     },
     "CREEK_GATEWAY": {
-        "description": "Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)",
+        "description": "Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> USB Serial CDC + 1M BLE Broadcast)",
         "board_type": "Seeed Studio XIAO ESP32-C6 (RISC-V)",
         "pio_env": "esp32c6_receiver",
         "role": "receiver",
         "cli_commands": [
-            "MODE BLE",
+            "MODE BLE_SERIAL",
             "SAVE",
             "STATUS"
         ],
@@ -157,12 +157,12 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         }
     },
     "SUPERMINI_GATEWAY": {
-        "description": "ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)",
+        "description": "ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> USB Serial CDC + 1M BLE Broadcast)",
         "board_type": "ESP32-C3 Supermini (RISC-V)",
         "pio_env": "esp32c6_receiver" if False else "esp32c3_receiver",
         "role": "receiver",
         "cli_commands": [
-            "MODE BLE",
+            "MODE BLE_SERIAL",
             "SAVE",
             "STATUS"
         ],

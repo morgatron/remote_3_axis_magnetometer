@@ -39,7 +39,7 @@ void ReceiverCLI::printHelp() {
     Serial.println(F("   NODES               - Display active remote sensor node table"));
     Serial.println(F("   DEBUG <ON|OFF>      - Enable/Disable rendezvous diagnostic logging"));
     Serial.println(F("   DFS <ON|OFF>        - Enable/Disable Dynamic Frequency Scaling (40MHz sleep)"));
-    Serial.println(F("   MODE <SERIAL|WIFI|BOTH|BLE> - Set egress forwarding mode"));
+    Serial.println(F("   MODE <SERIAL|WIFI|BOTH|BLE|BLE_SERIAL> - Set egress forwarding mode"));
     Serial.println(F("   WIFI <ssid> <pass>  - Set egress router WiFi credentials"));
     Serial.println(F("   TARGET <ip> [port]  - Set target server IP & port for WiFi egress"));
     Serial.println(F("   CHANNEL <1-13>      - Set ESP-NOW WiFi radio channel"));
@@ -58,7 +58,7 @@ void ReceiverCLI::printStatus() {
     Serial.printf(" Egress Mode:          %s\r\n", 
         (egressModeConfig == 0) ? "SERIAL (USB CDC)" : 
         (egressModeConfig == 1) ? "WIFI" : 
-        (egressModeConfig == 2) ? "BOTH (Serial + WiFi + BLE)" : "BLE (1Mbps Extended Advertising Broadcast, Wi-Fi OFF)");
+        (egressModeConfig == 2) ? "BOTH (Serial + WiFi + BLE)" : "BLE + SERIAL (USB CDC + 1Mbps Extended Adv, Wi-Fi OFF)");
     if (egressModeConfig == 2 || egressModeConfig == 3) {
         Serial.println(F(" BLE Egress Link:      BROADCASTING (1M Extended Advertising, Connectionless)"));
     }
@@ -148,13 +148,13 @@ void ReceiverCLI::handleCommand(const String &cmd) {
             egressModeConfig = 2;
             BLEEgress::begin("MAG_GATEWAY");
             Serial.println(F("[CLI] Egress Mode set to: BOTH (Serial + WiFi + BLE)"));
-        } else if (modeStr == "BLE") {
+        } else if (modeStr == "BLE" || modeStr == "BLE_SERIAL" || modeStr == "SERIAL_BLE" || modeStr == "BLE+SERIAL") {
             egressModeConfig = 3;
             WiFi.mode(WIFI_OFF);
             BLEEgress::begin("MAG_GATEWAY");
-            Serial.println(F("[CLI] Egress Mode set to: BLE (1Mbps GATT Relay, Wi-Fi OFF ~80mA saved)"));
+            Serial.println(F("[CLI] Egress Mode set to: BLE + SERIAL (1Mbps Extended Adv + USB CDC, Wi-Fi OFF ~80mA saved)"));
         } else {
-            Serial.println(F("[CLI ERROR] Invalid mode. Use SERIAL, WIFI, BOTH, or BLE."));
+            Serial.println(F("[CLI ERROR] Invalid mode. Use SERIAL, WIFI, BOTH, BLE, or BLE_SERIAL."));
         }
         if (_saveCallback) _saveCallback();
     } else if (upper.startsWith("WIFI ")) {
