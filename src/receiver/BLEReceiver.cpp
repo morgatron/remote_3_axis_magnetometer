@@ -58,10 +58,9 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                     return;
                 }
             }
-        }
-
-        // 2. Fallback check for single SensorBinaryPacket
-        if (mlen >= sizeof(SensorBinaryPacket)) {
+            return; // Never fall through to single legacy packet if mlen >= minBatchSize
+        } else if (mlen >= sizeof(SensorBinaryPacket)) {
+            // 2. Fallback check for single legacy SensorBinaryPacket only for short advertisements
             size_t maxOffset = (mlen > sizeof(SensorBinaryPacket)) ? min((size_t)4, mlen - sizeof(SensorBinaryPacket)) : 0;
             for (size_t offset = 0; offset <= maxOffset; offset++) {
                 SensorBinaryPacket pkt;

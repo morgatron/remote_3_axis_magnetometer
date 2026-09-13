@@ -29,12 +29,17 @@ struct TelemetryItem {
      * @brief Formats current item attributes into standard 9-column CSV string in line buffer.
      */
     void formatCsvLine() {
+        float outTemp = (isnan(temp) || isinf(temp) || temp <= -200.0f || temp >= 200.0f) ? 0.0f : temp;
+        float outVbat = (isnan(vbat) || isinf(vbat) || vbat < 0.0f || vbat > 20.0f) ? 0.0f : vbat;
+        float outX = (isnan(x) || isinf(x)) ? 0.0f : x;
+        float outY = (isnan(y) || isinf(y)) ? 0.0f : y;
+        float outZ = (isnan(z) || isinf(z)) ? 0.0f : z;
         snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f,%d\n",
                  node_id[0] != '\0' ? node_id : "UNKNOWN",
                  (unsigned long long)timestamp_us,
-                 x, y, z,
+                 outX, outY, outZ,
                  (unsigned int)(status & 0xFFFFFF),
-                 temp, vbat, rssi);
+                 outTemp, outVbat, rssi);
     }
 
     /**

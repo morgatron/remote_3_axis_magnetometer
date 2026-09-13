@@ -179,19 +179,39 @@ def forwarder_worker():
                         break
 
                 for nid, node_batch in batches_by_node.items():
-                    payload = {"node_id": nid, "points": node_batch}
+                    valid_points = []
+                    for pt in node_batch:
+                        x, y, z = pt.get("x"), pt.get("y"), pt.get("z")
+                        if any(v is None or not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v) for v in (x, y, z)):
+                            continue
+                        t = pt.get("temp")
+                        if t is not None and (not isinstance(t, (int, float)) or math.isnan(t) or math.isinf(t)):
+                            pt["temp"] = None
+                        v = pt.get("vbat")
+                        if v is not None and (not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v)):
+                            pt["vbat"] = None
+                        valid_points.append(pt)
+
+                    if not valid_points:
+                        continue
+
+                    payload = {"node_id": nid, "points": valid_points}
                     try:
                         resp = requests.post(f"{CENTRAL_SERVER_URL}/api/v1/telemetry/batch", json=payload, headers=headers, timeout=3.0)
                         if resp.status_code != 201:
                             print(f"[Gateway Warning] HTTP {resp.status_code} from central server: {resp.text}")
-                            for s in node_batch:
+                            for s in valid_points:
                                 send_queue.put(s)
                             time.sleep(1.0)
-                    except Exception as net_err:
+                    except requests.exceptions.RequestException as net_err:
                         print(f"[Gateway Network Error] Central Server unreachable: {net_err}")
-                        for s in node_batch:
+                        for s in valid_points:
                             send_queue.put(s)
                         time.sleep(2.0)
+                    except ValueError as val_err:
+                        print(f"[Gateway Data Error] Non-compliant payload discarded for node {nid}: {val_err}")
+                    except Exception as err:
+                        print(f"[Gateway Error] Unexpected error posting batch: {err}")
 
             time.sleep(0.2)
         except Exception as e:

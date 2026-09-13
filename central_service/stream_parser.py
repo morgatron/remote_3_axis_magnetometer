@@ -6,6 +6,7 @@ Used by desktop_app (serial_worker.py, udp_worker.py) and central_service (gatew
 """
 
 import time
+import math
 from typing import Optional, Dict, Any
 
 def parse_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
@@ -34,11 +35,20 @@ def parse_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
             x = float(parts[2])
             y = float(parts[3])
             z = float(parts[4])
+            if math.isnan(x) or math.isinf(x) or math.isnan(y) or math.isinf(y) or math.isnan(z) or math.isinf(z):
+                return None
+
             clean_status = parts[5].strip().split()[0]
             status_int = int(clean_status, 16)
 
             temp = float(parts[6]) if len(parts) >= 7 and parts[6].strip() else None
+            if temp is not None and (math.isnan(temp) or math.isinf(temp)):
+                temp = None
+
             vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else None
+            if vbat is not None and (math.isnan(vbat) or math.isinf(vbat)):
+                vbat = None
+
             rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else None
 
             return {
@@ -60,6 +70,9 @@ def parse_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
             x = float(parts[1])
             y = float(parts[2])
             z = float(parts[3])
+            if math.isnan(x) or math.isinf(x) or math.isnan(y) or math.isinf(y) or math.isnan(z) or math.isinf(z):
+                return None
+
             clean_status = parts[4].strip().split()[0]
             status_int = int(clean_status, 16)
 
