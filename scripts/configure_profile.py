@@ -161,11 +161,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "board_type": "ESP32-C3 Supermini (RISC-V)",
         "pio_env": "esp32c6_receiver" if False else "esp32c3_receiver",
         "role": "receiver",
-        "cli_commands": [
-            "MODE BLE",
-            "SAVE",
-            "STATUS"
-        ],
+        "cli_commands": [],  # USB-CDC disabled on boot; default egress is already MODE_EGRESS_BLE
         "expected_current": {
             "idle_sleep": "11 - 13 mA (C3 RISC-V idle @ 40MHz) + Wi-Fi OFF + USB-CDC OFF",
             "tx_peak": "80 - 85 mA (1M BLE Extended Adv bursts @ +9dBm, 200ms)",
@@ -202,6 +198,10 @@ def flash_firmware(env: str, port: str):
 
 
 def configure_device(port: str, commands: list, is_mock: bool = False):
+    if not commands:
+        print("[*] No serial CLI configuration required for this profile (USB-CDC is disabled for low-power; firmware defaults active).")
+        return
+
     print(f"[*] Connecting to {port} @ 921600 baud to configure parameters...")
     time.sleep(2.0)  # Wait for USB reset after flashing
     try:
@@ -209,6 +209,7 @@ def configure_device(port: str, commands: list, is_mock: bool = False):
         s.port = port
         s.baudrate = 921600
         s.timeout = 1.0
+        s.write_timeout = 1.0
         s.dtr = False
         s.rts = False
         s.open()
