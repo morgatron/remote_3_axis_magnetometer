@@ -123,10 +123,31 @@ class BleGatewayScanner:
         gw_vbat = gw_vbat_mv / 1000.0 if gw_vbat_mv > 0 else 0.0
 
         if sample_count == 0:
-            # Heartbeat packet from gateway (no sensor samples)
+            # Heartbeat / Diagnostic packet from gateway (no sensor samples)
             gw_disp_vbat = gw_vbat if gw_vbat > 0 else vbat
             gw_vbat_str = f"{gw_disp_vbat:.2f}V" if gw_disp_vbat > 0 else "--"
-            print(f">>> [GATEWAY HEARTBEAT] ID: '{node_id}' | Gateway Battery: {gw_vbat_str} | Seq: {seq}")
+
+            diag_event = (status >> 12) & 0x0F
+            sched_state = (status >> 8) & 0x0F
+            misses = status & 0xFF
+            metric = sample_interval_ms
+
+            state_names = ["DISCOVERY", "SLEEPING", "LISTENING", "PERIODIC_LOOKOUT"]
+            event_names = ["IDLE_HEARTBEAT", "WINDOW_MISSED", "LOST_SYNC_DISCOVERY", "PERIODIC_LOOKOUT", "SYNC_ACQUIRED"]
+
+            state_str = state_names[sched_state] if sched_state < len(state_names) else f"STATE_{sched_state}"
+            event_str = event_names[diag_event] if diag_event < len(event_names) else f"EVENT_{diag_event}"
+
+            if diag_event == 0:
+                print(f">>> [GATEWAY HEARTBEAT] ID: '{node_id}' | State: {state_str} | Gateway Battery: {gw_vbat_str} | Seq: {seq}")
+            elif diag_event in (1, 2):
+                print(f"\n>>> [GATEWAY ALERT] Event: {event_str} | State: {state_str} | Misses: {misses} | Target: '{node_id}' | On-Time: {metric}ms | Batt: {gw_vbat_str}")
+            elif diag_event == 3:
+                print(f"\n>>> [GATEWAY NOTICE] Event: PERIODIC_LOOKOUT (10-min scan) | State: {state_str} | Batt: {gw_vbat_str}")
+            elif diag_event == 4:
+                print(f"\n>>> [GATEWAY STATUS] Event: SYNC_ACQUIRED | State: {state_str} | Target: '{node_id}' | Disc Duration: {metric}ms | Batt: {gw_vbat_str}")
+            else:
+                print(f">>> [GATEWAY DIAG] Event: {event_str} | State: {state_str} | Misses: {misses} | Battery: {gw_vbat_str} | Seq: {seq}")
             return
 
         is_mock = bool(status & 0x8000)

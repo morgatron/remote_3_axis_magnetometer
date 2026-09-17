@@ -94,8 +94,8 @@ pio run -e esp32-c3-devkitm-1 -t upload --upload-port /dev/ttyACM0
 2. **Central Web GUI**: Open `http://localhost:8000` to view live magnetic field vectors ($B_x, B_y, B_z$) and real-time PSD spectrum plots.
 
 3. **Protocol-Specific Test Guides**:
-   - For Sub-GHz LoRa (Heltec V4 SX1262): See [**LoRa Testing Guide (`docs/lora_testing_setup.md`)**](docs/lora_testing_setup.md).
-   - For BLE Coded PHY (Long Range): See [**BLE Testing Guide (`docs/simple_ble_testing_setup.md`)**](docs/simple_ble_testing_setup.md).
+   - For Wireless & Field Range Testing (BLE Coded PHY & LoRa): See [**Wireless & Field Testing Guide (`docs/3_WIRELESS_AND_FIELD_TESTING.md`)**](docs/3_WIRELESS_AND_FIELD_TESTING.md).
+   - For Low-Power Modes & Timing Margins: See [**Firmware & Power Optimization Guide (`docs/2_FIRMWARE_AND_POWER_GUIDE.md`)**](docs/2_FIRMWARE_AND_POWER_GUIDE.md).
 
 4. **Automated Host Test Suite (No Hardware Required)**:
    To test the software pipeline without physical hardware:

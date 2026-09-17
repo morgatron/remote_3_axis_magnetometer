@@ -46,12 +46,23 @@ python3 scripts/ble_gateway.py
 # Collect N samples and exit cleanly
 python3 scripts/ble_gateway.py --max-samples 40
 
+# Run for a specific duration in seconds
+python3 scripts/ble_gateway.py --timeout 45
+
 # Save stream to CSV file
 python3 scripts/ble_gateway.py --csv garden_session.csv
 
 # Forward directly to Central Server HTTP endpoint
 python3 scripts/ble_gateway.py --forward-url http://localhost:8000/api/v1/telemetry
 ```
+
+### Gateway Diagnostic & Rendezvous Event Decoding
+The gateway broadcasts real-time diagnostic packets (`sample_count == 0`) which `ble_gateway.py` parses automatically:
+* **`[GATEWAY HEARTBEAT]`**: Emitted every 60s when idle, reporting gateway battery voltage and active tracking state.
+* **`[GATEWAY STATUS] SYNC_ACQUIRED`**: Emitted upon locking to a remote sensor, reporting discovery duration in milliseconds.
+* **`[GATEWAY ALERT] WINDOW_MISSED`**: Emitted when an expected burst window times out, reporting consecutive miss count and on-time.
+* **`[GATEWAY ALERT] LOST_SYNC_DISCOVERY`**: Emitted after 3 consecutive misses, indicating the receiver has transitioned to discovery mode.
+* **`[GATEWAY NOTICE] PERIODIC_LOOKOUT`**: Emitted during the 10-minute periodic scan for new field nodes.
 
 ---
 

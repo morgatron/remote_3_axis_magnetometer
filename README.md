@@ -11,16 +11,13 @@ Features universal field sensor firmware, multi-protocol receiver gateway firmwa
 Complete user documentation is available in the [`docs/`](docs/) directory:
 
 - [**Documentation Index (`docs/README.md`)**](docs/README.md)
-- [**Getting Started & System Overview (`docs/getting_started.md`)**](docs/getting_started.md)
-- [**Firmware Flashing & Hardware Guide (`docs/firmware_guide.md`)**](docs/firmware_guide.md)
-- [**Server Setup Guide (Raspberry Pi 4 & Laptop Optimization) (`docs/SERVER_SETUP_GUIDE.md`)**](docs/SERVER_SETUP_GUIDE.md)
-- [**Residential NAT & Remote Access Guide (`docs/NAT_AND_REMOTE_ACCESS.md`)**](docs/NAT_AND_REMOTE_ACCESS.md)
-- [**Secrets Management & System Security Guide (`docs/SECRETS_AND_SECURITY.md`)**](docs/SECRETS_AND_SECURITY.md)
-- [**Central Server & Web GUI Guide (`docs/central_server_guide.md`)**](docs/central_server_guide.md)
-- [**Desktop Application Guide (`docs/desktop_app_guide.md`)**](docs/desktop_app_guide.md)
-- [**LoRa SX1262 Testing & Setup Guide (`docs/lora_testing_setup.md`)**](docs/lora_testing_setup.md)
-- [**BLE Coded PHY Testing Guide (`docs/simple_ble_testing_setup.md`)**](docs/simple_ble_testing_setup.md)
+- [**1. Getting Started Guide (`docs/1_GETTING_STARTED.md`)**](docs/1_GETTING_STARTED.md)
+- [**2. Firmware & Power Optimization Guide (`docs/2_FIRMWARE_AND_POWER_GUIDE.md`)**](docs/2_FIRMWARE_AND_POWER_GUIDE.md)
+- [**3. Wireless & Field Testing Guide (`docs/3_WIRELESS_AND_FIELD_TESTING.md`)**](docs/3_WIRELESS_AND_FIELD_TESTING.md)
+- [**4. Central Server & Dashboards Guide (`docs/4_CENTRAL_SERVER_AND_DASHBOARDS.md`)**](docs/4_CENTRAL_SERVER_AND_DASHBOARDS.md)
+- [**Active Device Profiles Reference (`IN_USE_PROFILES.md`)**](IN_USE_PROFILES.md)
 - [**Minimal End-to-End Testing Setup (`TESTING_SETUP.md`)**](TESTING_SETUP.md)
+- [**AI Architecture & Development Guide (`AI.md`)**](AI.md)
 
 ---
 

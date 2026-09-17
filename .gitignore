@@ -28,6 +28,8 @@ venv/
 *.db-journal
 *.db-wal
 *.db-shm
+backups/
+central_service/backups/
 
 # Sensitive & Local Configuration Files
 *.cfg

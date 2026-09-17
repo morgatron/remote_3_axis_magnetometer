@@ -157,19 +157,19 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         }
     },
     "SUPERMINI_GATEWAY": {
-        "description": "ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> USB Serial CDC + 1M BLE Broadcast)",
+        "description": "ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> 1M BLE Extended Adv Broadcast, USB-CDC Disabled)",
         "board_type": "ESP32-C3 Supermini (RISC-V)",
         "pio_env": "esp32c6_receiver" if False else "esp32c3_receiver",
         "role": "receiver",
         "cli_commands": [
-            "MODE BLE_SERIAL",
+            "MODE BLE",
             "SAVE",
             "STATUS"
         ],
         "expected_current": {
-            "idle_sleep": "11 - 13 mA (C3 RISC-V idle) + Wi-Fi OFF",
-            "tx_peak": "25 - 35 mA (1M BLE GATT Notification bursts)",
-            "average": "15 - 18 mA (25% duty-cycle Coded scan + 1M BLE connected)",
+            "idle_sleep": "11 - 13 mA (C3 RISC-V idle @ 40MHz) + Wi-Fi OFF + USB-CDC OFF",
+            "tx_peak": "80 - 85 mA (1M BLE Extended Adv bursts @ +9dBm, 200ms)",
+            "average": "16 - 18 mA (Slotted 150ms lead / 600ms window Coded scan + 200ms 1M BLE egress)",
             "runtime_1000mah": "~55 - 65 hours (~2.5 days)",
             "runtime_3000mah": "~7 - 8 days"
         }

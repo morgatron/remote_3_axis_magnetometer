@@ -22,7 +22,8 @@ struct __attribute__((packed)) SensorBatchPacket {
     uint8_t       sample_count;         // Number of samples in batch (up to 18)
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
-    CompactSample samples[18];          // Dynamic catch-up buffer (up to 235 bytes)
+    int16_t       temp_c_x100;          // Temperature in deg C * 100 (0x7FFF = invalid/unmeasured)
+    CompactSample samples[18];          // Dynamic catch-up buffer (up to 237 bytes)
 };
 
 struct __attribute__((packed)) GatewayAdvPacket {
@@ -93,13 +94,17 @@ Connect to the receiver gateway at **921600 baud**:
 
 ### B. Receiver Gateway Optimizations:
 1. **Slotted Rendezvous Sleep Protocol:**
-   - The receiver automatically tracks remote sensor burst intervals and calculates precise sleep intervals.
-   - During the ~9.5-second gap between bursts, the BLE radio is shut down (`pScan->stop()`), achieving a **~98.6% radio sleep duty cycle** (dropping current from ~85 mA to ~16 mA).
-   - The receiver wakes up with a **400 ms lead time** prior to the predicted burst, captures the incoming burst in ~100–150 ms, and immediately returns to sleep.
+   - The receiver tracks remote sensor burst cadences via EWMA smoothing ($(3 \times \text{period} + dt) / 4$) within a bounded acceptance window ($7,500\text{ ms} - 12,500\text{ ms}$).
+   - **Backlog Invariance Rule**: `nominalPeriod` is fixed at $10.0\text{ s}$ and NEVER computed from `sample_count`. When a sensor drains backlog, `sample_count` reaches 18, but transmission remains strictly on the 10.0s grid.
+   - During the ~9.4-second gap between bursts, the BLE radio is shut down (`pScan->stop()`), achieving a **~97% radio sleep duty cycle** (dropping current to ~10–12 mA base at 40 MHz CPU).
+   - The receiver wakes up with a **350 ms lead time** prior to the predicted burst. This 350 ms margin absorbs up to ±3% uncalibrated crystal drift on cold boot before EWMA converges.
+   - Upon receiving the batch, the receiver shuts off its radio immediately (~5 ms after RX), resulting in actual radio on-times of only ~50–100 ms.
+   - **Immediate Discovery Lock**: In `STATE_DISCOVERY`, the scheduler immediately exits upon the first valid batch reception, eliminating 12-second 75 mA discovery freezes.
+   - **Dedicated Coded PHY Scanning**: Active scan is locked to Coded PHY (`pScan->setPhy(NimBLEScan::Phy::SCAN_CODED)`) to guarantee 100% duty cycle reception and instant `AUX_SCAN_REQ` hardware ACKs.
 2. **Connectionless 1Mbps Extended Advertising Egress:**
    - Transmits telemetry bursts connectionlessly via BLE 5.0 1M Extended Advertising auxiliary PDUs (`Company ID 0xFFFF`, magic `b"MG"`).
    - Eliminates connection handshakes, GATT pairing delays, supervision timeouts, and slave latency requirements.
 3. **Wi-Fi Radio Power-Down:** In `MODE BLE`, the Wi-Fi subsystem is shut down (`WiFi.mode(WIFI_OFF)`), saving **$\sim 80\text{ mA}$**.
 4. **Sleep State Independence from USB CDC:**
-   - In field deployment (battery powered, headless on a window ledge), the USB-CDC peripheral is completely unused, eliminating any concern regarding host USB-CDC suspension.
-   - For tethered workbench development, keeping the CPU at 80 MHz preserves active USB CDC serial monitoring while the radio sleeps at 98.6% duty cycle.
+   - On the `SUPERMINI_GATEWAY` receiver profile, USB-CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`), eliminating USB PHY power draw (~15 mA saved).
+   - Real-time diagnostics (sync acquired, window timeout, lost sync discovery) are broadcast via BLE Extended Advertising diagnostic packets and parsed by `scripts/ble_gateway.py`.

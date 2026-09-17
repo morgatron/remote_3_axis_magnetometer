@@ -60,29 +60,43 @@ void BLEEgress::broadcast(const GatewayAdvPacket &pkt, uint32_t durationMs) {
                   pkt.packet_seq, pkt.sample_count, (unsigned)payloadLen, mfgOk, setOk, startOk, (unsigned)durationMs);
 }
 
+void BLEEgress::broadcastDiagnostic(uint8_t eventCode, uint8_t stateCode, uint8_t missCount, const char* targetNode, uint16_t metricVal) {
+    if (!_initialized) return;
+
+    GatewayAdvPacket diagPkt;
+    memset(&diagPkt, 0, sizeof(diagPkt));
+    diagPkt.company_id = 0xFFFF;
+    diagPkt.magic[0] = 'M';
+    diagPkt.magic[1] = 'G';
+    static uint8_t diagSeq = 0;
+    diagPkt.packet_seq = ++diagSeq;
+    if (targetNode && targetNode[0] != '\0') {
+        strncpy(diagPkt.node_id, targetNode, sizeof(diagPkt.node_id) - 1);
+    } else {
+        strncpy(diagPkt.node_id, "GW_IDLE", sizeof(diagPkt.node_id) - 1);
+    }
+    diagPkt.timestamp_us = (uint64_t)millis() * 1000ULL;
+    diagPkt.sample_interval_ms = metricVal;
+    diagPkt.sample_count = 0; // 0 samples denotes diagnostic/heartbeat packet
+    diagPkt.status = ((uint16_t)eventCode << 12) | ((uint16_t)stateCode << 8) | (uint16_t)missCount;
+    diagPkt.vbat_mv = getBatteryMilliVolts();
+    diagPkt.rssi = (int8_t)nodeTracker.getLastRssi();
+    diagPkt.gw_vbat_mv = getBatteryMilliVolts();
+
+    PowerManager::acquireLock();
+    broadcast(diagPkt, 120);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    PowerManager::releaseLock();
+}
+
 void BLEEgress::poll() {
     if (!_initialized || !NimBLEDevice::isInitialized()) return;
     uint32_t now = millis();
-    // Send a periodic heartbeat beacon if quiet for >= 10000 ms (or 5000 ms if no nodes ever seen)
-    uint32_t quietTimeoutMs = (nodeTracker.getNodeCount() > 0) ? 10000 : 5000;
+    // Send a periodic heartbeat beacon if quiet for >= 60000 ms (or 15000 ms if no nodes ever seen)
+    uint32_t quietTimeoutMs = (nodeTracker.getNodeCount() > 0) ? 60000 : 15000;
     if (now - _lastBroadcastMs >= quietTimeoutMs) {
-        GatewayAdvPacket hb;
-        memset(&hb, 0, sizeof(hb));
-        hb.company_id = 0xFFFF;
-        hb.magic[0] = 'M';
-        hb.magic[1] = 'G';
-        static uint8_t hbSeq = 0;
-        hb.packet_seq = ++hbSeq;
-        strncpy(hb.node_id, "GW_IDLE", sizeof(hb.node_id) - 1);
-        hb.timestamp_us = (uint64_t)now * 1000ULL;
-        hb.sample_interval_ms = 1000;
-        hb.sample_count = 0; // 0 samples indicates idle/heartbeat
-        hb.status = 0x0001;
-        hb.vbat_mv = getBatteryMilliVolts();
-        hb.rssi = 0;
-        hb.gw_vbat_mv = getBatteryMilliVolts();
-
-        broadcast(hb);
+        const char* target = (nodeTracker.getNodeCount() > 0) ? nodeTracker.getLastNodeId() : "GW_IDLE";
+        broadcastDiagnostic(DIAG_EVENT_HEARTBEAT, 1 /* SLEEPING */, 0, target, 0);
     }
 }
 

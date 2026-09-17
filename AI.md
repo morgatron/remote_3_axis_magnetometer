@@ -172,6 +172,37 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 | `SAVE` | Persist current configuration to NVS Flash memory |
 | `REBOOT` | Restart receiver MCU |
 
+### Slotted Rendezvous & Low-Power Gateway Architectural Rules & Gotchas
+
+> [!IMPORTANT]
+> **Slotted Rendezvous Constraints (SUPERMINI_GATEWAY & C6 Receivers)**:
+> The following rules are critical to maintaining sub-15 mA average gateway power and drift-free synchronization with field sensors:
+>
+> 1. **Cadence Tracking Invariance to Backlog (`NodeTracker.cpp`)**:
+>    - **NEVER scale `nominalPeriod` by `sample_count`** (e.g. `sample_count * 1000`).
+>    - *Rationale*: Field sensor nodes operate on a strict 10.0-second transmission grid (`minBurstIntervalMs = 10000`). When a sensor drains un-ACKed backlog, `sample_count` dynamically increases up to 18 samples, but the burst interval remains strictly 10.0s. Scaling `nominalPeriod` causes the receiver to project an 18-second sleep, completely missing the sensor and breaking sync.
+>    - `nominalPeriod` is fixed at 10,000 ms with an adaptive acceptance window of 7,500 ms – 12,500 ms (±25% crystal tolerance). The measured interval $dt$ is smoothed via EWMA: $(3 \times \text{period} + dt) / 4$.
+>
+> 2. **Immediate Discovery Lock & Transition to Sleep (`RendezvousScheduler.cpp`)**:
+>    - When entering `STATE_DISCOVERY` (on boot or after 3 consecutive missed windows), the scheduler must **immediately exit Discovery upon the first valid batch reception** (`IngestionPipeline::getLastBatchRxMs() >= _stateStartMs`).
+>    - *Rationale*: Blindly waiting for the full 12.0s discovery timeout wastes up to 11 seconds of continuous ~75 mA radio scanning and causes the receiver to exit Discovery out-of-phase with the sensor. Exiting immediately anchors `_nextWakeMs` to the exact burst arrival timestamp and drops power to ~10 mA within milliseconds.
+>
+> 3. **Lead Time Margin vs Uncalibrated Crystal Drift (`RendezvousScheduler.h`)**:
+>    - `LEAD_TIME_MS` must be at least **350 ms**.
+>    - *Rationale*: Low-cost ESP32-C3 internal oscillators / crystals can deviate by 2–3% (e.g. 9,730 ms instead of 10,000 ms = 270 ms early). On cold boot, before EWMA has measured the true interval, a 250 ms lead time causes the sensor to transmit ~20 ms *before* the receiver wakes up. A 350 ms lead time guarantees the receiver is awake ~80 ms ahead of the burst. Since the receiver shuts down the radio within ~5 ms of packet arrival, extra lead time incurs zero power penalty once synchronized.
+>
+> 4. **Dedicated Coded PHY Scanning (`BLEReceiver.cpp`)**:
+>    - Must explicitly call `pScan->setPhy(NimBLEScan::Phy::SCAN_CODED)` during radio setup.
+>    - *Rationale*: NimBLE-Arduino defaults to `SCAN_ALL` (0x03), splitting scan time 50/50 between 1M and Coded PHY. This causes missed bursts and dropped hardware `AUX_SCAN_REQ` ACKs on Coded PHY.
+>
+> 5. **Radio Controller Teardown Avoidance (`BLEReceiver.cpp` & `PowerManager.cpp`)**:
+>    - Do NOT call `NimBLEDevice::deinit(false)` or `esp_bt_controller_disable()` during periodic 10-second rendezvous sleep.
+>    - *Rationale*: Reinitializing NimBLE takes 150–200 ms with high CPU power. Calling `pScan->stop()` already shuts down the radio synthesizer and LNA, achieving ~10–12 mA base current at 40 MHz CPU while allowing instant zero-latency wakeups.
+>
+> 6. **Headless Battery Operation & USB-CDC (`platformio.ini`)**:
+>    - On the `SUPERMINI_GATEWAY` receiver profile, USB CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`) to eliminate USB PLL power draw.
+>    - Diagnostics (heartbeats, window misses, discovery locks) are broadcast over 1M Extended Advertising (`BLEEgress::broadcastDiagnostic`), allowing full headless debugging via `scripts/ble_gateway.py`.
+
 ---
 
 ## Running & Testing

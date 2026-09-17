@@ -23,7 +23,7 @@ void RelayEgress::begin() {
 
 void RelayEgress::dispatchSerialWiFi(const TelemetryItem &item, WiFiUDP &egressUdp, char *batchBuf, size_t &batchLen) {
     // 1. Serial Egress (USB CDC output to host PC / gateway.py)
-    if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH || egressModeConfig == MODE_EGRESS_BLE) {
+    if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BOTH) {
         if (Serial.availableForWrite() > 0) {
             Serial.print(item.line);
         }
@@ -100,8 +100,8 @@ void RelayEgress::relayTask(void *pvParameters) {
                     appendSampleToAdvPacket(advPkt, nextItem);
                 }
 
-                // If more samples are pending in queue (catch-up backlog), broadcast for 500 ms then yield to next packet
-                uint32_t advDurMs = (uxQueueMessagesWaiting(telemetryQueue) > 0) ? 500 : 800;
+                // Bundle and broadcast for 200 ms (or 150 ms if catch-up backlog exists in queue)
+                uint32_t advDurMs = (uxQueueMessagesWaiting(telemetryQueue) > 0) ? 150 : 200;
                 BLEEgress::broadcast(advPkt, advDurMs);
                 vTaskDelay(pdMS_TO_TICKS(advDurMs));
                 PowerManager::releaseLock();

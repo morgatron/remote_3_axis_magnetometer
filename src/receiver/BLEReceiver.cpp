@@ -83,7 +83,6 @@ void BLEReceiver::onRadioPowerDown() {
     if (pScan && pScan->isScanning()) {
         pScan->stop();
     }
-    NimBLEDevice::deinit(false);
 }
 
 void BLEReceiver::onRadioPowerUp() {
@@ -97,6 +96,9 @@ void BLEReceiver::onRadioPowerUp() {
     pScan->setActiveScan(true);
     pScan->setInterval(50);
     pScan->setWindow(50);
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    pScan->setPhy(NimBLEScan::Phy::SCAN_CODED);
+#endif
 }
 
 void BLEReceiver::startScanning() {

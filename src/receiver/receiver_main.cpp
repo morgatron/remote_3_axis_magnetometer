@@ -21,7 +21,7 @@ float g_cachedBatteryVoltage = 0.0f;
 // Global Receiver State Variables
 QueueHandle_t telemetryQueue = NULL;
 NodeTracker nodeTracker;
-bool g_debugScheduler = true; // Can be toggled at runtime via DEBUG ON/OFF in ReceiverCLI
+bool g_debugScheduler = false; // Disabled by default for low power; toggleable via DEBUG ON/OFF in ReceiverCLI
 bool g_dfsEnabled = true;     // Dynamic Frequency Scaling: 40MHz during sleep, 80MHz during burst/RX
 
 volatile uint32_t espnowRxCount = 0;
@@ -160,11 +160,13 @@ void setup() {
     sampleBatteryVoltage(true);
 
     Serial.begin(921600);
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3) || defined(ARDUINO_USB_CDC_ON_BOOT)
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
     Serial.setTxTimeoutMs(0);
 #endif
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
     unsigned long startWait = millis();
     while (!Serial && (millis() - startWait < 500)) delay(10);
+#endif
 
     Serial.println(F("\r\n========================================================="));
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));

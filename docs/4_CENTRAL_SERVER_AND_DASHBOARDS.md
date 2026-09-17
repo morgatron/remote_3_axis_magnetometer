@@ -66,7 +66,23 @@ The container automatically exposes:
 
 ---
 
-## 4. Desktop PyQt5 Application (`desktop_app/`)
+## 4. API Key Security (Optional)
+
+To secure the server when exposed on an external network:
+```bash
+# On server:
+export API_KEY="your_secure_passphrase"
+./manage.sh start
+
+# In gateway / clients:
+export API_KEY="your_secure_passphrase"
+python3 gateway.py
+```
+When set, write endpoints (`/api/v1/telemetry`, `/api/v1/telemetry/batch`) require the `X-API-Key` HTTP header. Read-only endpoints (`/`, `/health`, `/ws/live`) remain open for dashboards.
+
+---
+
+## 5. Desktop PySide6 Application (`desktop_app/`)
 
 For lab testing and direct USB/UDP recording to HDF5:
 
@@ -78,5 +94,6 @@ python3 main.py
 
 Features:
 * Live high-speed 3-axis vector plotting ($B_x, B_y, B_z, |B|$).
+* Real-time Welch Power Spectral Density (PSD) calculation.
 * Direct serial capture from `/dev/ttyACM*`.
 * Instant recording to standard `.h5` / `.npy` format.

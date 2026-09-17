@@ -69,7 +69,8 @@ docker compose --profile all up -d
 
 ## 📚 Detailed Documentation
 
-- [Server Setup Guide (Raspberry Pi 4 & Laptop Optimization)](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/docs/SERVER_SETUP_GUIDE.md)
-- [Residential NAT & Remote Access Guide](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/docs/NAT_AND_REMOTE_ACCESS.md)
-- [Secrets Management & System Security Guide](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/docs/SECRETS_AND_SECURITY.md)
-- [Central Server Architecture & API Specification](file:///home/morgan/Gropbox/SMACT2026/remote_3_axis_magnetometer/central_service/AI.md)
+- [Central Server & Dashboards Guide (`docs/4_CENTRAL_SERVER_AND_DASHBOARDS.md`)](../docs/4_CENTRAL_SERVER_AND_DASHBOARDS.md)
+- [Central Server Architecture & API Specification (`central_service/AI.md`)](AI.md)
+- [Historical Legacy Server Setup Guide (`docs/archive_legacy_docs/SERVER_SETUP_GUIDE.md`)](../docs/archive_legacy_docs/SERVER_SETUP_GUIDE.md)
+- [Historical NAT & Remote Access Guide (`docs/archive_legacy_docs/NAT_AND_REMOTE_ACCESS.md`)](../docs/archive_legacy_docs/NAT_AND_REMOTE_ACCESS.md)
+- [Historical Secrets & Security Guide (`docs/archive_legacy_docs/SECRETS_AND_SECURITY.md`)](../docs/archive_legacy_docs/SECRETS_AND_SECURITY.md)

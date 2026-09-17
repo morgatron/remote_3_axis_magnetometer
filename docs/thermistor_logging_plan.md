@@ -1,5 +1,9 @@
 # Implementation Plan: ADC Channel 4 Thermistor Logging (CREEK)
 
+> [!NOTE]
+> **Status: FULLY IMPLEMENTED & LIVE IN FIRMWARE**
+> Thermistor logging on ADC Channel 4 is fully integrated across `FLC100_ADS131`, `TelemetryPacket.h` (`temp_c_x100`), `IngestionPipeline`, `RelayEgress`, and `scripts/ble_gateway.py`. This document is preserved as the hardware specification and Steinhart-Hart equation reference.
+
 ## 1. Overview & Objectives
 On the CREEK sensor board (FLC100 3-Axis Fluxgate Carrier with TI ADS131E08 24-bit ADC), an NTC thermistor is wired to **ADC Channel 4**. 
 

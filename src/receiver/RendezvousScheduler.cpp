@@ -3,6 +3,7 @@
 #include "NodeTracker.h"
 #include "IngestionPipeline.h"
 #include "PowerManager.h"
+#include "BLEEgress.h"
 
 #ifndef DEBUG_BLE_SCHEDULER
 #define DEBUG_BLE_SCHEDULER 1
@@ -56,14 +57,31 @@ void RendezvousScheduler::poll() {
                 SCHED_PRINTLN(F("[BLE SCHEDULER] Scanner inactive in Discovery mode, restarting..."));
                 _startScan();
             }
+
+            // Immediate exit upon valid batch capture: avoid wasting 12s of 75 mA continuous scan
+            if (IngestionPipeline::getLastBatchRxMs() >= _stateStartMs && nodeTracker.getActiveNodeCount() > 0) {
+                uint32_t discDuration = now - _stateStartMs;
+                SCHED_PRINTF("[BLE SCHEDULER] Discovery lock: Captured batch from %s in %lu ms! Entering Slotted Rendezvous.\r\n",
+                              IngestionPipeline::getLastBatchNodeId(), (unsigned long)discDuration);
+                transitionToSleep(now);
+                if (_state == STATE_SLEEPING) {
+                    BLEEgress::broadcastDiagnostic(DIAG_EVENT_SYNC_ACQUIRED, STATE_SLEEPING, 0, _targetNodeId, (uint16_t)discDuration);
+                }
+                break;
+            }
+
             if (now - _stateStartMs >= DISCOVERY_DURATION_MS) {
-                if (nodeTracker.getNodeCount() == 0) {
+                if (nodeTracker.getActiveNodeCount() == 0) {
                     _stateStartMs = now;
-                    SCHED_PRINTLN(F("[BLE SCHEDULER] Discovery complete: No nodes heard yet. Continuing continuous scan..."));
+                    SCHED_PRINTLN(F("[BLE SCHEDULER] Discovery complete: No active nodes heard yet. Continuing continuous scan..."));
                 } else {
-                    SCHED_PRINTF("[BLE SCHEDULER] Discovery complete: Found %d node(s). Entering Slotted Rendezvous mode.\r\n",
-                                  nodeTracker.getNodeCount());
+                    SCHED_PRINTF("[BLE SCHEDULER] Discovery complete: Found %d active node(s). Entering Slotted Rendezvous mode.\r\n",
+                                  nodeTracker.getActiveNodeCount());
+                    uint32_t discDuration = now - _stateStartMs;
                     transitionToSleep(now);
+                    if (_state == STATE_SLEEPING) {
+                        BLEEgress::broadcastDiagnostic(DIAG_EVENT_SYNC_ACQUIRED, STATE_SLEEPING, 0, _targetNodeId, (uint16_t)discDuration);
+                    }
                 }
             }
             break;
@@ -74,14 +92,15 @@ void RendezvousScheduler::poll() {
                 PowerManager::powerDownRadio();
             }
 
-            // Check periodic 5-minute lookout discovery
+            // Check periodic 10-minute lookout discovery
             if (now - _lastPeriodicDiscoveryMs >= PERIODIC_DISCOVERY_INTERVAL_MS) {
                 PowerManager::powerUpRadio();
                 _state = STATE_PERIODIC_DISCOVERY;
                 _stateStartMs = now;
                 _lastPeriodicDiscoveryMs = now;
                 if (_startScan) _startScan();
-                SCHED_PRINTLN(F("[BLE SCHEDULER] Starting 12s Periodic Lookout Scan to discover new nodes..."));
+                SCHED_PRINTLN(F("[BLE SCHEDULER] Starting Periodic Lookout Scan to discover new nodes..."));
+                BLEEgress::broadcastDiagnostic(DIAG_EVENT_PERIODIC_LOOKOUT, STATE_PERIODIC_DISCOVERY, 0, "LOOKOUT", (uint16_t)PERIODIC_DISCOVERY_DURATION_MS);
                 break;
             }
 
@@ -107,7 +126,7 @@ void RendezvousScheduler::poll() {
                 uint32_t upcomingWake = 0, upcomingTarget = 0;
                 char nextNode[32] = {0};
                 if (nodeTracker.getNextExpectedWake(now + 100, LEAD_TIME_MS, upcomingWake, upcomingTarget, nextNode, sizeof(nextNode))) {
-                    if ((long)(upcomingWake - now) <= 400) {
+                    if ((long)(upcomingWake - now) <= 250) {
                         _nextWakeMs = upcomingWake;
                         _currentTargetMs = upcomingTarget;
                         strncpy(_targetNodeId, nextNode, sizeof(_targetNodeId) - 1);
@@ -121,13 +140,16 @@ void RendezvousScheduler::poll() {
                 break;
             }
 
-            uint32_t activeTimeout = (_missedCount == 0) ? WINDOW_TIMEOUT_MS : (WINDOW_TIMEOUT_MS + 1200);
+            uint32_t activeTimeout = (_missedCount == 0) ? WINDOW_TIMEOUT_MS : (WINDOW_TIMEOUT_MS + 400);
             if (now - _stateStartMs >= activeTimeout) {
                 _missedCount++;
+                nodeTracker.recordMiss(_targetNodeId);
+                uint32_t onTime = now - _stateStartMs;
                 SCHED_PRINTF("[BLE SCHEDULER] Window timed out for %s (missed %d consecutive). Stopping radio.\r\n",
                               _targetNodeId, _missedCount);
-                if (_missedCount >= 2) {
-                    SCHED_PRINTLN(F("[BLE SCHEDULER] Lost sync (2 consecutive misses). Re-entering Discovery..."));
+                if (_missedCount >= 3) {
+                    SCHED_PRINTLN(F("[BLE SCHEDULER] Lost sync (3 consecutive misses). Re-entering Discovery..."));
+                    BLEEgress::broadcastDiagnostic(DIAG_EVENT_LOST_SYNC_DISCOVERY, STATE_DISCOVERY, _missedCount, _targetNodeId, (uint16_t)onTime);
                     PowerManager::powerUpRadio();
                     _state = STATE_DISCOVERY;
                     _stateStartMs = now;
@@ -136,6 +158,7 @@ void RendezvousScheduler::poll() {
                         _startScan();
                     }
                 } else {
+                    BLEEgress::broadcastDiagnostic(DIAG_EVENT_WINDOW_TIMEOUT, STATE_SLEEPING, _missedCount, _targetNodeId, (uint16_t)onTime);
                     transitionToSleep(now);
                 }
             }

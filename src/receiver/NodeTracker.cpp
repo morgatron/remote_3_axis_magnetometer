@@ -31,7 +31,6 @@ bool NodeTracker::recordPacket(const char* device_id, const uint8_t* mac, int rs
 
     // De-duplicate repeated wireless beacon scans of the exact same sample
     if (sample_ts_ms > 0 && sample_ts_ms == node.last_sample_ts_ms) {
-        node.last_seen_ms = now;
         node.rssi = rssi;
         return false;
     }
@@ -78,36 +77,54 @@ bool NodeTracker::recordBatchSeen(const char* device_id, const uint8_t* mac, int
     }
 
     // De-duplicate repeated wireless scans of the exact same batch burst (within 3s window with identical payload)
+    // Note: Do NOT update node.last_seen_ms here; last_seen_ms must mark the start of the burst for precise rendezvous scheduling.
     if (node.last_seen_ms > 0 && (now - node.last_seen_ms < 3000) &&
         sample_count == node.last_batch_sample_count &&
         s0_x == node.last_batch_sample0_x &&
         s0_y == node.last_batch_sample0_y &&
         s0_z == node.last_batch_sample0_z) {
-        node.last_seen_ms = now;
         node.rssi = rssi;
         return false; // Already processed this batch!
     }
 
-    // Track real-world measured batch cadence for closed-loop rendezvous tracking
+    // Nominal burst transmission cadence for field sensors is 10.0 seconds (10,000 ms).
+    // Note: Do NOT scale nominalPeriod by sample_count! When a sensor drains its unacked backlog,
+    // sample_count expands up to 18 samples, but the burst transmission interval remains strictly 10.0s.
+    uint32_t nominalPeriod = 10000;
+    uint32_t minPeriod = 7500;  // Allow 7.5s to 12.5s for nominal 10s burst (±25% clock drift tolerance)
+    uint32_t maxPeriod = 12500;
+
     if (node.last_seen_ms > 0) {
         uint32_t dt = now - node.last_seen_ms;
-        if (dt >= 9500 && dt <= 10500) {
+        if (dt >= minPeriod && dt <= maxPeriod) {
             if (node.observed_period_ms == 0) {
                 node.observed_period_ms = dt;
             } else {
-                node.observed_period_ms = (node.observed_period_ms * 7 + dt) / 8;
+                // Adaptive EWMA tracking (smooths over RF packet arrival jitter)
+                node.observed_period_ms = (node.observed_period_ms * 3 + dt) / 4;
             }
-        } else if (dt >= 19000 && dt <= 21000) {
+        } else if (dt >= (minPeriod * 2) && dt <= (maxPeriod * 2)) {
+            // One missed burst: calculate single period
             uint32_t singleDt = dt / 2;
-            if (node.observed_period_ms > 0) {
-                node.observed_period_ms = (node.observed_period_ms * 7 + singleDt) / 8;
+            if (node.observed_period_ms == 0) {
+                node.observed_period_ms = singleDt;
+            } else {
+                node.observed_period_ms = (node.observed_period_ms * 3 + singleDt) / 4;
+            }
+        } else if (dt >= (minPeriod * 3) && dt <= (maxPeriod * 3)) {
+            // Two missed bursts: calculate single period
+            uint32_t singleDt = dt / 3;
+            if (node.observed_period_ms == 0) {
+                node.observed_period_ms = singleDt;
+            } else {
+                node.observed_period_ms = (node.observed_period_ms * 3 + singleDt) / 4;
             }
         }
     }
 
-    // Clamp observed period strictly to nominal 10.0s range (+/- 200 ms)
-    if (node.observed_period_ms < 9800 || node.observed_period_ms > 10200) {
-        node.observed_period_ms = 10000;
+    // Clamp observed period to valid ±25% nominal window
+    if (node.observed_period_ms < minPeriod || node.observed_period_ms > maxPeriod) {
+        node.observed_period_ms = nominalPeriod;
     }
 
     node.last_batch_start_ts_ms = start_ts_ms;
@@ -119,6 +136,8 @@ bool NodeTracker::recordBatchSeen(const char* device_id, const uint8_t* mac, int
     node.last_seen_ms = now;
     node.packet_count += sample_count;
     node.rssi = rssi;
+    node.active = true;
+    node.consecutive_misses = 0;
     if (vbat > 0.0f) node.vbat = vbat;
     strncpy(node.protocol, protocol, sizeof(node.protocol) - 1);
     return true; // New batch payload
@@ -165,6 +184,24 @@ void NodeTracker::printNodeTable(Stream &out) {
 
 int NodeTracker::getNodeCount() const {
     return _nodeCount;
+}
+
+int NodeTracker::getActiveNodeCount() const {
+    int count = 0;
+    for (int i = 0; i < _nodeCount; i++) {
+        if (_nodes[i].active) count++;
+    }
+    return count;
+}
+
+void NodeTracker::recordMiss(const char* device_id) {
+    int idx = findNodeIndex(device_id, nullptr);
+    if (idx >= 0 && _nodes[idx].active) {
+        _nodes[idx].consecutive_misses++;
+        if (_nodes[idx].consecutive_misses >= 3) {
+            _nodes[idx].active = false;
+        }
+    }
 }
 
 int NodeTracker::getLastRssi() const {
@@ -231,13 +268,11 @@ bool NodeTracker::getNextExpectedWake(uint32_t now, uint32_t leadTimeMs, uint32_
 
 int NodeTracker::findNodeIndex(const char* device_id, const uint8_t* mac) {
     for (int i = 0; i < _nodeCount; i++) {
-        if (_nodes[i].active) {
-            if (device_id && strlen(device_id) > 0 && strcmp(_nodes[i].node_id, device_id) == 0) {
-                return i;
-            }
-            if (mac && memcmp(_nodes[i].mac, mac, 6) == 0) {
-                return i;
-            }
+        if (device_id && strlen(device_id) > 0 && strcmp(_nodes[i].node_id, device_id) == 0) {
+            return i;
+        }
+        if (mac && memcmp(_nodes[i].mac, mac, 6) == 0) {
+            return i;
         }
     }
     return -1;

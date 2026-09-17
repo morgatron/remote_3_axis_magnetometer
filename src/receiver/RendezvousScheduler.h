@@ -17,11 +17,11 @@ public:
         STATE_PERIODIC_DISCOVERY
     };
 
-    static constexpr uint32_t DISCOVERY_DURATION_MS = 15000;
-    static constexpr uint32_t LEAD_TIME_MS = 400;
-    static constexpr uint32_t WINDOW_TIMEOUT_MS = 1600;
-    static constexpr uint32_t PERIODIC_DISCOVERY_INTERVAL_MS = 300000; // 5 minutes
-    static constexpr uint32_t PERIODIC_DISCOVERY_DURATION_MS = 12000;  // 12 seconds
+    static constexpr uint32_t DISCOVERY_DURATION_MS = 12000;          // Shortened to 12s to save discovery power
+    static constexpr uint32_t LEAD_TIME_MS = 350;                  // 350ms lead time before expected burst (absorbs ±3% uncalibrated crystal skew)
+    static constexpr uint32_t WINDOW_TIMEOUT_MS = 1000;            // 1000ms fallback timeout (shuts down early upon RX)
+    static constexpr uint32_t PERIODIC_DISCOVERY_INTERVAL_MS = 600000; // 10 minutes periodic lookout
+    static constexpr uint32_t PERIODIC_DISCOVERY_DURATION_MS = 8000;   // 8s periodic lookout scan
 
     using ScanControlFn = void (*)();
     using IsScanningFn = bool (*)();
