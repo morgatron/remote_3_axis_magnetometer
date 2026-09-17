@@ -214,6 +214,86 @@ class BleGatewayScanner:
                 self.csv_handle.close()
             print("\n[INFO] Scanner stopped cleanly.")
 
+    def run_serial(self, port: str, baudrate: int = 921600):
+        import serial
+        print("\n" + "=" * 92)
+        print("     BLE-TO-SERIAL BRIDGE TELEMETRY GATEWAY CLIENT")
+        print("=" * 92)
+        print(f"  Serial Device:   {port} ({baudrate} baud)")
+        if self.forward_url:
+            print(f"  Forward Server:  {self.forward_url}")
+        if self.csv_file:
+            print(f"  CSV Log File:    {self.csv_file}")
+        print("=" * 92 + "\n")
+
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "VBAT", "RSSI", "STATUS"))
+        print("-" * 92)
+
+        ser = serial.Serial(port, baudrate, timeout=0.2)
+        ser.dtr = True
+        ser.rts = False
+        print(f"[ACTIVE] Listening for decoded BLE telemetry on {port}...\n")
+
+        try:
+            while not self._stop_event.is_set():
+                if self.timeout_s and (time.time() - self.start_time >= self.timeout_s):
+                    print(f"\n[INFO] Reached timeout of {self.timeout_s}s. Stopping...")
+                    break
+
+                raw_line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not raw_line:
+                    continue
+
+                if raw_line.startswith("#") or raw_line.startswith("="):
+                    # Status or heartbeat line from bridge
+                    print(f"  {raw_line}")
+                    continue
+
+                parts = raw_line.split(",")
+                if len(parts) >= 6:
+                    node_id = parts[0].strip()
+                    try:
+                        ts = int(float(parts[1]))
+                        x = float(parts[2])
+                        y = float(parts[3])
+                        z = float(parts[4])
+                        status_hex = parts[5].strip()
+                        vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else 0.0
+                        rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else 0
+                    except (ValueError, IndexError):
+                        continue
+
+                    self.display_and_record_sample(node_id, ts, x, y, z, status_hex, vbat, rssi)
+
+                    # HTTP Forwarding
+                    if self.requests_session and self.forward_url:
+                        pt = {
+                            "node_id": node_id,
+                            "timestamp": datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "x": x, "y": y, "z": z,
+                            "units": "nT",
+                            "status_flags": f"0x{status_hex}",
+                            "vbat": int(vbat * 1000.0),
+                            "rssi": rssi,
+                            "extra_json": None
+                        }
+                        try:
+                            if "/batch" in self.forward_url:
+                                self.requests_session.post(self.forward_url, json={"node_id": node_id, "points": [pt]}, timeout=1.0)
+                            else:
+                                self.requests_session.post(self.forward_url, json=pt, timeout=1.0)
+                        except Exception as e:
+                            print(f"  [FORWARD ERROR] {e}")
+
+                    if self.max_samples and self.total_samples >= self.max_samples:
+                        break
+        finally:
+            ser.close()
+            if self.csv_handle:
+                self.csv_handle.close()
+            print("\n[INFO] Serial listener stopped cleanly.")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -221,6 +301,8 @@ def main():
     )
     parser.add_argument("--name", type=str, default="MAG_GATEWAY", help="Gateway BLE device name")
     parser.add_argument("--address", type=str, help="Gateway BLE MAC / UUID address filter")
+    parser.add_argument("--serial", type=str, help="Serial port for hardware BLE bridge (e.g. /dev/ttyACM0)")
+    parser.add_argument("--baud", type=int, default=921600, help="Baud rate for serial bridge (default: 921600)")
     parser.add_argument("--forward-url", type=str, help="HTTP URL to forward telemetry to Central Server")
     parser.add_argument("--csv", type=str, help="Save parsed telemetry to CSV file")
     parser.add_argument("--max-samples", type=int, help="Stop after receiving N samples")
@@ -238,7 +320,10 @@ def main():
     )
 
     try:
-        asyncio.run(scanner.run())
+        if args.serial:
+            scanner.run_serial(args.serial, baudrate=args.baud)
+        else:
+            asyncio.run(scanner.run())
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\n[INFO] Exited cleanly.")
 
