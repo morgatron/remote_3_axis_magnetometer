@@ -28,10 +28,10 @@ Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy da
 4. **Server-Side Downsampling**:
    - Use `downsample_sec=60` (1-min) or `3600` (1-hour) on `/api/v1/data` to query multi-month datasets at high speeds.
 
-5. **Edge Arrival Timestamping & $\Delta t$ Relative Reconstruction**:
+5. **Edge Arrival Timestamping & Monotonic Epoch Tracking (`NodeEpochTracker`)**:
    - Microcontrollers stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTCs or NTP client code.
-   - Upon arrival at `gateway.py`, telemetry packets are stamped with the gateway's system UTC wall clock.
-   - Multi-sample batches (e.g. after network drops or Store-and-Forward queue flushes) are processed via `parse_telemetry_batch()`, which anchors to the latest arrival time and uses relative microsecond $\Delta t$ back-calculation to reconstruct exact historical sample spacing without clock drift.
+   - Upon arrival at `gateway.py` / `ble_gateway.py`, `NodeEpochTracker` locks each node's boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's system UTC clock.
+   - When an outage ends and the ring buffer dumps historical backlog, `NodeEpochTracker` places each sample at its true historical UTC moment, preventing timestamp clustering or collisions while filtering out crystal oscillator frequency drift (~15 ppm). Node reboots are detected automatically to re-anchor a fresh boot epoch.
 
 ---
 

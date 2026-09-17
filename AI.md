@@ -33,10 +33,10 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
 5. **PySide6 Desktop Application (`desktop_app/main.py`)**:
    - Provides real-time multi-axis time-series plotting, Welch PSD spectral analysis, device provisioning, and Gzip-compressed HDF5 (`.h5`) logging.
 
-6. **Edge Arrival Timestamping & $\Delta t$ Relative Reconstruction**:
+6. **Edge Arrival Timestamping & Monotonic Epoch Tracking (`NodeEpochTracker`)**:
    - Field nodes stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTC chips or NTP client stacks.
-   - Upon packet arrival at the edge gateway (`gateway.py`), telemetry is anchored to the gateway's NTP-synchronized system UTC clock.
-   - For multi-sample batches (e.g. after network drops or Store-and-Forward queue flushes), `stream_parser.parse_telemetry_batch` uses relative microsecond $\Delta t$ back-calculation to reconstruct exact 1.000-second historical sample spacing without clock drift.
+   - Upon packet arrival at the edge gateway (`gateway.py` / `ble_gateway.py`), `NodeEpochTracker` locks and tracks the node's monotonic boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's NTP-synchronized UTC clock.
+   - For multi-sample batches and backlog recovery dumps after outages, `NodeEpochTracker` maps each sample's `timestamp_us` directly to its true historical UTC moment, preventing timestamp clustering or collisions during high-speed backlog catch-up bursts while smoothly filtering microsecond crystal frequency drift (~15 ppm).
 
 7. **Modular Telemetry Ring Buffer (`include/TelemetryRingBuffer.h`)**:
    - Encapsulates 10-minute (600-sample) disconnect backlog storage into a thread-safe, self-contained C++ class.
