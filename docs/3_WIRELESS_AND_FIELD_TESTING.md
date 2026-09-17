@@ -12,7 +12,7 @@ The receiver gateway broadcasts connectionless 1 Mbps BLE **Extended Advertising
 1. Open **nRF Connect** (Android / iOS) and go to the **Scanner** tab.
 2. In the scanner filter, look for advertisements or raw manufacturer data from **`MAG_GATEWAY`** (or Company ID `0xFFFF`).
 3. Tap on the advertised packet to view details:
-   * **Manufacturer Data:** Contains the 27-byte `GatewayAdvPacket` header followed by 12-byte compact $(X, Y, Z)$ sensor samples.
+   * **Manufacturer Data:** Contains the 31-byte `GatewayAdvPacket` header (33 bytes including 2-byte company ID) followed by 12-byte compact $(X, Y, Z)$ sensor samples.
    * **Company ID:** `0xFFFF` (Test/Custom)
    * **Payload Format:** Unpacked automatically by `scripts/ble_gateway.py` or nRF Connect raw payload inspector.
 4. Every 10 seconds, the receiver emits a 1-second burst containing up to 18 samples from the remote sensor node.

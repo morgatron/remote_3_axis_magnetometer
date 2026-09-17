@@ -35,8 +35,10 @@ struct __attribute__((packed)) GatewayAdvPacket {
     uint8_t       sample_count;         // Number of samples in packet (0 to 18)
     uint16_t      status;               // Status word
     uint16_t      vbat_mv;              // Battery voltage in mV
+    int16_t       temp_c_x100;          // Temperature in deg C * 100 (0x7FFF = invalid/unmeasured)
     int8_t        rssi;                 // Signal strength in dBm
-    CompactSample samples[18];          // Up to 18 samples (39 to 243 bytes)
+    uint16_t      gw_vbat_mv;           // Gateway battery voltage in mV
+    CompactSample samples[18];          // Up to 18 samples (45 to 249 bytes)
 };
 ```
 * **Payload Compliance:** Both structures fit safely inside the standard 251-byte Bluetooth 5.0 LE Extended Advertising auxiliary PDU limit.

@@ -94,13 +94,33 @@ class BleGatewayScanner:
         sample_count = raw[21]
         status = struct.unpack_from("<H", raw, 22)[0]
         vbat_mv = struct.unpack_from("<H", raw, 24)[0]
-        rssi = struct.unpack_from("<b", raw, 26)[0]
         vbat = vbat_mv / 1000.0
 
-        # Gateway battery voltage (offset 27 when 29-byte header is present)
-        gw_vbat_mv = struct.unpack_from("<H", raw, 27)[0] if len(raw) >= 29 else 0
+        # Dynamically determine header size to maintain backward compatibility across firmware revisions:
+        # Revision 3 (current, with thermistor temp_c_x100): 31 bytes
+        # Revision 2 (with gw_vbat_mv): 29 bytes
+        # Revision 1 (legacy): 27 bytes
+        expected_samples_bytes = sample_count * 12
+        raw_header_len = len(raw) - expected_samples_bytes if sample_count > 0 else len(raw)
+
+        if raw_header_len >= 31:
+            temp_c_x100 = struct.unpack_from("<h", raw, 26)[0]
+            temp = (temp_c_x100 / 100.0) if temp_c_x100 != 0x7FFF else None
+            rssi = struct.unpack_from("<b", raw, 28)[0]
+            gw_vbat_mv = struct.unpack_from("<H", raw, 29)[0]
+            header_size = 31
+        elif raw_header_len >= 29:
+            temp = None
+            rssi = struct.unpack_from("<b", raw, 26)[0]
+            gw_vbat_mv = struct.unpack_from("<H", raw, 27)[0]
+            header_size = 29
+        else:
+            temp = None
+            rssi = struct.unpack_from("<b", raw, 26)[0]
+            gw_vbat_mv = 0
+            header_size = 27
+
         gw_vbat = gw_vbat_mv / 1000.0 if gw_vbat_mv > 0 else 0.0
-        header_size = 29 if len(raw) >= 29 else 27
 
         if sample_count == 0:
             # Heartbeat packet from gateway (no sensor samples)
@@ -112,7 +132,8 @@ class BleGatewayScanner:
         is_mock = bool(status & 0x8000)
         mock_tag = " [MOCK DATA]" if is_mock else ""
         gw_vbat_str = f" | GW Battery: {gw_vbat:.2f}V" if gw_vbat > 0 else ""
-        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}'{mock_tag} ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str})")
+        temp_str = f" | Temp: {temp:.1f}°C" if temp is not None else ""
+        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}'{mock_tag} ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str}{temp_str})")
 
         status_disp = "MOCK" if is_mock else f"{status:04X}"
         batch_points = []
@@ -130,13 +151,14 @@ class BleGatewayScanner:
 
             offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
             sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
-            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi)
+            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi, temp)
 
             batch_points.append({
                 "node_id": node_id,
                 "timestamp": iso_ts,
                 "x": x, "y": y, "z": z,
                 "units": "nT",
+                "temp": temp,
                 "status_flags": f"0x{status:06X}",
                 "vbat": vbat_mv,
                 "rssi": rssi,
@@ -160,43 +182,46 @@ class BleGatewayScanner:
         if self.max_samples and self.total_samples >= self.max_samples:
             self._stop_event.set()
 
-    def display_and_record_sample(self, node_id, ts, x, y, z, status_hex, vbat, rssi):
+    def display_and_record_sample(self, node_id, ts, x, y, z, status_hex, vbat, rssi, temp=None):
         self.total_samples += 1
         mag = math.sqrt(x*x + y*y + z*z)
         self.magnitudes.append(mag)
 
         vbat_str = f"{vbat:.2f}V" if vbat > 0 else "--"
         rssi_str = f"{rssi}dBm" if rssi != 0 else "--"
+        temp_str = f"{temp:.1f}C" if temp is not None else "--"
 
-        row_fmt = "{:>6} | {:<12} | {:>12} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>6} | {:>6} | {:<8}"
+        row_fmt = "{:>6} | {:<12} | {:>12} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>6} | {:>6} | {:>6} | {:<8}"
         print(row_fmt.format(
             self.total_samples,
             node_id[:12],
             ts,
             x, y, z, mag,
+            temp_str,
             vbat_str,
             rssi_str,
             status_hex
         ))
 
         if self.csv_handle:
-            self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{vbat:.2f},{rssi}\n")
+            temp_val = f"{temp:.2f}" if temp is not None else ""
+            self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{temp_val},{vbat:.2f},{rssi}\n")
             self.csv_handle.flush()
 
     async def run(self):
-        print("\n" + "=" * 92)
+        print("\n" + "=" * 102)
         print("     BLE 1Mbps CONNECTIONLESS EXTENDED ADVERTISING GATEWAY CLIENT")
-        print("=" * 92)
+        print("=" * 102)
         print(f"  Listening for:   '{self.target_name}'" + (f" ({self.target_address})" if self.target_address else " (Any Gateway)"))
         if self.forward_url:
             print(f"  Forward Server:  {self.forward_url}")
         if self.csv_file:
             print(f"  CSV Log File:    {self.csv_file}")
-        print("=" * 92 + "\n")
+        print("=" * 102 + "\n")
 
-        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:<8}"
-        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "VBAT", "RSSI", "STATUS"))
-        print("-" * 92)
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:>6} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "TEMP", "VBAT", "RSSI", "STATUS"))
+        print("-" * 102)
 
         scanner = BleakScanner(detection_callback=self.detection_callback)
         await scanner.start()

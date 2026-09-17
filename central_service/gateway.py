@@ -19,6 +19,7 @@ import os
 import sys
 import time
 import math
+import struct
 import socket
 import json
 import queue
@@ -151,6 +152,61 @@ def parse_csv_line(line: str):
             "rssi": parsed.get("rssi")
         }
     return None
+
+def parse_gateway_adv_packet(raw: bytes, arrival_time: float = None):
+    """Decodes 1Mbps connectionless GatewayAdvPacket BLE advertisements with dynamic header support."""
+    if len(raw) < 27 or raw[:2] != b"MG":
+        return []
+
+    if arrival_time is None:
+        arrival_time = time.time()
+
+    from datetime import datetime, timezone
+    node_id = raw[3:11].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+    sample_interval_ms = struct.unpack_from("<H", raw, 19)[0]
+    sample_count = raw[21]
+    status = struct.unpack_from("<H", raw, 22)[0]
+    vbat_mv = struct.unpack_from("<H", raw, 24)[0]
+
+    expected_samples_bytes = sample_count * 12
+    raw_header_len = len(raw) - expected_samples_bytes if sample_count > 0 else len(raw)
+
+    if raw_header_len >= 31:
+        temp_c_x100 = struct.unpack_from("<h", raw, 26)[0]
+        temp = (temp_c_x100 / 100.0) if temp_c_x100 != 0x7FFF else None
+        rssi = struct.unpack_from("<b", raw, 28)[0]
+        header_size = 31
+    elif raw_header_len >= 29:
+        temp = None
+        rssi = struct.unpack_from("<b", raw, 26)[0]
+        header_size = 29
+    else:
+        temp = None
+        rssi = struct.unpack_from("<b", raw, 26)[0]
+        header_size = 27
+
+    results = []
+    for i in range(sample_count):
+        offset = header_size + i * 12
+        if offset + 12 > len(raw):
+            break
+        x, y, z = struct.unpack_from("<fff", raw, offset)
+        offset_from_newest_sec = ((sample_count - 1 - i) * sample_interval_ms) / 1000.0
+        sample_time_sec = arrival_time - offset_from_newest_sec
+        iso_ts = datetime.fromtimestamp(sample_time_sec, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        results.append({
+            "node_id": node_id,
+            "timestamp": iso_ts,
+            "x": x,
+            "y": y,
+            "z": z,
+            "status_flags": f"0x{status:06X}",
+            "temp": temp,
+            "vbat": vbat_mv,
+            "rssi": rssi
+        })
+    return results
 
 def forwarder_worker():
     """Flushes queued telemetry from all interfaces to the Central Data Server."""
@@ -338,8 +394,25 @@ def serial_listener_thread(port, baud):
 # --- 3. BLE Listener (Async) ---
 async def ble_listener_loop():
     connected_devices = set()
-    print("[Gateway BLE] Scanning for BLE Magnetometers (Nordic UART Service)...")
-    
+    last_adv_seen = {}
+    print("[Gateway BLE] Scanner active: listening for GatewayAdvPackets and NUS...")
+
+    def adv_callback(device, adv_data):
+        if 0xFFFF in adv_data.manufacturer_data:
+            raw = adv_data.manufacturer_data[0xFFFF]
+            if len(raw) >= 27 and raw[:2] == b"MG":
+                seq = raw[2]
+                node_id = raw[3:11].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+                key = (node_id, seq)
+                now = time.time()
+                if key in last_adv_seen and now - last_adv_seen[key] < 5.0:
+                    return
+                last_adv_seen[key] = now
+                samples = parse_gateway_adv_packet(raw, arrival_time=now)
+                for s in samples:
+                    if not send_queue.full():
+                        send_queue.put(s)
+
     async def connect_node(device):
         addr = device.address
         name = device.name or addr
@@ -368,15 +441,18 @@ async def ble_listener_loop():
         finally:
             connected_devices.discard(addr)
 
-    while True:
+    scanner = BleakScanner(detection_callback=adv_callback, service_uuids=[NUS_SERVICE_UUID])
+    try:
+        await scanner.start()
+        while True:
+            await asyncio.sleep(2.0)
+    except Exception as err:
+        print(f"[Gateway BLE Error] {err}")
+    finally:
         try:
-            devices = await BleakScanner.discover(service_uuids=[NUS_SERVICE_UUID], timeout=4.0)
-            for dev in devices:
-                if dev.address not in connected_devices:
-                    asyncio.create_task(connect_node(dev))
-        except Exception as err:
-            print(f"[Gateway BLE Scan Error] {err}")
-        await asyncio.sleep(5.0)
+            await scanner.stop()
+        except Exception:
+            pass
 
 def start_ble_thread():
     loop = asyncio.new_event_loop()
