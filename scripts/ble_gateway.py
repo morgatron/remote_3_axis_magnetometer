@@ -23,8 +23,37 @@ import json
 import struct
 import asyncio
 import argparse
+import os
 from datetime import datetime, timezone
 from typing import Optional
+
+# Import shared NodeEpochTracker from central_service or fallback definition
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "central_service")))
+try:
+    from stream_parser import NodeEpochTracker
+except ImportError:
+    class NodeEpochTracker:
+        def __init__(self, drift_alpha=0.02, max_live_latency_sec=2.5):
+            self.drift_alpha = drift_alpha
+            self.max_live_latency_sec = max_live_latency_sec
+            self._nodes = {}
+        def get_sample_utc(self, node_id, ts_us, arrival_wall_time=None):
+            if arrival_wall_time is None: arrival_wall_time = time.time()
+            ts_sec = ts_us / 1_000_000.0
+            info = self._nodes.get(node_id)
+            if info is None or ts_sec < info["last_ts_sec"] - 5.0:
+                epoch = arrival_wall_time - ts_sec
+                self._nodes[node_id] = {"epoch": epoch, "last_ts_sec": ts_sec}
+                return arrival_wall_time
+            epoch = info["epoch"]
+            sample_utc = epoch + ts_sec
+            latency = arrival_wall_time - sample_utc
+            if -0.5 <= latency <= self.max_live_latency_sec:
+                info["epoch"] = (1.0 - self.drift_alpha) * epoch + self.drift_alpha * (arrival_wall_time - ts_sec)
+            if ts_sec > info["last_ts_sec"]: info["last_ts_sec"] = ts_sec
+            return sample_utc
+        def get_sample_iso(self, node_id, ts_us, arrival_wall_time=None):
+            return datetime.fromtimestamp(self.get_sample_utc(node_id, ts_us, arrival_wall_time), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 try:
     from bleak import BleakScanner
@@ -51,6 +80,7 @@ class BleGatewayScanner:
         self.magnitudes = []
         self.last_seen_seq = -1
         self.last_seen_ts = -1
+        self.epoch_tracker = NodeEpochTracker()
         self._stop_event = asyncio.Event()
 
         if self.csv_file:
@@ -166,12 +196,9 @@ class BleGatewayScanner:
             if offset + 12 > len(raw):
                 break
             x, y, z = struct.unpack_from("<fff", raw, offset)
-            offset_from_newest_sec = ((sample_count - 1 - i) * sample_interval_ms) / 1000.0
-            sample_time_sec = arrival_wall_time - offset_from_newest_sec
-            iso_ts = datetime.fromtimestamp(sample_time_sec, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
             offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
             sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
+            iso_ts = self.epoch_tracker.get_sample_iso(node_id, sample_ts, arrival_wall_time)
             self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi, temp)
 
             batch_points.append({

@@ -93,7 +93,7 @@ sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(2, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
 
 try:
-    from stream_parser import parse_telemetry_line, parse_telemetry_batch
+    from stream_parser import parse_telemetry_line, parse_telemetry_batch, NodeEpochTracker
 except ImportError as e:
     print(f"[Gateway Fatal] Could not import 'stream_parser': {e}")
     sys.exit(1)
@@ -105,12 +105,15 @@ except ImportError:
     HAS_TERMUX_USB = False
 
 
-# Thread-safe / Async-safe Telemetry Queue
+# Thread-safe / Async-safe Telemetry Queue and Monotonic Epoch Tracker
 send_queue = queue.Queue(maxsize=10000)
+node_epoch_tracker = NodeEpochTracker()
 
 def parse_payload_batch(raw_payload: str, arrival_time: float = None):
-    """Parses multi-line CSV payload and applies relative delta-t back-calculation anchored to arrival_time."""
-    parsed_list = parse_telemetry_batch(raw_payload, arrival_wall_time=arrival_time)
+    """Parses multi-line CSV payload and applies relative delta-t or locked epoch tracking."""
+    if arrival_time is None:
+        arrival_time = time.time()
+    parsed_list = parse_telemetry_batch(raw_payload, arrival_wall_time=arrival_time, epoch_tracker=node_epoch_tracker)
     results = []
     for parsed in parsed_list:
         vbat_val = parsed.get("vbat")
@@ -131,9 +134,11 @@ def parse_payload_batch(raw_payload: str, arrival_time: float = None):
         })
     return results
 
-def parse_csv_line(line: str):
-    """Parses standard CSV line from ESP32 using shared stream_parser module."""
-    parsed = parse_telemetry_line(line)
+def parse_csv_line(line: str, arrival_time: float = None):
+    """Parses standard CSV line from ESP32 using shared stream_parser module with epoch tracking."""
+    if arrival_time is None:
+        arrival_time = time.time()
+    parsed = parse_telemetry_line(line, arrival_wall_time=arrival_time, epoch_tracker=node_epoch_tracker)
     if parsed:
         vbat_val = parsed.get("vbat")
         vbat_mv = int(round(vbat_val * 1000.0)) if (vbat_val is not None and vbat_val < 20.0) else (int(round(vbat_val)) if vbat_val is not None else None)
@@ -154,15 +159,15 @@ def parse_csv_line(line: str):
     return None
 
 def parse_gateway_adv_packet(raw: bytes, arrival_time: float = None):
-    """Decodes 1Mbps connectionless GatewayAdvPacket BLE advertisements with dynamic header support."""
+    """Decodes 1Mbps connectionless GatewayAdvPacket BLE advertisements with dynamic header support and epoch tracking."""
     if len(raw) < 27 or raw[:2] != b"MG":
         return []
 
     if arrival_time is None:
         arrival_time = time.time()
 
-    from datetime import datetime, timezone
     node_id = raw[3:11].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+    timestamp_us = struct.unpack_from("<Q", raw, 11)[0]
     sample_interval_ms = struct.unpack_from("<H", raw, 19)[0]
     sample_count = raw[21]
     status = struct.unpack_from("<H", raw, 22)[0]
@@ -191,9 +196,9 @@ def parse_gateway_adv_packet(raw: bytes, arrival_time: float = None):
         if offset + 12 > len(raw):
             break
         x, y, z = struct.unpack_from("<fff", raw, offset)
-        offset_from_newest_sec = ((sample_count - 1 - i) * sample_interval_ms) / 1000.0
-        sample_time_sec = arrival_time - offset_from_newest_sec
-        iso_ts = datetime.fromtimestamp(sample_time_sec, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
+        sample_ts_us = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
+        iso_ts = node_epoch_tracker.get_sample_iso(node_id, sample_ts_us, arrival_time)
 
         results.append({
             "node_id": node_id,
@@ -332,7 +337,7 @@ def termux_usb_listener_thread(fd: int):
                     line, rx_buf = rx_buf.split("\n", 1)
                     line = line.strip()
                     if line:
-                        sample = parse_csv_line(line)
+                        sample = parse_csv_line(line, arrival_time=time.time())
                         if sample:
                             rx_count += 1
                             if rx_count % 10 == 1:
@@ -378,7 +383,7 @@ def serial_listener_thread(port, baud):
             while True:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
                 if line:
-                    sample = parse_csv_line(line)
+                    sample = parse_csv_line(line, arrival_time=time.time())
                     if sample:
                         rx_count += 1
                         if rx_count % 10 == 1:
@@ -423,10 +428,11 @@ async def ble_listener_loop():
         
         def notify_handler(sender, data: bytearray):
             raw_str = data.decode("utf-8", errors="ignore")
+            now = time.time()
             for line in raw_str.splitlines():
                 line = line.strip()
                 if line:
-                    sample = parse_csv_line(line)
+                    sample = parse_csv_line(line, arrival_time=now)
                     if sample and not send_queue.full():
                         send_queue.put(sample)
 
