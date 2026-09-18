@@ -88,5 +88,65 @@ class TestBatchSerialization(unittest.TestCase):
             self.assertAlmostEqual(z, expected_samples[i][2], places=2)
             self.assertEqual(sample_ts_ms, 49750 - (9 - i) * 1000)
 
+    def test_gateway_adv_packet_serialization(self):
+        """Verify GatewayAdvPacket C-struct memory layout, 31-byte header, and sample indexing."""
+        # TelemetryPacket.h GatewayAdvPacket format:
+        # uint16_t company_id (2)
+        # uint8_t  magic[2] (2)
+        # uint8_t  packet_seq (1)
+        # char     node_id[8] (8)
+        # uint64_t timestamp_us (8)
+        # uint16_t sample_interval_ms (2)
+        # uint8_t  sample_count (1)
+        # uint16_t status (2)
+        # uint16_t vbat_mv (2)
+        # int16_t  temp_c_x100 (2)
+        # int8_t   rssi (1)
+        # uint16_t gw_vbat_mv (2)
+        # Total header = 33 bytes (31 bytes from magic)
+        gw_hdr_fmt = "<H2sB8sQHBHHhbH"
+        self.assertEqual(struct.calcsize(gw_hdr_fmt), 33)
+
+        company_id = 0xFFFF
+        magic = b"MG"
+        seq = 42
+        node_id = b"BENCH001"
+        ts_us = 1710000000000000
+        interval_ms = 1000
+        sample_count = 3
+        status = 0x0002
+        vbat_mv = 3750
+        temp_c_x100 = 2450 # 24.50 C
+        rssi = -64
+        gw_vbat_mv = 4120  # 4.12 V
+
+        hdr = struct.pack(gw_hdr_fmt, company_id, magic, seq, node_id, ts_us,
+                          interval_ms, sample_count, status, vbat_mv, temp_c_x100, rssi, gw_vbat_mv)
+        self.assertEqual(len(hdr), 33)
+
+        samples = []
+        samples_bytes = bytearray()
+        for i in range(sample_count):
+            x = 1234.5 + i
+            y = -5678.9 - i
+            z = 9012.3 + i
+            samples.append((x, y, z))
+            samples_bytes.extend(struct.pack(self.compact_sample_fmt, x, y, z))
+
+        full_pkt = hdr + samples_bytes
+
+        # Strip company ID to simulate raw manufacturer payload starting at magic
+        raw_from_magic = full_pkt[2:]
+        self.assertEqual(raw_from_magic[:2], b"MG")
+
+        # Verify header offset and sample parsing
+        header_len = 31
+        for i in range(sample_count):
+            s_offset = header_len + i * 12
+            x, y, z = struct.unpack_from(self.compact_sample_fmt, raw_from_magic, s_offset)
+            self.assertAlmostEqual(x, samples[i][0], places=2)
+            self.assertAlmostEqual(y, samples[i][1], places=2)
+            self.assertAlmostEqual(z, samples[i][2], places=2)
+
 if __name__ == "__main__":
     unittest.main()

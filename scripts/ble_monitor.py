@@ -200,7 +200,7 @@ class BleGatewayScanner:
             offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
             sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
             iso_ts = self.epoch_tracker.get_sample_iso(node_id, sample_ts, arrival_wall_time)
-            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi, temp)
+            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi, temp=temp, gw_vbat=gw_vbat)
 
             batch_points.append({
                 "node_id": node_id,
@@ -231,7 +231,7 @@ class BleGatewayScanner:
         if self.max_samples and self.total_samples >= self.max_samples:
             self._stop_event.set()
 
-    def display_and_record_sample(self, node_id, ts, x, y, z, status_hex, vbat, rssi, temp=None):
+    def display_and_record_sample(self, node_id, ts, x, y, z, status_hex, vbat, rssi, temp=None, gw_vbat=None):
         self.total_samples += 1
         mag = math.sqrt(x*x + y*y + z*z)
         self.magnitudes.append(mag)
@@ -239,8 +239,9 @@ class BleGatewayScanner:
         vbat_str = f"{vbat:.2f}V" if vbat > 0 else "--"
         rssi_str = f"{rssi}dBm" if rssi != 0 else "--"
         temp_str = f"{temp:.1f}C" if temp is not None else "--"
+        gw_vbat_str = f"{gw_vbat:.2f}V" if (gw_vbat is not None and gw_vbat > 0) else "--"
 
-        row_fmt = "{:>6} | {:<12} | {:>12} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>6} | {:>6} | {:>6} | {:<8}"
+        row_fmt = "{:>6} | {:<12} | {:>12} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>6} | {:>6} | {:>6} | {:>7} | {:<8}"
         print(row_fmt.format(
             self.total_samples,
             node_id[:12],
@@ -249,28 +250,30 @@ class BleGatewayScanner:
             temp_str,
             vbat_str,
             rssi_str,
+            gw_vbat_str,
             status_hex
         ))
 
         if self.csv_handle:
             temp_val = f"{temp:.2f}" if temp is not None else ""
-            self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{temp_val},{vbat:.2f},{rssi}\n")
+            gw_vbat_val = f"{gw_vbat:.2f}" if (gw_vbat is not None and gw_vbat > 0) else ""
+            self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{temp_val},{vbat:.2f},{rssi},{gw_vbat_val}\n")
             self.csv_handle.flush()
 
     async def run(self):
-        print("\n" + "=" * 102)
+        print("\n" + "=" * 112)
         print("     BLE 1Mbps CONNECTIONLESS EXTENDED ADVERTISING GATEWAY CLIENT")
-        print("=" * 102)
+        print("=" * 112)
         print(f"  Listening for:   '{self.target_name}'" + (f" ({self.target_address})" if self.target_address else " (Any Gateway)"))
         if self.forward_url:
             print(f"  Forward Server:  {self.forward_url}")
         if self.csv_file:
             print(f"  CSV Log File:    {self.csv_file}")
-        print("=" * 102 + "\n")
+        print("=" * 112 + "\n")
 
-        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:>6} | {:<8}"
-        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "TEMP", "VBAT", "RSSI", "STATUS"))
-        print("-" * 102)
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:>6} | {:>7} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "TEMP", "VBAT", "RSSI", "GW_VBAT", "STATUS"))
+        print("-" * 112)
 
         scanner = BleakScanner(detection_callback=self.detection_callback)
         await scanner.start()
@@ -290,19 +293,19 @@ class BleGatewayScanner:
 
     def run_serial(self, port: str, baudrate: int = 921600):
         import serial
-        print("\n" + "=" * 92)
+        print("\n" + "=" * 112)
         print("     BLE-TO-SERIAL BRIDGE TELEMETRY GATEWAY CLIENT")
-        print("=" * 92)
+        print("=" * 112)
         print(f"  Serial Device:   {port} ({baudrate} baud)")
         if self.forward_url:
             print(f"  Forward Server:  {self.forward_url}")
         if self.csv_file:
             print(f"  CSV Log File:    {self.csv_file}")
-        print("=" * 92 + "\n")
+        print("=" * 112 + "\n")
 
-        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:<8}"
-        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "VBAT", "RSSI", "STATUS"))
-        print("-" * 92)
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:>6} | {:>7} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "TEMP", "VBAT", "RSSI", "GW_VBAT", "STATUS"))
+        print("-" * 112)
 
         ser = serial.Serial(port, baudrate, timeout=0.2)
         ser.dtr = True
@@ -333,24 +336,28 @@ class BleGatewayScanner:
                         y = float(parts[3])
                         z = float(parts[4])
                         status_hex = parts[5].strip()
+                        temp = float(parts[6]) if len(parts) >= 7 and parts[6].strip() else None
                         vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else 0.0
                         rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else 0
+                        gw_vbat = float(parts[9]) if len(parts) >= 10 and parts[9].strip() else 0.0
                     except (ValueError, IndexError):
                         continue
 
-                    self.display_and_record_sample(node_id, ts, x, y, z, status_hex, vbat, rssi)
+                    self.display_and_record_sample(node_id, ts, x, y, z, status_hex, vbat, rssi, temp=temp, gw_vbat=gw_vbat)
 
                     # HTTP Forwarding
                     if self.requests_session and self.forward_url:
+                        extra_json = json.dumps({"gw_vbat_mv": int(round(gw_vbat * 1000.0))}) if gw_vbat > 0 else None
                         pt = {
                             "node_id": node_id,
                             "timestamp": datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                             "x": x, "y": y, "z": z,
                             "units": "nT",
+                            "temp": temp,
                             "status_flags": f"0x{status_hex}",
-                            "vbat": int(vbat * 1000.0),
+                            "vbat": int(round(vbat * 1000.0)),
                             "rssi": rssi,
-                            "extra_json": None
+                            "extra_json": extra_json
                         }
                         try:
                             if "/batch" in self.forward_url:

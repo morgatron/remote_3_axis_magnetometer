@@ -120,6 +120,8 @@ def parse_payload_batch(raw_payload: str, arrival_time: float = None):
         vbat_mv = int(round(vbat_val * 1000.0)) if (vbat_val is not None and vbat_val < 20.0) else (int(round(vbat_val)) if vbat_val is not None else None)
         status_hex = parsed["status_hex"]
         status_flags = f"0x{status_hex}" if not status_hex.startswith(("0x", "0X")) else status_hex
+        gw_vbat = parsed.get("gw_vbat")
+        extra_json = json.dumps({"gw_vbat_mv": int(round(gw_vbat * 1000.0))}) if (gw_vbat is not None and gw_vbat > 0) else None
 
         results.append({
             "node_id": parsed["node_id"],
@@ -130,7 +132,8 @@ def parse_payload_batch(raw_payload: str, arrival_time: float = None):
             "timestamp": parsed["timestamp_iso"],
             "temp": parsed.get("temp"),
             "vbat": vbat_mv,
-            "rssi": parsed.get("rssi")
+            "rssi": parsed.get("rssi"),
+            "extra_json": extra_json
         })
     return results
 
@@ -144,6 +147,8 @@ def parse_csv_line(line: str, arrival_time: float = None):
         vbat_mv = int(round(vbat_val * 1000.0)) if (vbat_val is not None and vbat_val < 20.0) else (int(round(vbat_val)) if vbat_val is not None else None)
         status_hex = parsed["status_hex"]
         status_flags = f"0x{status_hex}" if not status_hex.startswith(("0x", "0X")) else status_hex
+        gw_vbat = parsed.get("gw_vbat")
+        extra_json = json.dumps({"gw_vbat_mv": int(round(gw_vbat * 1000.0))}) if (gw_vbat is not None and gw_vbat > 0) else None
 
         return {
             "node_id": parsed["node_id"],
@@ -154,7 +159,8 @@ def parse_csv_line(line: str, arrival_time: float = None):
             "timestamp": parsed["timestamp_iso"],
             "temp": parsed.get("temp"),
             "vbat": vbat_mv,
-            "rssi": parsed.get("rssi")
+            "rssi": parsed.get("rssi"),
+            "extra_json": extra_json
         }
     return None
 
@@ -180,15 +186,20 @@ def parse_gateway_adv_packet(raw: bytes, arrival_time: float = None):
         temp_c_x100 = struct.unpack_from("<h", raw, 26)[0]
         temp = (temp_c_x100 / 100.0) if temp_c_x100 != 0x7FFF else None
         rssi = struct.unpack_from("<b", raw, 28)[0]
+        gw_vbat_mv = struct.unpack_from("<H", raw, 29)[0]
         header_size = 31
     elif raw_header_len >= 29:
         temp = None
         rssi = struct.unpack_from("<b", raw, 26)[0]
+        gw_vbat_mv = struct.unpack_from("<H", raw, 27)[0]
         header_size = 29
     else:
         temp = None
         rssi = struct.unpack_from("<b", raw, 26)[0]
+        gw_vbat_mv = 0
         header_size = 27
+
+    extra_json = json.dumps({"gw_vbat_mv": gw_vbat_mv}) if gw_vbat_mv > 0 else None
 
     results = []
     for i in range(sample_count):
@@ -209,7 +220,8 @@ def parse_gateway_adv_packet(raw: bytes, arrival_time: float = None):
             "status_flags": f"0x{status:06X}",
             "temp": temp,
             "vbat": vbat_mv,
-            "rssi": rssi
+            "rssi": rssi,
+            "extra_json": extra_json
         })
     return results
 

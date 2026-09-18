@@ -88,10 +88,10 @@ def parse_telemetry_line(
 ) -> Optional[Dict[str, Any]]:
     """
     Parses standard MCU telemetry CSV line:
-    Format: device_id,timestamp_us,x_nT,y_nT,z_nT,status_hex[,temp,vbat,rssi]
-    Example: SENSOR_01,123456789,23415.20,-4120.80,48910.10,C00000,24.5,3.75,-54
+    Format: device_id,timestamp_us,x_nT,y_nT,z_nT,status_hex[,temp,vbat,rssi,gw_vbat]
+    Example: SENSOR_01,123456789,23415.20,-4120.80,48910.10,C00000,24.5,3.75,-54,4.12
 
-    Returns dict with keys: node_id, timestamp_us, timestamp_iso, x, y, z, status_hex, status_int, temp, vbat, rssi
+    Returns dict with keys: node_id, timestamp_us, timestamp_iso, x, y, z, status_hex, status_int, temp, vbat, rssi, gw_vbat
     Or None if line is a status/log line or invalid CSV.
     """
     if not line:
@@ -127,6 +127,10 @@ def parse_telemetry_line(
 
             rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else None
 
+            gw_vbat = float(parts[9]) if len(parts) >= 10 and parts[9].strip() else None
+            if gw_vbat is not None and (math.isnan(gw_vbat) or math.isinf(gw_vbat)):
+                gw_vbat = None
+
             if epoch_tracker is not None:
                 iso_ts = epoch_tracker.get_sample_iso(device_id, ts_us, arrival_wall_time)
             else:
@@ -143,7 +147,8 @@ def parse_telemetry_line(
                 "status_int": status_int,
                 "temp": temp,
                 "vbat": vbat,
-                "rssi": rssi
+                "rssi": rssi,
+                "gw_vbat": gw_vbat
             }
         elif len(parts) == 5:
             device_id = "LOCAL_NODE"
@@ -170,7 +175,11 @@ def parse_telemetry_line(
                 "y": y,
                 "z": z,
                 "status_hex": clean_status,
-                "status_int": status_int
+                "status_int": status_int,
+                "temp": None,
+                "vbat": None,
+                "rssi": None,
+                "gw_vbat": None
             }
     except (ValueError, IndexError):
         pass

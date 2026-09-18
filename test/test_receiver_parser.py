@@ -94,5 +94,42 @@ class TestReceiverFormat(unittest.TestCase):
         iso_after_reboot = tracker.get_sample_iso(node_id, 2_000_000.0, arrival_wall_time=1700000510.0)
         self.assertEqual(iso_after_reboot, "2023-11-14T22:21:50Z")
 
+    def test_ten_column_csv_with_gw_vbat(self):
+        """Test parsing 10-column CSV line from BLE-to-serial bridge with gateway battery voltage."""
+        line = "NODE_3A8,123456789,123.45,-456.78,789.01,0002,23.50,3.85,-65,4.15"
+        parsed = parse_telemetry_line(line)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["node_id"], "NODE_3A8")
+        self.assertEqual(parsed["timestamp_us"], 123456789.0)
+        self.assertAlmostEqual(parsed["x"], 123.45)
+        self.assertAlmostEqual(parsed["y"], -456.78)
+        self.assertAlmostEqual(parsed["z"], 789.01)
+        self.assertEqual(parsed["status_hex"], "0002")
+        self.assertAlmostEqual(parsed["temp"], 23.50)
+        self.assertAlmostEqual(parsed["vbat"], 3.85)
+        self.assertEqual(parsed["rssi"], -65)
+        self.assertAlmostEqual(parsed["gw_vbat"], 4.15)
+
+    def test_backward_compat_six_and_nine_column(self):
+        """Test backward compatibility with 6-column and 9-column legacy telemetry lines."""
+        # 6-column line
+        line6 = "NODE_LEGACY,500000,10.0,20.0,30.0,0001"
+        p6 = parse_telemetry_line(line6)
+        self.assertIsNotNone(p6)
+        self.assertEqual(p6["node_id"], "NODE_LEGACY")
+        self.assertIsNone(p6["temp"])
+        self.assertIsNone(p6["vbat"])
+        self.assertIsNone(p6["rssi"])
+        self.assertIsNone(p6["gw_vbat"])
+
+        # 9-column line
+        line9 = "NODE_LEGACY,500000,10.0,20.0,30.0,0001,21.5,3.90,-70"
+        p9 = parse_telemetry_line(line9)
+        self.assertIsNotNone(p9)
+        self.assertAlmostEqual(p9["temp"], 21.5)
+        self.assertAlmostEqual(p9["vbat"], 3.90)
+        self.assertEqual(p9["rssi"], -70)
+        self.assertIsNone(p9["gw_vbat"])
+
 if __name__ == "__main__":
     unittest.main()

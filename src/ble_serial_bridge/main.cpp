@@ -76,13 +76,37 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
             memcpy(&vbat_mv, p + 24, sizeof(uint16_t));
             float vbat = (float)vbat_mv / 1000.0f;
 
-            int8_t node_rssi = (int8_t)p[26];
+            size_t expected_samples_bytes = (size_t)sample_count * sizeof(CompactSample);
+            size_t raw_header_len = (sample_count > 0 && availableLen >= expected_samples_bytes)
+                                    ? (availableLen - expected_samples_bytes)
+                                    : availableLen;
 
+            float temp = 0.0f;
+            int8_t node_rssi = 0;
             uint16_t gw_vbat_mv = 0;
             size_t headerSize = 27;
-            if (availableLen >= 29) {
+
+            // Dynamically determine header size:
+            // Revision 3 (current, with thermistor temp_c_x100 and gw_vbat_mv): 31 bytes
+            // Revision 2 (with gw_vbat_mv, no thermistor): 29 bytes
+            // Revision 1 (legacy, no gw_vbat_mv, no thermistor): 27 bytes
+            if (raw_header_len >= 31) {
+                int16_t temp_c_x100;
+                memcpy(&temp_c_x100, p + 26, sizeof(int16_t));
+                temp = (temp_c_x100 != 0x7FFF) ? (float)temp_c_x100 / 100.0f : 0.0f;
+                node_rssi = (int8_t)p[28];
+                memcpy(&gw_vbat_mv, p + 29, sizeof(uint16_t));
+                headerSize = 31;
+            } else if (raw_header_len >= 29) {
+                temp = 0.0f;
+                node_rssi = (int8_t)p[26];
                 memcpy(&gw_vbat_mv, p + 27, sizeof(uint16_t));
                 headerSize = 29;
+            } else {
+                temp = 0.0f;
+                node_rssi = (int8_t)p[26];
+                gw_vbat_mv = 0;
+                headerSize = 27;
             }
             float gw_vbat = (float)gw_vbat_mv / 1000.0f;
 
@@ -96,7 +120,7 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                 return;
             }
 
-            // Emit each sample as standard CSV
+            // Emit each sample as standard 10-column CSV
             for (uint8_t i = 0; i < sample_count; i++) {
                 size_t sampleOffset = mgOffset + headerSize + (i * sizeof(CompactSample));
                 if (sampleOffset + sizeof(CompactSample) > mlen) break;
@@ -109,21 +133,23 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                 uint64_t offset_us = (uint64_t)(sample_count - 1 - i) * (uint64_t)sample_interval_ms * 1000ULL;
                 uint64_t sample_ts = (timestamp_us >= offset_us) ? (timestamp_us - offset_us) : 0;
 
-                // Standard telemetry CSV format:
-                // node_id,timestamp_us,x_nT,y_nT,z_nT,status_hex,temp,vbat,rssi
-                Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%04X,0.0,%.2f,%d\n",
+                // Standard telemetry CSV format (10-column):
+                // node_id,timestamp_us,x_nT,y_nT,z_nT,status_hex,temp,vbat,rssi,gw_vbat
+                Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%04X,%.2f,%.2f,%d,%.2f\n",
                               nodeId,
                               (unsigned long long)sample_ts,
                               x, y, z,
                               status,
+                              temp,
                               vbat,
-                              (int)node_rssi);
+                              (int)node_rssi,
+                              gw_vbat);
             }
             return;
         }
 
         // ---------------------------------------------------------------------
-        // 2. Direct Field Node Batch Packet (SensorBatchPacket: 19 bytes + 12*N)
+        // 2. Direct Field Node Batch Packet (SensorBatchPacket: 19/21 bytes + 12*N)
         // ---------------------------------------------------------------------
         if (mlen >= 19 + sizeof(CompactSample)) {
             size_t minBatchSize = 19 + sizeof(CompactSample);
@@ -131,44 +157,62 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
             for (size_t offset = 0; offset <= maxOffset; offset++) {
                 const uint8_t* p = raw + offset;
                 uint8_t sampleCount = p[14];
-                if (sampleCount >= 1 && sampleCount <= 18 && (mlen - offset >= 19 + sampleCount * sizeof(CompactSample))) {
-                    char devId[9] = {0};
-                    memcpy(devId, p, 8);
-                    if (isprint(devId[0]) && isprint(devId[1])) {
-                        uint32_t latestAgeMs;
-                        memcpy(&latestAgeMs, p + 8, sizeof(uint32_t));
-                        uint16_t sampleIntervalMs;
-                        memcpy(&sampleIntervalMs, p + 12, sizeof(uint16_t));
-                        if (sampleIntervalMs == 0) sampleIntervalMs = 1000;
-                        uint16_t status;
-                        memcpy(&status, p + 15, sizeof(uint16_t));
-                        uint16_t vbatMv;
-                        memcpy(&vbatMv, p + 17, sizeof(uint16_t));
-                        float vbat = (float)vbatMv / 1000.0f;
+                if (sampleCount >= 1 && sampleCount <= 18) {
+                    size_t expLen21 = 21 + sampleCount * sizeof(CompactSample);
+                    size_t expLen19 = 19 + sampleCount * sizeof(CompactSample);
+                    size_t batchHdrSize = 0;
+                    if (mlen - offset >= expLen21) {
+                        batchHdrSize = 21;
+                    } else if (mlen - offset >= expLen19) {
+                        batchHdrSize = 19;
+                    }
 
-                        triggerLed();
-                        g_rxPacketCount++;
+                    if (batchHdrSize > 0) {
+                        char devId[9] = {0};
+                        memcpy(devId, p, 8);
+                        if (isprint(devId[0]) && isprint(devId[1])) {
+                            uint32_t latestAgeMs;
+                            memcpy(&latestAgeMs, p + 8, sizeof(uint32_t));
+                            uint16_t sampleIntervalMs;
+                            memcpy(&sampleIntervalMs, p + 12, sizeof(uint16_t));
+                            if (sampleIntervalMs == 0) sampleIntervalMs = 1000;
+                            uint16_t status;
+                            memcpy(&status, p + 15, sizeof(uint16_t));
+                            uint16_t vbatMv;
+                            memcpy(&vbatMv, p + 17, sizeof(uint16_t));
+                            float vbat = (float)vbatMv / 1000.0f;
+                            float temp = 0.0f;
+                            if (batchHdrSize >= 21) {
+                                int16_t temp_c_x100;
+                                memcpy(&temp_c_x100, p + 19, sizeof(int16_t));
+                                temp = (temp_c_x100 != 0x7FFF) ? (float)temp_c_x100 / 100.0f : 0.0f;
+                            }
 
-                        uint64_t nowUs = (uint64_t)millis() * 1000ULL;
-                        for (uint8_t i = 0; i < sampleCount; i++) {
-                            size_t sOff = offset + 19 + (i * sizeof(CompactSample));
-                            float x, y, z;
-                            memcpy(&x, raw + sOff, sizeof(float));
-                            memcpy(&y, raw + sOff + 4, sizeof(float));
-                            memcpy(&z, raw + sOff + 8, sizeof(float));
+                            triggerLed();
+                            g_rxPacketCount++;
 
-                            uint64_t offsetUs = (uint64_t)(sampleCount - 1 - i) * (uint64_t)sampleIntervalMs * 1000ULL;
-                            uint64_t sTs = nowUs - ((uint64_t)latestAgeMs * 1000ULL) - offsetUs;
+                            uint64_t nowUs = (uint64_t)millis() * 1000ULL;
+                            for (uint8_t i = 0; i < sampleCount; i++) {
+                                size_t sOff = offset + batchHdrSize + (i * sizeof(CompactSample));
+                                float x, y, z;
+                                memcpy(&x, raw + sOff, sizeof(float));
+                                memcpy(&y, raw + sOff + 4, sizeof(float));
+                                memcpy(&z, raw + sOff + 8, sizeof(float));
 
-                            Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,0.0,%.2f,%d\n",
-                                          devId,
-                                          (unsigned long long)sTs,
-                                          x, y, z,
-                                          status,
-                                          vbat,
-                                          rssi);
+                                uint64_t offsetUs = (uint64_t)(sampleCount - 1 - i) * (uint64_t)sampleIntervalMs * 1000ULL;
+                                uint64_t sTs = nowUs - ((uint64_t)latestAgeMs * 1000ULL) - offsetUs;
+
+                                Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,%.2f,%.2f,%d,0.00\n",
+                                              devId,
+                                              (unsigned long long)sTs,
+                                              x, y, z,
+                                              status,
+                                              temp,
+                                              vbat,
+                                              rssi);
+                            }
+                            return;
                         }
-                        return;
                     }
                 }
             }
@@ -196,7 +240,7 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                 memcpy(devId, pkt.device_id, 8);
                 uint64_t ts_us = (uint64_t)millis() * 1000ULL;
 
-                Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,0.0,0.0,%d\n",
+                Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,0.00,0.00,%d,0.00\n",
                               devId,
                               (unsigned long long)ts_us,
                               pkt.x_nT, pkt.y_nT, pkt.z_nT,
@@ -223,7 +267,7 @@ void setup() {
     Serial.println(F(" ESP32-C3 Supermini BLE 1M -> Serial Bridge"));
     Serial.println(F("========================================================"));
     Serial.println(F("  Listening for: BLE 1M Extended Advertising packets"));
-    Serial.println(F("  Output format: Standard CSV stream for gateway.py"));
+    Serial.println(F("  Output format: 10-column CSV (node_id,ts,x,y,z,status,temp,vbat,rssi,gw_vbat)"));
     Serial.println(F("  Baud rate:     921600 / Native USB CDC"));
     Serial.println(F("========================================================\n"));
 
