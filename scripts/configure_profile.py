@@ -273,7 +273,10 @@ def configure_device(port: str, commands: list, is_mock: bool = False):
     for cmd in commands:
         print(f"  -> Sending: {cmd}")
         s.write((cmd + "\n").encode("utf-8"))
-        time.sleep(0.35)
+        if cmd.startswith("SENSOR "):
+            time.sleep(1.0)  # Hardware SPI re-probe and ADC stabilization
+        else:
+            time.sleep(0.4)
 
     time.sleep(1.0)
     response = s.read_all().decode("utf-8", errors="replace")
