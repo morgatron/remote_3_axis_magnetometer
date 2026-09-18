@@ -30,7 +30,7 @@ Built with **FastAPI** and **SQLite** (WAL mode), it operates with zero heavy da
 
 5. **Edge Arrival Timestamping & Monotonic Epoch Tracking (`NodeEpochTracker`)**:
    - Microcontrollers stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTCs or NTP client code.
-   - Upon arrival at `gateway.py` / `ble_gateway.py`, `NodeEpochTracker` locks each node's boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's system UTC clock.
+   - Upon arrival at `gateway.py` / `ble_monitor.py`, `NodeEpochTracker` locks each node's boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's system UTC clock.
    - When an outage ends and the ring buffer dumps historical backlog, `NodeEpochTracker` places each sample at its true historical UTC moment, preventing timestamp clustering or collisions while filtering out crystal oscillator frequency drift (~15 ppm). Node reboots are detected automatically to re-anchor a fresh boot epoch.
 
 ---

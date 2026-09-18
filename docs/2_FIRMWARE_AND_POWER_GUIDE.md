@@ -107,4 +107,4 @@ Connect to the receiver gateway at **921600 baud**:
 3. **Wi-Fi Radio Power-Down:** In `MODE BLE`, the Wi-Fi subsystem is shut down (`WiFi.mode(WIFI_OFF)`), saving **$\sim 80\text{ mA}$**.
 4. **Sleep State Independence from USB CDC:**
    - On the `SUPERMINI_GATEWAY` receiver profile, USB-CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`), eliminating USB PHY power draw (~15 mA saved).
-   - Real-time diagnostics (sync acquired, window timeout, lost sync discovery) are broadcast via BLE Extended Advertising diagnostic packets and parsed by `scripts/ble_gateway.py`.
+   - Real-time diagnostics (sync acquired, window timeout, lost sync discovery) are broadcast via BLE Extended Advertising diagnostic packets and parsed by `scripts/ble_monitor.py`.

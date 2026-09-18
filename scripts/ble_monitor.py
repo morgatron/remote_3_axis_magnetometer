@@ -1,165 +1,405 @@
 #!/usr/bin/env python3
 """
-BLE Advertising Monitor for Remote 3-Axis Magnetometer Sensor Nodes.
+BLE 1Mbps Connectionless Telemetry & Diagnostic Monitor (`scripts/ble_monitor.py`)
 
-Passively scans BLE advertisements from your Linux laptop's Bluetooth adapter
-and decodes SensorBinaryPacket manufacturer data payloads in real time.
+Listens for 1Mbps BLE Extended Advertising telemetry broadcast packets from the
+ESP32 Multi-Protocol Receiver Gateway, or reads decoded CSV from an ESP32 BLE-to-serial bridge.
+Operates 100% connectionlessly without pairing, connection handshakes, or supervision timeouts.
 
-Requires: bleak  (pip install bleak)
+Prerequisites:
+  pip install bleak requests pyserial
 
 Usage:
-    python3 ble_monitor.py              # scan for 30 seconds
-    python3 ble_monitor.py --duration 60 # scan for 60 seconds
-    python3 ble_monitor.py --duration 0  # scan forever (Ctrl+C to stop)
-
-Expected packet layout (26 bytes, packed):
-    Offset  Size   Field
-    0       8      device_id       char[8]  null-terminated ASCII
-    8       4      timestamp_ms    uint32   MCU millis() uptime
-    12      4      x_nT            float    magnetic field X (nT)
-    16      4      y_nT            float    magnetic field Y (nT)
-    20      4      z_nT            float    magnetic field Z (nT)
-    24      2      status          uint16   hardware status word
+  python3 scripts/ble_monitor.py
+  python3 scripts/ble_monitor.py --serial /dev/ttyACM2
+  python3 scripts/ble_monitor.py --max-samples 18
+  python3 scripts/ble_monitor.py --forward-url http://localhost:8000/api/v1/telemetry
+  python3 scripts/ble_monitor.py --csv field_session.csv
 """
 
-import argparse
-import asyncio
-import struct
+import sys
 import time
-from bleak import BleakScanner
+import math
+import json
+import struct
+import asyncio
+import argparse
+import os
+from datetime import datetime, timezone
+from typing import Optional
 
-# SensorBinaryPacket: 8s I f f f H  = 26 bytes
-PACKET_FMT = "<8s I f f f H"
-PACKET_SIZE = struct.calcsize(PACKET_FMT)  # 26
+# Import shared NodeEpochTracker from central_service or fallback definition
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "central_service")))
+try:
+    from stream_parser import NodeEpochTracker
+except ImportError:
+    class NodeEpochTracker:
+        def __init__(self, drift_alpha=0.02, max_live_latency_sec=2.5):
+            self.drift_alpha = drift_alpha
+            self.max_live_latency_sec = max_live_latency_sec
+            self._nodes = {}
+        def get_sample_utc(self, node_id, ts_us, arrival_wall_time=None):
+            if arrival_wall_time is None: arrival_wall_time = time.time()
+            ts_sec = ts_us / 1_000_000.0
+            info = self._nodes.get(node_id)
+            if info is None or ts_sec < info["last_ts_sec"] - 5.0:
+                epoch = arrival_wall_time - ts_sec
+                self._nodes[node_id] = {"epoch": epoch, "last_ts_sec": ts_sec}
+                return arrival_wall_time
+            epoch = info["epoch"]
+            sample_utc = epoch + ts_sec
+            latency = arrival_wall_time - sample_utc
+            if -0.5 <= latency <= self.max_live_latency_sec:
+                info["epoch"] = (1.0 - self.drift_alpha) * epoch + self.drift_alpha * (arrival_wall_time - ts_sec)
+            if ts_sec > info["last_ts_sec"]: info["last_ts_sec"] = ts_sec
+            return sample_utc
+        def get_sample_iso(self, node_id, ts_us, arrival_wall_time=None):
+            return datetime.fromtimestamp(self.get_sample_utc(node_id, ts_us, arrival_wall_time), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# BLE Manufacturer Specific Data AD type = 0xFF
-# NimBLE prepends a 2-byte company ID to the manufacturer data,
-# so the raw payload from bleak may be 28 bytes (2 + 26).
-# We handle both 26 and 28 byte payloads.
+try:
+    from bleak import BleakScanner
+    from bleak.backends.device import BLEDevice
+    from bleak.backends.scanner import AdvertisementData
+except ImportError:
+    print("Error: 'bleak' package is required. Install via: pip install bleak")
+    sys.exit(1)
 
-last_ts_by_device = {}
-pkt_count_by_device = {}
-
-
-def decode_sensor_packet(raw: bytes):
-    """Decode a SensorBinaryPacket from raw manufacturer data bytes.
-    Returns (device_id, age_ms, x, y, z, status) or None on failure."""
-    if len(raw) < PACKET_SIZE:
-        return None
-
-    # Skip company ID prefix if present (NimBLE adds 2 bytes)
-    offset = len(raw) - PACKET_SIZE
-    if offset > 4:
-        return None  # Too much extra data, probably not our packet
-
-    data = raw[offset:]
-    try:
-        device_id_raw, age_ms, x, y, z, status = struct.unpack(PACKET_FMT, data)
-    except struct.error:
-        return None
-
-    # Decode device_id (null-terminated ASCII)
-    try:
-        device_id = device_id_raw.split(b'\x00', 1)[0].decode('ascii')
-    except (UnicodeDecodeError, ValueError):
-        return None
-
-    # Validate: printable ASCII device ID
-    if not device_id or not all(32 <= ord(c) <= 126 for c in device_id):
-        return None
-
-    # Validate: finite float values within plausible magnetometer range
-    import math
-    for val in (x, y, z):
-        if math.isnan(val) or math.isinf(val) or abs(val) > 10_000_000.0:
-            return None
-
-    return device_id, age_ms, x, y, z, status
+COMPANY_ID = 0xFFFF  # Custom / Testing Manufacturer Specific Data ID
 
 
-def on_advertisement(device, advertisement_data):
-    """Callback for each BLE advertisement received."""
-    mfr_data = advertisement_data.manufacturer_data
-    if not mfr_data:
-        return
+class BleGatewayScanner:
+    def __init__(self, target_name="MAG_GATEWAY", target_address=None, forward_url=None, csv_file=None, max_samples=None, timeout_s=None):
+        self.target_name = target_name
+        self.target_address = target_address
+        self.forward_url = forward_url
+        self.csv_file = csv_file
+        self.max_samples = max_samples
+        self.timeout_s = timeout_s
+        self.csv_handle = None
+        self.total_samples = 0
+        self.start_time = time.time()
+        self.magnitudes = []
+        self.last_seen_seq = -1
+        self.last_seen_ts = -1
+        self.epoch_tracker = NodeEpochTracker()
+        self._stop_event = asyncio.Event()
 
-    for company_id, payload in mfr_data.items():
-        result = decode_sensor_packet(payload)
-        if result is None:
-            full = struct.pack("<H", company_id) + payload
-            result = decode_sensor_packet(full)
+        if self.csv_file:
+            self.csv_handle = open(self.csv_file, "a", encoding="utf-8")
 
-        if result is not None:
-            device_id, age_ms, x, y, z, status = result
-            now = time.time()
-            sample_time_utc = now - (age_ms / 1000.0)
+        self.requests_session = None
+        if self.forward_url:
+            if not self.forward_url.startswith(("http://", "https://")):
+                self.forward_url = "http://" + self.forward_url
+            cleaned_url = self.forward_url.rstrip("/")
+            if cleaned_url.endswith((":8000", ":8899", "localhost", "127.0.0.1")):
+                self.forward_url = cleaned_url + "/api/v1/telemetry/batch"
+            elif cleaned_url.endswith("/api/v1/telemetry") or cleaned_url.endswith("/api/telemetry"):
+                self.forward_url = cleaned_url + "/batch"
+            try:
+                import requests
+                self.requests_session = requests.Session()
+            except ImportError:
+                print("[WARNING] 'requests' package not found. Disabling HTTP forwarding.")
 
-            pkt_count_by_device[device_id] = pkt_count_by_device.get(device_id, 0) + 1
-            count = pkt_count_by_device[device_id]
+    def detection_callback(self, device: BLEDevice, adv_data: AdvertisementData):
+        if self.target_address and device.address.upper() != self.target_address.upper():
+            return
 
-            bmag = (x**2 + y**2 + z**2) ** 0.5
+        if COMPANY_ID not in adv_data.manufacturer_data:
+            return
 
-            rssi = advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else "?"
-            if rssi == "?" and hasattr(device, 'rssi'):
-                rssi = device.rssi
+        raw = adv_data.manufacturer_data[COMPANY_ID]
+        if len(raw) < 27 or raw[:2] != b"MG":
+            return
 
-            print(
-                f"[#{count:4d}] {device_id:8s} | "
-                f"age={age_ms:6d}ms | "
-                f"sample_time={time.strftime('%H:%M:%S', time.localtime(sample_time_utc))} | "
-                f"B=({x:+10.2f}, {y:+10.2f}, {z:+10.2f}) nT | "
-                f"|B|={bmag:10.2f} nT | "
-                f"status={'MOCK' if (status & 0x8000) else f'0x{status:04X}'} | "
-                f"RSSI={rssi} dBm"
-            )
+        seq = raw[2]
+        timestamp_us = struct.unpack_from("<Q", raw, 11)[0]
+        if seq == self.last_seen_seq and timestamp_us == self.last_seen_ts:
+            return  # Duplicate broadcast of the same batch, ignore
+        self.last_seen_seq = seq
+        self.last_seen_ts = timestamp_us
 
+        node_id = raw[3:11].split(b'\x00', 1)[0].decode('utf-8', errors='ignore')
+        sample_interval_ms = struct.unpack_from("<H", raw, 19)[0]
+        sample_count = raw[21]
+        status = struct.unpack_from("<H", raw, 22)[0]
+        vbat_mv = struct.unpack_from("<H", raw, 24)[0]
+        vbat = vbat_mv / 1000.0
 
-async def scan(duration: float):
-    """Run BLE scan for the given duration (0 = indefinite)."""
-    print(f"{'='*100}")
-    print(f"BLE Advertising Monitor — Scanning for SensorBinaryPacket ({PACKET_SIZE} bytes)")
-    print(f"{'='*100}")
-    print(f"  Packet format: device_id[8] + packet_age_ms[4] + x_nT[4] + y_nT[4] + z_nT[4] + status[2]")
-    print(f"  Duration: {'indefinite (Ctrl+C to stop)' if duration == 0 else f'{duration}s'}")
-    print(f"{'='*100}")
-    print()
+        # Dynamically determine header size to maintain backward compatibility across firmware revisions:
+        # Revision 3 (current, with thermistor temp_c_x100): 31 bytes
+        # Revision 2 (with gw_vbat_mv): 29 bytes
+        # Revision 1 (legacy): 27 bytes
+        expected_samples_bytes = sample_count * 12
+        raw_header_len = len(raw) - expected_samples_bytes if sample_count > 0 else len(raw)
 
-    scanner = BleakScanner(detection_callback=on_advertisement)
-    await scanner.start()
-
-    try:
-        if duration == 0:
-            while True:
-                await asyncio.sleep(1.0)
+        if raw_header_len >= 31:
+            temp_c_x100 = struct.unpack_from("<h", raw, 26)[0]
+            temp = (temp_c_x100 / 100.0) if temp_c_x100 != 0x7FFF else None
+            rssi = struct.unpack_from("<b", raw, 28)[0]
+            gw_vbat_mv = struct.unpack_from("<H", raw, 29)[0]
+            header_size = 31
+        elif raw_header_len >= 29:
+            temp = None
+            rssi = struct.unpack_from("<b", raw, 26)[0]
+            gw_vbat_mv = struct.unpack_from("<H", raw, 27)[0]
+            header_size = 29
         else:
-            await asyncio.sleep(duration)
-    except asyncio.CancelledError:
-        pass
-    finally:
-        await scanner.stop()
+            temp = None
+            rssi = struct.unpack_from("<b", raw, 26)[0]
+            gw_vbat_mv = 0
+            header_size = 27
 
-    print()
-    print(f"{'='*100}")
-    print("Summary:")
-    for dev_id, count in sorted(pkt_count_by_device.items()):
-        print(f"  {dev_id}: {count} unique packets received")
-    if not pkt_count_by_device:
-        print("  (no valid sensor packets detected)")
-    print(f"{'='*100}")
+        gw_vbat = gw_vbat_mv / 1000.0 if gw_vbat_mv > 0 else 0.0
+
+        if sample_count == 0:
+            # Heartbeat / Diagnostic packet from gateway (no sensor samples)
+            gw_disp_vbat = gw_vbat if gw_vbat > 0 else vbat
+            gw_vbat_str = f"{gw_disp_vbat:.2f}V" if gw_disp_vbat > 0 else "--"
+
+            diag_event = (status >> 12) & 0x0F
+            sched_state = (status >> 8) & 0x0F
+            misses = status & 0xFF
+            metric = sample_interval_ms
+
+            state_names = ["DISCOVERY", "SLEEPING", "LISTENING", "PERIODIC_LOOKOUT"]
+            event_names = ["IDLE_HEARTBEAT", "WINDOW_MISSED", "LOST_SYNC_DISCOVERY", "PERIODIC_LOOKOUT", "SYNC_ACQUIRED"]
+
+            state_str = state_names[sched_state] if sched_state < len(state_names) else f"STATE_{sched_state}"
+            event_str = event_names[diag_event] if diag_event < len(event_names) else f"EVENT_{diag_event}"
+
+            if diag_event == 0:
+                print(f">>> [GATEWAY HEARTBEAT] ID: '{node_id}' | State: {state_str} | Gateway Battery: {gw_vbat_str} | Seq: {seq}")
+            elif diag_event in (1, 2):
+                print(f"\n>>> [GATEWAY ALERT] Event: {event_str} | State: {state_str} | Misses: {misses} | Target: '{node_id}' | On-Time: {metric}ms | Batt: {gw_vbat_str}")
+            elif diag_event == 3:
+                print(f"\n>>> [GATEWAY NOTICE] Event: PERIODIC_LOOKOUT (10-min scan) | State: {state_str} | Batt: {gw_vbat_str}")
+            elif diag_event == 4:
+                print(f"\n>>> [GATEWAY STATUS] Event: SYNC_ACQUIRED | State: {state_str} | Target: '{node_id}' | Disc Duration: {metric}ms | Batt: {gw_vbat_str}")
+            else:
+                print(f">>> [GATEWAY DIAG] Event: {event_str} | State: {state_str} | Misses: {misses} | Battery: {gw_vbat_str} | Seq: {seq}")
+            return
+
+        is_mock = bool(status & 0x8000)
+        mock_tag = " [MOCK DATA]" if is_mock else ""
+        gw_vbat_str = f" | GW Battery: {gw_vbat:.2f}V" if gw_vbat > 0 else ""
+        temp_str = f" | Temp: {temp:.1f}°C" if temp is not None else ""
+        print(f"\n>>> [GATEWAY RELAY] Node: '{node_id}'{mock_tag} ({sample_count} samples, RSSI: {rssi} dBm{gw_vbat_str}{temp_str})")
+
+        status_disp = "MOCK" if is_mock else f"{status:04X}"
+        batch_points = []
+        arrival_wall_time = time.time()
+
+        # Unpack each sample in the batch
+        for i in range(sample_count):
+            offset = header_size + i * 12
+            if offset + 12 > len(raw):
+                break
+            x, y, z = struct.unpack_from("<fff", raw, offset)
+            offset_from_newest_us = (sample_count - 1 - i) * sample_interval_ms * 1000
+            sample_ts = timestamp_us - offset_from_newest_us if timestamp_us >= offset_from_newest_us else 0
+            iso_ts = self.epoch_tracker.get_sample_iso(node_id, sample_ts, arrival_wall_time)
+            self.display_and_record_sample(node_id, sample_ts, x, y, z, status_disp, vbat, rssi, temp)
+
+            batch_points.append({
+                "node_id": node_id,
+                "timestamp": iso_ts,
+                "x": x, "y": y, "z": z,
+                "units": "nT",
+                "temp": temp,
+                "status_flags": f"0x{status:06X}",
+                "vbat": vbat_mv,
+                "rssi": rssi,
+                "extra_json": json.dumps({"gw_id": self.target_name, "gw_vbat_mv": gw_vbat_mv}) if gw_vbat_mv > 0 else None
+            })
+
+        # Batch forward to Central Server
+        if self.requests_session and self.forward_url and batch_points:
+            try:
+                if "/batch" in self.forward_url:
+                    payload = {"node_id": node_id, "points": batch_points}
+                    resp = self.requests_session.post(self.forward_url, json=payload, timeout=2.0)
+                else:
+                    for pt in batch_points:
+                        resp = self.requests_session.post(self.forward_url, json=pt, timeout=1.0)
+                if resp.status_code not in (200, 201):
+                    print(f"  [FORWARD WARNING] HTTP {resp.status_code}: {resp.text}")
+            except Exception as e:
+                print(f"  [FORWARD ERROR] Failed to forward telemetry: {e}")
+
+        if self.max_samples and self.total_samples >= self.max_samples:
+            self._stop_event.set()
+
+    def display_and_record_sample(self, node_id, ts, x, y, z, status_hex, vbat, rssi, temp=None):
+        self.total_samples += 1
+        mag = math.sqrt(x*x + y*y + z*z)
+        self.magnitudes.append(mag)
+
+        vbat_str = f"{vbat:.2f}V" if vbat > 0 else "--"
+        rssi_str = f"{rssi}dBm" if rssi != 0 else "--"
+        temp_str = f"{temp:.1f}C" if temp is not None else "--"
+
+        row_fmt = "{:>6} | {:<12} | {:>12} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>10.2f} | {:>6} | {:>6} | {:>6} | {:<8}"
+        print(row_fmt.format(
+            self.total_samples,
+            node_id[:12],
+            ts,
+            x, y, z, mag,
+            temp_str,
+            vbat_str,
+            rssi_str,
+            status_hex
+        ))
+
+        if self.csv_handle:
+            temp_val = f"{temp:.2f}" if temp is not None else ""
+            self.csv_handle.write(f"{node_id},{ts},{x:.2f},{y:.2f},{z:.2f},{mag:.2f},{status_hex},{temp_val},{vbat:.2f},{rssi}\n")
+            self.csv_handle.flush()
+
+    async def run(self):
+        print("\n" + "=" * 102)
+        print("     BLE 1Mbps CONNECTIONLESS EXTENDED ADVERTISING GATEWAY CLIENT")
+        print("=" * 102)
+        print(f"  Listening for:   '{self.target_name}'" + (f" ({self.target_address})" if self.target_address else " (Any Gateway)"))
+        if self.forward_url:
+            print(f"  Forward Server:  {self.forward_url}")
+        if self.csv_file:
+            print(f"  CSV Log File:    {self.csv_file}")
+        print("=" * 102 + "\n")
+
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:>6} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "TEMP", "VBAT", "RSSI", "STATUS"))
+        print("-" * 102)
+
+        scanner = BleakScanner(detection_callback=self.detection_callback)
+        await scanner.start()
+        print("[ACTIVE] Passive 1Mbps BLE Extended Advertising scanner listening...\n")
+
+        try:
+            while not self._stop_event.is_set():
+                if self.timeout_s and (time.time() - self.start_time >= self.timeout_s):
+                    print(f"\n[INFO] Reached timeout of {self.timeout_s}s. Stopping...")
+                    break
+                await asyncio.sleep(0.2)
+        finally:
+            await scanner.stop()
+            if self.csv_handle:
+                self.csv_handle.close()
+            print("\n[INFO] Scanner stopped cleanly.")
+
+    def run_serial(self, port: str, baudrate: int = 921600):
+        import serial
+        print("\n" + "=" * 92)
+        print("     BLE-TO-SERIAL BRIDGE TELEMETRY GATEWAY CLIENT")
+        print("=" * 92)
+        print(f"  Serial Device:   {port} ({baudrate} baud)")
+        if self.forward_url:
+            print(f"  Forward Server:  {self.forward_url}")
+        if self.csv_file:
+            print(f"  CSV Log File:    {self.csv_file}")
+        print("=" * 92 + "\n")
+
+        header_fmt = "{:>6} | {:<12} | {:>12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>6} | {:>6} | {:<8}"
+        print(header_fmt.format("SAMPLE", "NODE_ID", "TIMESTAMP_US", "Bx (nT)", "By (nT)", "Bz (nT)", "|B| (nT)", "VBAT", "RSSI", "STATUS"))
+        print("-" * 92)
+
+        ser = serial.Serial(port, baudrate, timeout=0.2)
+        ser.dtr = True
+        ser.rts = False
+        print(f"[ACTIVE] Listening for decoded BLE telemetry on {port}...\n")
+
+        try:
+            while not self._stop_event.is_set():
+                if self.timeout_s and (time.time() - self.start_time >= self.timeout_s):
+                    print(f"\n[INFO] Reached timeout of {self.timeout_s}s. Stopping...")
+                    break
+
+                raw_line = ser.readline().decode("utf-8", errors="ignore").strip()
+                if not raw_line:
+                    continue
+
+                if raw_line.startswith("#") or raw_line.startswith("="):
+                    # Status or heartbeat line from bridge
+                    print(f"  {raw_line}")
+                    continue
+
+                parts = raw_line.split(",")
+                if len(parts) >= 6:
+                    node_id = parts[0].strip()
+                    try:
+                        ts = int(float(parts[1]))
+                        x = float(parts[2])
+                        y = float(parts[3])
+                        z = float(parts[4])
+                        status_hex = parts[5].strip()
+                        vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else 0.0
+                        rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else 0
+                    except (ValueError, IndexError):
+                        continue
+
+                    self.display_and_record_sample(node_id, ts, x, y, z, status_hex, vbat, rssi)
+
+                    # HTTP Forwarding
+                    if self.requests_session and self.forward_url:
+                        pt = {
+                            "node_id": node_id,
+                            "timestamp": datetime.fromtimestamp(time.time(), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "x": x, "y": y, "z": z,
+                            "units": "nT",
+                            "status_flags": f"0x{status_hex}",
+                            "vbat": int(vbat * 1000.0),
+                            "rssi": rssi,
+                            "extra_json": None
+                        }
+                        try:
+                            if "/batch" in self.forward_url:
+                                self.requests_session.post(self.forward_url, json={"node_id": node_id, "points": [pt]}, timeout=1.0)
+                            else:
+                                self.requests_session.post(self.forward_url, json=pt, timeout=1.0)
+                        except Exception as e:
+                            print(f"  [FORWARD ERROR] {e}")
+
+                    if self.max_samples and self.total_samples >= self.max_samples:
+                        break
+        finally:
+            ser.close()
+            if self.csv_handle:
+                self.csv_handle.close()
+            print("\n[INFO] Serial listener stopped cleanly.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BLE monitor for magnetometer sensor nodes")
-    parser.add_argument("--duration", type=float, default=30,
-                        help="Scan duration in seconds (0 = indefinite, default 30)")
+    parser = argparse.ArgumentParser(
+        description="BLE 1Mbps Connectionless Extended Advertising Gateway Client."
+    )
+    parser.add_argument("--name", type=str, default="MAG_GATEWAY", help="Gateway BLE device name")
+    parser.add_argument("--address", type=str, help="Gateway BLE MAC / UUID address filter")
+    parser.add_argument("--serial", type=str, help="Serial port for hardware BLE bridge (e.g. /dev/ttyACM0)")
+    parser.add_argument("--baud", type=int, default=921600, help="Baud rate for serial bridge (default: 921600)")
+    parser.add_argument("--forward-url", type=str, help="HTTP URL to forward telemetry to Central Server")
+    parser.add_argument("--csv", type=str, help="Save parsed telemetry to CSV file")
+    parser.add_argument("--max-samples", type=int, help="Stop after receiving N samples")
+    parser.add_argument("--timeout", type=float, help="Stop after N seconds")
+
     args = parser.parse_args()
 
+    scanner = BleGatewayScanner(
+        target_name=args.name,
+        target_address=args.address,
+        forward_url=args.forward_url,
+        csv_file=args.csv,
+        max_samples=args.max_samples,
+        timeout_s=args.timeout
+    )
+
     try:
-        asyncio.run(scan(args.duration))
-    except KeyboardInterrupt:
-        print("\n\nStopped by user.")
-        for dev_id, count in sorted(pkt_count_by_device.items()):
-            print(f"  {dev_id}: {count} unique packets received")
+        if args.serial:
+            scanner.run_serial(args.serial, baudrate=args.baud)
+        else:
+            asyncio.run(scanner.run())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\n[INFO] Exited cleanly.")
 
 
 if __name__ == "__main__":

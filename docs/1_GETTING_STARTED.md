@@ -18,7 +18,7 @@ The system consists of three primary layers:
 
 1. **Remote Sensor Node**: Gathers magnetic field vectors ($B_x, B_y, B_z$), packs 10 samples into a binary batch (with centi-degree temperature and battery voltage), and transmits over Coded PHY S=8 or LoRa before sleeping.
 2. **Receiver Gateway**: Receives the bursts over long-range RF (BLE Coded PHY or LoRa) with Wi-Fi powered OFF to save power, and relays the telemetry over standard 1 Mbps BLE Extended Advertising, USB Serial, or Wi-Fi.
-3. **Host Ingest**: Any phone (via **nRF Connect**) or laptop (via `scripts/ble_gateway.py`) displays real-time vectors and logs to CSV or Central Server.
+3. **Host Ingest**: Any phone (via **nRF Connect**) or laptop (via `scripts/ble_monitor.py`) displays real-time vectors and logs to CSV or Central Server.
 
 ---
 

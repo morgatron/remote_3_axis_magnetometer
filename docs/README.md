@@ -21,7 +21,7 @@ Welcome to the documentation for the **Remote 3-Axis Magnetometer Acquisition Sy
 3. [**3. Wireless & Field Testing Guide**](3_WIRELESS_AND_FIELD_TESTING.md)
    - Real-time phone monitoring using the **nRF Connect** app
    - Understanding signal strength: Sensor-to-Gateway RSSI vs. Gateway-to-Phone RSSI
-   - Laptop Python client (`scripts/ble_gateway.py`) with real-time diagnostic decoding
+   - Laptop Python client (`scripts/ble_monitor.py`) with real-time diagnostic decoding
    - Wireless range testing & link margin evaluation (`scripts/rssi_monitor.py`)
 
 4. [**4. Central Server & Dashboards Guide**](4_CENTRAL_SERVER_AND_DASHBOARDS.md)

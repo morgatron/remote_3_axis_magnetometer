@@ -35,7 +35,7 @@ The system streams calibrated 6-column magnetic field data in **Nanotesla (nT)**
 
 6. **Edge Arrival Timestamping & Monotonic Epoch Tracking (`NodeEpochTracker`)**:
    - Field nodes stream raw microsecond uptimes (`timestamp_us`) without requiring battery-backed RTC chips or NTP client stacks.
-   - Upon packet arrival at the edge gateway (`gateway.py` / `ble_gateway.py`), `NodeEpochTracker` locks and tracks the node's monotonic boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's NTP-synchronized UTC clock.
+   - Upon packet arrival at the edge gateway (`gateway.py` / `ble_monitor.py`), `NodeEpochTracker` locks and tracks the node's monotonic boot epoch ($T_{\text{epoch}} = T_{\text{wall}} - t_{\mu\text{s}} \times 10^{-6}$) against the host's NTP-synchronized UTC clock.
    - For multi-sample batches and backlog recovery dumps after outages, `NodeEpochTracker` maps each sample's `timestamp_us` directly to its true historical UTC moment, preventing timestamp clustering or collisions during high-speed backlog catch-up bursts while smoothly filtering microsecond crystal frequency drift (~15 ppm).
 
 7. **Modular Telemetry Ring Buffer (`include/TelemetryRingBuffer.h`)**:
@@ -201,7 +201,7 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 >
 > 6. **Headless Battery Operation & USB-CDC (`platformio.ini`)**:
 >    - On the `SUPERMINI_GATEWAY` receiver profile, USB CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`) to eliminate USB PLL power draw.
->    - Diagnostics (heartbeats, window misses, discovery locks) are broadcast over 1M Extended Advertising (`BLEEgress::broadcastDiagnostic`), allowing full headless debugging via `scripts/ble_gateway.py`.
+>    - Diagnostics (heartbeats, window misses, discovery locks) are broadcast over 1M Extended Advertising (`BLEEgress::broadcastDiagnostic`), allowing full headless debugging via `scripts/ble_monitor.py`.
 
 ---
 

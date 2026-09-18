@@ -14,7 +14,7 @@ The receiver gateway broadcasts connectionless 1 Mbps BLE **Extended Advertising
 3. Tap on the advertised packet to view details:
    * **Manufacturer Data:** Contains the 31-byte `GatewayAdvPacket` header (33 bytes including 2-byte company ID) followed by 12-byte compact $(X, Y, Z)$ sensor samples.
    * **Company ID:** `0xFFFF` (Test/Custom)
-   * **Payload Format:** Unpacked automatically by `scripts/ble_gateway.py` or nRF Connect raw payload inspector.
+   * **Payload Format:** Unpacked automatically by `scripts/ble_monitor.py` or nRF Connect raw payload inspector.
 4. Every 10 seconds, the receiver emits a 1-second burst containing up to 18 samples from the remote sensor node.
 
 ---
@@ -35,29 +35,32 @@ There are two distinct signal strength metrics:
 
 ---
 
-## 3. Laptop Gateway Client (`ble_gateway.py`)
+## 3. Laptop Telemetry & Diagnostic Monitor (`ble_monitor.py`)
 
-Run the Python BLE connectionless scanner on Linux, macOS, or Windows. It passively listens for 1 Mbps Extended Advertising auxiliary PDUs from the receiver gateway without establishing a GATT connection or requiring pairing:
+Run the Python BLE connectionless scanner on Linux, macOS, or Windows. It passively listens for 1 Mbps Extended Advertising auxiliary PDUs from the receiver gateway without establishing a GATT connection or requiring pairing, or connects to an ESP32 BLE-to-serial bridge:
 
 ```bash
 # Live stream to terminal (passive scanner)
-python3 scripts/ble_gateway.py
+python3 scripts/ble_monitor.py
+
+# Live stream via hardware ESP32-C3 USB serial bridge
+python3 scripts/ble_monitor.py --serial /dev/ttyACM2
 
 # Collect N samples and exit cleanly
-python3 scripts/ble_gateway.py --max-samples 40
+python3 scripts/ble_monitor.py --max-samples 40
 
 # Run for a specific duration in seconds
-python3 scripts/ble_gateway.py --timeout 45
+python3 scripts/ble_monitor.py --timeout 45
 
 # Save stream to CSV file
-python3 scripts/ble_gateway.py --csv garden_session.csv
+python3 scripts/ble_monitor.py --csv garden_session.csv
 
 # Forward directly to Central Server HTTP endpoint
-python3 scripts/ble_gateway.py --forward-url http://localhost:8000/api/v1/telemetry
+python3 scripts/ble_monitor.py --forward-url http://localhost:8000/api/v1/telemetry
 ```
 
 ### Gateway Diagnostic & Rendezvous Event Decoding
-The gateway broadcasts real-time diagnostic packets (`sample_count == 0`) which `ble_gateway.py` parses automatically:
+The gateway broadcasts real-time diagnostic packets (`sample_count == 0`) which `ble_monitor.py` parses automatically:
 * **`[GATEWAY HEARTBEAT]`**: Emitted every 60s when idle, reporting gateway battery voltage and active tracking state.
 * **`[GATEWAY STATUS] SYNC_ACQUIRED`**: Emitted upon locking to a remote sensor, reporting discovery duration in milliseconds.
 * **`[GATEWAY ALERT] WINDOW_MISSED`**: Emitted when an expected burst window times out, reporting consecutive miss count and on-time.
