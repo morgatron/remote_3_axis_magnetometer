@@ -310,6 +310,12 @@ class BleGatewayScanner:
         ser = serial.Serial(port, baudrate, timeout=0.2)
         ser.dtr = True
         ser.rts = False
+        # Discard potentially split/partial first line when opening port mid-stream
+        try:
+            ser.readline()
+        except Exception:
+            pass
+
         print(f"[ACTIVE] Listening for decoded BLE telemetry on {port}...\n")
 
         try:
@@ -335,7 +341,9 @@ class BleGatewayScanner:
                         x = float(parts[2])
                         y = float(parts[3])
                         z = float(parts[4])
-                        status_hex = parts[5].strip()
+                        status_str = parts[5].strip()
+                        status_int = int(status_str, 16)
+                        status_hex = f"{status_int:04X}"
                         temp = float(parts[6]) if len(parts) >= 7 and parts[6].strip() else None
                         vbat = float(parts[7]) if len(parts) >= 8 and parts[7].strip() else 0.0
                         rssi = int(float(parts[8])) if len(parts) >= 9 and parts[8].strip() else 0

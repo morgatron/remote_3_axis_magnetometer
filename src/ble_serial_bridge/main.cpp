@@ -26,6 +26,17 @@ void triggerLed() {
     g_ledState = true;
 }
 
+static bool isValidNodeId(const char* id) {
+    if (!id || id[0] == '\0') return false;
+    size_t len = 0;
+    for (size_t i = 0; i < 8 && id[i] != '\0'; i++) {
+        char c = id[i];
+        if (!isalnum((unsigned char)c) && c != '_' && c != '-') return false;
+        len++;
+    }
+    return len >= 3;
+}
+
 class BridgeScanCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
         std::string manuData = advertisedDevice->getManufacturerData();
@@ -170,16 +181,17 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                     if (batchHdrSize > 0) {
                         char devId[9] = {0};
                         memcpy(devId, p, 8);
-                        if (isprint(devId[0]) && isprint(devId[1])) {
-                            uint32_t latestAgeMs;
-                            memcpy(&latestAgeMs, p + 8, sizeof(uint32_t));
-                            uint16_t sampleIntervalMs;
-                            memcpy(&sampleIntervalMs, p + 12, sizeof(uint16_t));
-                            if (sampleIntervalMs == 0) sampleIntervalMs = 1000;
-                            uint16_t status;
-                            memcpy(&status, p + 15, sizeof(uint16_t));
-                            uint16_t vbatMv;
-                            memcpy(&vbatMv, p + 17, sizeof(uint16_t));
+                        uint32_t latestAgeMs;
+                        memcpy(&latestAgeMs, p + 8, sizeof(uint32_t));
+                        uint16_t sampleIntervalMs;
+                        memcpy(&sampleIntervalMs, p + 12, sizeof(uint16_t));
+                        if (sampleIntervalMs == 0) sampleIntervalMs = 1000;
+                        uint16_t status;
+                        memcpy(&status, p + 15, sizeof(uint16_t));
+                        uint16_t vbatMv;
+                        memcpy(&vbatMv, p + 17, sizeof(uint16_t));
+
+                        if (isValidNodeId(devId) && latestAgeMs <= 600000 && vbatMv <= 5500) {
                             float vbat = (float)vbatMv / 1000.0f;
                             float temp = 0.0f;
                             if (batchHdrSize >= 21) {
@@ -228,16 +240,17 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
             SensorBinaryPacket pkt;
             memcpy(&pkt, p, sizeof(pkt));
 
+            char devId[9] = {0};
+            memcpy(devId, pkt.device_id, 8);
+
             // Basic sanity validation
-            if (pkt.device_id[0] >= 32 && pkt.device_id[0] <= 126 &&
+            if (isValidNodeId(devId) && pkt.packet_age_ms <= 600000 &&
                 !isnan(pkt.x_nT) && !isnan(pkt.y_nT) && !isnan(pkt.z_nT) &&
                 abs(pkt.x_nT) < 1e7 && abs(pkt.y_nT) < 1e7 && abs(pkt.z_nT) < 1e7) {
                 
                 triggerLed();
                 g_rxPacketCount++;
 
-                char devId[9] = {0};
-                memcpy(devId, pkt.device_id, 8);
                 uint64_t ts_us = (uint64_t)millis() * 1000ULL;
 
                 Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,0.00,0.00,%d,0.00\n",
