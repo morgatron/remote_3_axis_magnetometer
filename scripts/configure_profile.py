@@ -8,6 +8,8 @@ Automates building, flashing, and configuring the in-use project profiles:
   3. CREEK         - Seeed Studio XIAO ESP32-C6 Sensor (FLC100 Fluxgate, BLE Coded PHY batch transmission)
   4. CREEK_TEST    - Seeed Studio XIAO ESP32-C6 Sensor Test Unit (FLC100 Fluxgate, node ID: _CREEK)
   5. CREEK_GATEWAY - Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)
+  6. SUPERMINI_GATEWAY - ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> 1M BLE Extended Adv)
+  7. LAB_BENCH     - Seeed Studio XIAO ESP32-C6 Sensor + FLC100 (100 Hz USB Serial GUI stream, 10x downsample)
 
 Usage:
   python3 scripts/configure_profile.py --profile SPRINGBANK [--port /dev/ttyACM0]
@@ -15,6 +17,8 @@ Usage:
   python3 scripts/configure_profile.py --profile CREEK [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile CREEK_TEST [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile CREEK_GATEWAY [--port /dev/ttyACM0]
+  python3 scripts/configure_profile.py --profile SUPERMINI_GATEWAY [--port /dev/ttyACM0]
+  python3 scripts/configure_profile.py --profile LAB_BENCH [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile SPRINGBANK --no-flash   # Skip PlatformIO upload
   python3 scripts/configure_profile.py --profile SPRINGBANK --mock       # Run synthetic test data
 """
@@ -169,6 +173,50 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "runtime_1000mah": "~55 - 65 hours (~2.5 days)",
             "runtime_3000mah": "~7 - 8 days"
         }
+    },
+    "LAB_BENCH": {
+        "description": "Seeed Studio XIAO ESP32-C6 Lab Bench Sensor + FLC100 (100 Hz USB Serial GUI stream, 10x downsample)",
+        "board_type": "Seeed Studio XIAO ESP32-C6 (RISC-V)",
+        "pio_env": "esp32-c6-devkitc-1",
+        "role": "sensor",
+        "cli_commands": [
+            "ID LAB_BENCH",
+            "MODE SERIAL",
+            "SENSOR FLC100",
+            "DOWNSAMPLE 10",
+            "STREAM ON",
+            "SAVE",
+            "STATUS"
+        ],
+        "expected_current": {
+            "idle_sleep": "N/A (Continuous 100 Hz USB Serial stream)",
+            "tx_peak": "N/A (Radios disabled)",
+            "average": "22 - 26 mA @ 5V USB (C6 MCU @ 80MHz + FLC100 / ADS131E08 / Boost)",
+            "runtime_1000mah": "Wired USB powered (Desktop GUI continuous acquisition)",
+            "runtime_3000mah": "Wired USB powered (Desktop GUI continuous acquisition)"
+        }
+    },
+    "BENCH": {
+        "description": "Seeed Studio XIAO ESP32-C6 Lab Bench Sensor + FLC100 (Alias for LAB_BENCH)",
+        "board_type": "Seeed Studio XIAO ESP32-C6 (RISC-V)",
+        "pio_env": "esp32-c6-devkitc-1",
+        "role": "sensor",
+        "cli_commands": [
+            "ID LAB_BENCH",
+            "MODE SERIAL",
+            "SENSOR FLC100",
+            "DOWNSAMPLE 10",
+            "STREAM ON",
+            "SAVE",
+            "STATUS"
+        ],
+        "expected_current": {
+            "idle_sleep": "N/A (Continuous 100 Hz USB Serial stream)",
+            "tx_peak": "N/A (Radios disabled)",
+            "average": "22 - 26 mA @ 5V USB (C6 MCU @ 80MHz + FLC100 / ADS131E08 / Boost)",
+            "runtime_1000mah": "Wired USB powered (Desktop GUI continuous acquisition)",
+            "runtime_3000mah": "Wired USB powered (Desktop GUI continuous acquisition)"
+        }
     }
 }
 
@@ -278,11 +326,11 @@ def print_power_summary(profile_name: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Configure and flash devices to the 6 in-use project profiles."
+        description="Configure and flash devices to in-use project profiles."
     )
     parser.add_argument(
         "--profile",
-        choices=["SPRINGBANK", "ROOF", "CREEK", "CREEK_TEST", "CREEK2", "CREEK_GATEWAY", "SUPERMINI_GATEWAY"],
+        choices=list(PROFILES.keys()),
         required=True,
         help="Target profile name to deploy"
     )

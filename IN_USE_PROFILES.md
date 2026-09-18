@@ -26,5 +26,11 @@ All use battery power unless specified otherwise
     - Wi-Fi radio powered off (`WiFi.mode(WIFI_OFF)`, ~80 mA saved)
     - Dynamic Frequency Scaling (DFS): 40 MHz during radio sleep (~10–12 mA), 80 MHz during burst/RX
     - Target current: ~12 - 15 mA average (~65 - 80 hours on 1,000 mAh LiPo / ~8 - 10 days on 3,000 mAh 18650)
+- Seeed Studio Xiao ESP32-C6 Sensor (label: LAB_BENCH)
+    - connected to FLC100
+    - wired USB power (used for lab bench magnetic measurements)
+    - communicates with desktop GUI host computer over USB Serial only (`MODE SERIAL`, 921600 baud)
+    - 100 Hz output streaming rate (1 kHz raw ADS131E08 ADC data downsampled by a factor of 10)
+    - not for use with wireless gateway or central server (BLE/LoRa/WiFi radios disabled)
 
 

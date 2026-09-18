@@ -509,7 +509,7 @@ void setup() {
     lastOledActivityMs = millis();
 #endif
 
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
+#if (defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
     Serial.setTxTimeoutMs(0);
 #endif
     Serial.begin(921600);
@@ -697,9 +697,9 @@ void loop() {
     }
 #endif
 
-    // Fallback periodic refresh when unbatched streaming (batch_size == 1)
+    // Fallback periodic refresh when unbatched streaming (batch_size == 1) or serial mode
     static uint32_t lastUnbatchedVbatMs = 0;
-    if (batchSizeConfig == 1 && (millis() - lastUnbatchedVbatMs >= 10000)) {
+    if ((batchSizeConfig == 1 || outputMode == MODE_SERIAL) && (millis() - lastUnbatchedVbatMs >= 10000)) {
         lastUnbatchedVbatMs = millis();
         sampleBatteryVoltage();
     }
@@ -783,9 +783,9 @@ void loop() {
                 decimationCounter++;
 
                 if (decimationCounter >= decimationFactor) {
-                    float avgX = sumX / (float)decimationFactor;
-                    float avgY = sumY / (float)decimationFactor;
-                    float avgZ = sumZ / (float)decimationFactor;
+                    float avgX = sumX / (float)decimationCounter;
+                    float avgY = sumY / (float)decimationCounter;
+                    float avgZ = sumZ / (float)decimationCounter;
 
                     sumX = 0;
                     sumY = 0;

@@ -52,8 +52,8 @@ class ProvisionDialog(QDialog):
 
         # Software Downsample (FLC100)
         self.ds_spin = QSpinBox()
-        self.ds_spin.setRange(1, 100)
-        self.ds_spin.setValue(1)
+        self.ds_spin.setRange(1, 2000)
+        self.ds_spin.setValue(10)
         form.addRow("Downsample Factor (FLC100):", self.ds_spin)
 
         # PGA Gain (FLC100)

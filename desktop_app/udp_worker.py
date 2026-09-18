@@ -4,8 +4,9 @@ import socket
 import time
 from PySide6.QtCore import QThread, Signal
 
-# Import shared stream parser from repository root
+# Import shared stream parser from repository root and central_service
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "central_service")))
 from stream_parser import parse_telemetry_line
 
 class UdpWorker(QThread):
