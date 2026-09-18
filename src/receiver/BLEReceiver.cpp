@@ -83,6 +83,7 @@ void BLEReceiver::onRadioPowerDown() {
     if (pScan && pScan->isScanning()) {
         pScan->stop();
     }
+    NimBLEDevice::deinit(false);
 }
 
 void BLEReceiver::onRadioPowerUp() {

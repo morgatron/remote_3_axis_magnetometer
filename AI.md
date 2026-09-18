@@ -195,9 +195,9 @@ An ESP32 configured as a dedicated field receiver/relay ingests telemetry from b
 >    - Must explicitly call `pScan->setPhy(NimBLEScan::Phy::SCAN_CODED)` during radio setup.
 >    - *Rationale*: NimBLE-Arduino defaults to `SCAN_ALL` (0x03), splitting scan time 50/50 between 1M and Coded PHY. This causes missed bursts and dropped hardware `AUX_SCAN_REQ` ACKs on Coded PHY.
 >
-> 5. **Radio Controller Teardown Avoidance (`BLEReceiver.cpp` & `PowerManager.cpp`)**:
->    - Do NOT call `NimBLEDevice::deinit(false)` or `esp_bt_controller_disable()` during periodic 10-second rendezvous sleep.
->    - *Rationale*: Reinitializing NimBLE takes 150–200 ms with high CPU power. Calling `pScan->stop()` already shuts down the radio synthesizer and LNA, achieving ~10–12 mA base current at 40 MHz CPU while allowing instant zero-latency wakeups.
+> 5. **Bluetooth Controller Power-Gating (`BLEReceiver.cpp` & `PowerManager.cpp`)**:
+>    - MUST call `NimBLEDevice::deinit(false)` and `esp_bt_controller_disable()` during periodic slotted rendezvous sleep.
+>    - *Rationale*: On the ESP32-C3, `pScan->stop()` only halts the NimBLE scan task at the host layer; the underlying hardware Bluetooth controller (`esp_bt_controller`), baseband modem, and RF PLL synthesizer remain fully clocked and powered, drawing ~21–22 mA continuously. Disabling the controller cuts sleep current from 32 mA down to 10–12 mA at 40 MHz CPU. Reinitializing NimBLE takes only ~10–15 ms, easily absorbed by the 350 ms lead margin. *(Bench-verified on hardware meter: current drops cleanly to 10 mA with 100% burst ACKs maintained across wakeups).*
 >
 > 6. **Headless Battery Operation & USB-CDC (`platformio.ini`)**:
 >    - On the `SUPERMINI_GATEWAY` receiver profile, USB CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`) to eliminate USB PLL power draw.

@@ -96,8 +96,8 @@ Connect to the receiver gateway at **921600 baud**:
 1. **Slotted Rendezvous Sleep Protocol:**
    - The receiver tracks remote sensor burst cadences via EWMA smoothing ($(3 \times \text{period} + dt) / 4$) within a bounded acceptance window ($7,500\text{ ms} - 12,500\text{ ms}$).
    - **Backlog Invariance Rule**: `nominalPeriod` is fixed at $10.0\text{ s}$ and NEVER computed from `sample_count`. When a sensor drains backlog, `sample_count` reaches 18, but transmission remains strictly on the 10.0s grid.
-   - During the ~9.4-second gap between bursts, the BLE radio is shut down (`pScan->stop()`), achieving a **~97% radio sleep duty cycle** (dropping current to ~10–12 mA base at 40 MHz CPU).
-   - The receiver wakes up with a **350 ms lead time** prior to the predicted burst. This 350 ms margin absorbs up to ±3% uncalibrated crystal drift on cold boot before EWMA converges.
+   - During the ~9.4-second gap between bursts, NimBLE is cleanly deinitialized and the hardware Bluetooth controller is disabled (`NimBLEDevice::deinit(false)` + `esp_bt_controller_disable()`), achieving a **~97% radio sleep duty cycle** and dropping current to **10 mA** base at 40 MHz CPU (bench-verified).
+   - The receiver wakes up with a **350 ms lead time** prior to the predicted burst. This 350 ms margin absorbs up to ±3% uncalibrated crystal drift on cold boot before EWMA converges, and easily absorbs the ~10–15 ms NimBLE initialization overhead.
    - Upon receiving the batch, the receiver shuts off its radio immediately (~5 ms after RX), resulting in actual radio on-times of only ~50–100 ms.
    - **Immediate Discovery Lock**: In `STATE_DISCOVERY`, the scheduler immediately exits upon the first valid batch reception, eliminating 12-second 75 mA discovery freezes.
    - **Dedicated Coded PHY Scanning**: Active scan is locked to Coded PHY (`pScan->setPhy(NimBLEScan::Phy::SCAN_CODED)`) to guarantee 100% duty cycle reception and instant `AUX_SCAN_REQ` hardware ACKs.

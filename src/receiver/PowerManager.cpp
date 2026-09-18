@@ -49,12 +49,17 @@ void PowerManager::powerDownRadio() {
         _onPowerDown();
     }
 
+#if defined(ESP_PLATFORM)
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        esp_bt_controller_disable();
+    }
+#endif
     _radioPoweredDown = true;
     if (g_dfsEnabled && getCpuFrequencyMhz() > 40) {
         setCpuFrequencyMhz(40);
     }
     if (g_debugScheduler) {
-        Serial.printf("[POWER] Radio powered down (RX stopped, CPU %d MHz).\r\n", getCpuFrequencyMhz());
+        Serial.printf("[POWER] Radio powered down (BLE controller disabled, CPU %d MHz).\r\n", getCpuFrequencyMhz());
     }
 }
 
@@ -64,13 +69,18 @@ void PowerManager::powerUpRadio() {
     if (g_dfsEnabled && getCpuFrequencyMhz() < 80) {
         setCpuFrequencyMhz(80);
     }
+#if defined(ESP_PLATFORM)
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+        esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    }
+#endif
     _radioPoweredDown = false;
 
     if (_onPowerUp) {
         _onPowerUp();
     }
     if (g_debugScheduler) {
-        Serial.println(F("[POWER] Radio powered up (RX enabled, CPU 80 MHz)."));
+        Serial.println(F("[POWER] Radio powered up (BLE controller enabled, CPU 80 MHz)."));
     }
 }
 
