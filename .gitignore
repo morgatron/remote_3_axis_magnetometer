@@ -35,6 +35,7 @@ central_service/backups/
 *.cfg
 .env
 .env.*
+.env_*
 !.env.example
 !.env*.example
 provision_config.json
