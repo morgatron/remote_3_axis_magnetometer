@@ -72,8 +72,12 @@ void RendezvousScheduler::poll() {
 
             if (now - _stateStartMs >= DISCOVERY_DURATION_MS) {
                 if (nodeTracker.getActiveNodeCount() == 0) {
-                    _stateStartMs = now;
-                    SCHED_PRINTLN(F("[BLE SCHEDULER] Discovery complete: No active nodes heard yet. Continuing continuous scan..."));
+                    SCHED_PRINTLN(F("[BLE SCHEDULER] Discovery complete: No active nodes heard yet. Sleeping 15s to conserve battery..."));
+                    if (_stopScan) _stopScan();
+                    _state = STATE_SLEEPING;
+                    _nextWakeMs = now + IDLE_DISCOVERY_SLEEP_MS;
+                    _currentTargetMs = 0;
+                    strncpy(_targetNodeId, "IDLE_SEARCH", sizeof(_targetNodeId) - 1);
                 } else {
                     SCHED_PRINTF("[BLE SCHEDULER] Discovery complete: Found %d active node(s). Entering Slotted Rendezvous mode.\r\n",
                                   nodeTracker.getActiveNodeCount());
@@ -104,14 +108,21 @@ void RendezvousScheduler::poll() {
                 break;
             }
 
-            // Check if time to wake for scheduled batch
+            // Check if time to wake for scheduled batch or next discovery cycle
             if ((long)(now - _nextWakeMs) >= 0) {
                 PowerManager::powerUpRadio();
-                _state = STATE_LISTENING;
-                _stateStartMs = now;
-                if (_startScan) _startScan();
-                SCHED_PRINTF("[BLE SCHEDULER] Radio AWAKE for %s (CPU: %d MHz, burst expected in %ld ms)\r\n",
-                              _targetNodeId, getCpuFrequencyMhz(), (long)(_currentTargetMs - now));
+                if (nodeTracker.getActiveNodeCount() == 0) {
+                    _state = STATE_DISCOVERY;
+                    _stateStartMs = now;
+                    if (_startScan) _startScan();
+                    SCHED_PRINTLN(F("[BLE SCHEDULER] Radio AWAKE for Discovery scan cycle (CPU: 80 MHz)..."));
+                } else {
+                    _state = STATE_LISTENING;
+                    _stateStartMs = now;
+                    if (_startScan) _startScan();
+                    SCHED_PRINTF("[BLE SCHEDULER] Radio AWAKE for %s (CPU: %d MHz, burst expected in %ld ms)\r\n",
+                                  _targetNodeId, getCpuFrequencyMhz(), (long)(_currentTargetMs - now));
+                }
             }
             break;
         }
@@ -196,13 +207,11 @@ void RendezvousScheduler::transitionToSleep(uint32_t now) {
         SCHED_PRINTF("[BLE SCHEDULER] Radio SLEEPING for %lu ms (next wake at %lu ms for %s)\r\n",
                       (unsigned long)sleepDuration, (unsigned long)_nextWakeMs, _targetNodeId);
     } else {
-        _state = STATE_DISCOVERY;
-        _stateStartMs = now;
-        PowerManager::powerUpRadio();
-        if (_startScan && _isScanning && !_isScanning()) {
-            _startScan();
-        }
-        SCHED_PRINTLN(F("[BLE SCHEDULER] No active nodes to schedule. Returning to Discovery."));
+        _state = STATE_SLEEPING;
+        _nextWakeMs = now + IDLE_DISCOVERY_SLEEP_MS;
+        _currentTargetMs = 0;
+        strncpy(_targetNodeId, "IDLE_SEARCH", sizeof(_targetNodeId) - 1);
+        SCHED_PRINTLN(F("[BLE SCHEDULER] No active nodes to schedule. Sleeping 15s before next Discovery cycle."));
     }
 }
 

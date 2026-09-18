@@ -100,8 +100,8 @@ void RelayEgress::relayTask(void *pvParameters) {
                     appendSampleToAdvPacket(advPkt, nextItem);
                 }
 
-                // Bundle and broadcast for 200 ms (or 150 ms if catch-up backlog exists in queue)
-                uint32_t advDurMs = (uxQueueMessagesWaiting(telemetryQueue) > 0) ? 150 : 200;
+                // Bundle and broadcast for 120 ms (or 100 ms if catch-up backlog exists in queue)
+                uint32_t advDurMs = (uxQueueMessagesWaiting(telemetryQueue) > 0) ? 100 : 120;
                 BLEEgress::broadcast(advPkt, advDurMs);
                 vTaskDelay(pdMS_TO_TICKS(advDurMs));
                 PowerManager::releaseLock();
