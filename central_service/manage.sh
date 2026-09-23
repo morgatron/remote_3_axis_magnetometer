@@ -294,7 +294,7 @@ function show_help() {
     echo -e "  ${GREEN}node prune${NC}  [flags]     Prune inactive nodes (> N days) [dry-run preview, telemetry safety]"
     echo ""
     echo -e "${CYAN}${BOLD}--- Data & Operations ---${NC}"
-    echo -e "  ${GREEN}export${NC} [format]         Export telemetry (csv, parquet, npz, json)"
+    echo -e "  ${GREEN}export${NC} [format] [node_id] Export telemetry (csv, parquet, npz, json) [all records]"
     echo -e "  ${GREEN}backup${NC}                  Create safe online SQLite snapshot in backups/"
     echo -e "  ${GREEN}test${NC}                    Send synthetic test telemetry sample to verify ingestion"
     echo -e "  ${GREEN}help${NC}                    Show this reference manual"
@@ -306,6 +306,7 @@ function show_help() {
     echo -e "  $0 node prune --days 30"
     echo -e "  $0 node delete TEST_NODE --purge"
     echo -e "  $0 export parquet"
+    echo -e "  $0 export csv NODE_3A8"
     echo "======================================================================"
 }
 
@@ -332,24 +333,33 @@ function show_node_help() {
 
 function export_data() {
     FORMAT="${1:-csv}"
+    NODE_ID="${2:-}"
     
     if [ "$FORMAT" = "help" ] || [ "$FORMAT" = "--help" ] || [ "$FORMAT" = "-h" ]; then
         print_header
-        echo -e "${BOLD}Data Exporter Usage:${NC} $0 export [csv|parquet|npz|json]"
+        echo -e "${BOLD}Data Exporter Usage:${NC} $0 export [csv|parquet|npz|json] [node_id]"
         echo ""
-        echo -e "  ${CYAN}csv${NC}     - Standard 6-column tabular time-series (Default)"
+        echo -e "  ${CYAN}csv${NC}     - Standard tabular time-series (Default)"
         echo -e "  ${CYAN}parquet${NC} - Compressed Apache Parquet for high-speed Pandas / Polars analysis"
         echo -e "  ${CYAN}npz${NC}     - Compressed NumPy archive with timestamps and 3-axis array vectors"
         echo -e "  ${CYAN}json${NC}    - Structured JSON list of telemetry readings"
+        echo ""
+        echo -e "  Optional [node_id] filters export to a specific sensor station."
+        echo -e "  All exports download full historical datasets (&all=true) without record caps."
         echo "======================================================================"
         return
     fi
 
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    OUTFILE="magnetometer_export_${TIMESTAMP}.${FORMAT}"
+    PREFIX="magnetometer_export"
+    [ -n "$NODE_ID" ] && PREFIX="${PREFIX}_${NODE_ID}"
+    OUTFILE="${PREFIX}_${TIMESTAMP}.${FORMAT}"
 
-    echo "Exporting database telemetry in '${FORMAT}' format..."
-    curl -s "http://localhost:${PORT}/api/v1/data?format=${FORMAT}" -o "$OUTFILE"
+    URL="http://localhost:${PORT}/api/v1/data?format=${FORMAT}&all=true"
+    [ -n "$NODE_ID" ] && URL="${URL}&node_id=${NODE_ID}"
+
+    echo "Exporting database telemetry in '${FORMAT}' format (all records${NODE_ID:+ for node $NODE_ID})..."
+    curl -s "$URL" -o "$OUTFILE"
     
     if [ -f "$OUTFILE" ] && [ -s "$OUTFILE" ]; then
         SIZE=$(du -h "$OUTFILE" | awk '{print $1}')
@@ -752,7 +762,7 @@ case "${1:-status}" in
         test_server
         ;;
     export)
-        export_data "${2:-csv}"
+        export_data "${2:-csv}" "${3:-}"
         ;;
     nodes|node)
         shift

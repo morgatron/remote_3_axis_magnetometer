@@ -125,6 +125,8 @@ def test_data_export_formats():
     assert "timestamp_utc" in df_csv.columns
     assert "x_nT" in df_csv.columns
     assert "magnitude_nT" in df_csv.columns
+    assert "rssi_dbm" in df_csv.columns
+    assert "status_flags" in df_csv.columns
     assert len(df_csv) >= 2
 
     # 3. NumPy (.npz) Format
@@ -134,18 +136,68 @@ def test_data_export_formats():
     assert "x_nT" in npz_data
     assert "y_nT" in npz_data
     assert "magnitude_nT" in npz_data
+    assert "rssi_dbm" in npz_data
+    assert "status_flags" in npz_data
     assert len(npz_data["x_nT"]) >= 2
 
     # 4. Parquet (.parquet) Format
     r_parquet = requests.get(f"{SERVER_URL}/api/v1/data?node_id=TEST_NODE_01&format=parquet")
-    assert r_parquet.status_code in [200, 400]
-    if r_parquet.status_code == 200:
-        df_parquet = pd.read_parquet(io.BytesIO(r_parquet.content))
-        assert "timestamp_utc" in df_parquet.columns
-        assert "x_nT" in df_parquet.columns
-        assert len(df_parquet) >= 2
+    assert r_parquet.status_code == 200
+    df_parquet = pd.read_parquet(io.BytesIO(r_parquet.content))
+    assert "timestamp_utc" in df_parquet.columns
+    assert "x_nT" in df_parquet.columns
+    assert "magnitude_nT" in df_parquet.columns
+    assert len(df_parquet) >= 2
 
     print("[PASS] Data export formats test (JSON, CSV, NumPy .npz, Parquet) passed.")
+
+def test_unlimited_and_empty_exports():
+    # 1. Test empty query across all 4 formats - should return 200 with empty datasets, no 500 crash
+    for fmt in ["csv", "json", "npz", "parquet"]:
+        r_empty = requests.get(f"{SERVER_URL}/api/v1/data?node_id=NON_EXISTENT_EXPORT&format={fmt}")
+        assert r_empty.status_code == 200, f"Empty export failed for {fmt}: {r_empty.status_code}"
+        if fmt == "json":
+            assert r_empty.json()["count"] == 0
+            assert r_empty.json()["data"] == []
+        elif fmt == "csv":
+            assert "timestamp_utc" in r_empty.text
+        elif fmt == "npz":
+            npz = np.load(io.BytesIO(r_empty.content))
+            assert len(npz["x_nT"]) == 0
+        elif fmt == "parquet":
+            df_empty = pd.read_parquet(io.BytesIO(r_empty.content))
+            assert len(df_empty) == 0
+
+    # 2. Ingest 5200 telemetry records to verify all=true and limit=0 exceed the default 5000 limit
+    bulk_pts = [
+        {"node_id": "BULK_EXP_NODE", "timestamp": f"2026-08-01T{i // 3600:02d}:{(i % 3600) // 60:02d}:{i % 60:02d}Z", "x": 100.0, "y": 200.0, "z": 300.0}
+        for i in range(5200)
+    ]
+    for chunk_start in range(0, len(bulk_pts), 1000):
+        chunk = bulk_pts[chunk_start:chunk_start+1000]
+        requests.post(f"{SERVER_URL}/api/v1/telemetry/batch", json={"node_id": "BULK_EXP_NODE", "points": chunk})
+
+    # Default query without all or bounds defaults to 5000
+    r_default = requests.get(f"{SERVER_URL}/api/v1/data?node_id=BULK_EXP_NODE&format=json")
+    assert r_default.status_code == 200
+    assert r_default.json()["count"] == 5000
+
+    # all=true exports all 5200 records
+    r_all = requests.get(f"{SERVER_URL}/api/v1/data?node_id=BULK_EXP_NODE&all=true&format=json")
+    assert r_all.status_code == 200
+    assert r_all.json()["count"] == 5200
+
+    # limit=0 exports all 5200 records
+    r_zero = requests.get(f"{SERVER_URL}/api/v1/data?node_id=BULK_EXP_NODE&limit=0&format=json")
+    assert r_zero.status_code == 200
+    assert r_zero.json()["count"] == 5200
+
+    # limit=100 respects limit
+    r_limited = requests.get(f"{SERVER_URL}/api/v1/data?node_id=BULK_EXP_NODE&limit=100&format=json")
+    assert r_limited.status_code == 200
+    assert r_limited.json()["count"] == 100
+
+    print("[PASS] Unlimited (all=true, limit=0) and empty dataset export tests passed.")
 
 def test_downsampling():
     points = []
@@ -258,6 +310,7 @@ if __name__ == "__main__":
         test_batch_telemetry_ingestion()
         test_list_nodes()
         test_data_export_formats()
+        test_unlimited_and_empty_exports()
         test_downsampling()
         test_delete_and_prune_nodes()
         test_api_key_auth()

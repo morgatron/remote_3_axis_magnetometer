@@ -403,36 +403,70 @@
             </div>
         </div>
 
-        <!-- Bottom Panel: Export / Download Data Subset -->
+        <!-- Bottom Panel: Export / Download Telemetry Data -->
         <div class="panel">
-            <div class="panel-header">
-                <span class="panel-title">Data Subset Exporter</span>
+            <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+                <span class="panel-title">Data Exporter</span>
+                <span style="font-size: 0.75rem; color: var(--text-muted);">Export complete datasets or filtered time ranges in CSV, Parquet, NumPy (.npz), or JSON</span>
             </div>
             <div class="download-panel">
                 <div class="form-group">
-                    <label>Node ID</label>
-                    <select id="export-node-id"></select>
+                    <label>Node Selection</label>
+                    <select id="export-node-id">
+                        <option value="">All Nodes</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Time Range</label>
+                    <select id="export-range" onchange="toggleCustomRange()">
+                        <option value="all">All Time (Complete History)</option>
+                        <option value="1h">Last 1 Hour</option>
+                        <option value="24h">Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                        <option value="30d">Last 30 Days</option>
+                        <option value="custom">Custom Date Range...</option>
+                    </select>
+                </div>
+                <div id="custom-range-inputs" style="display: none; gap: 0.75rem; align-items: flex-end;">
+                    <div class="form-group">
+                        <label>Start Date/Time (UTC)</label>
+                        <input type="datetime-local" id="export-start">
+                    </div>
+                    <div class="form-group">
+                        <label>End Date/Time (UTC)</label>
+                        <input type="datetime-local" id="export-end">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Export Limit / Scope</label>
+                    <select id="export-limit">
+                        <option value="0">All Records (No Limit)</option>
+                        <option value="5000">Latest 5,000 Records</option>
+                        <option value="10000">Latest 10,000 Records</option>
+                        <option value="50000">Latest 50,000 Records</option>
+                        <option value="100000">Latest 100,000 Records</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>Format</label>
                     <select id="export-format">
                         <option value="csv">CSV File (.csv)</option>
-                        <option value="json">JSON Array (.json)</option>
                         <option value="parquet">Apache Parquet (.parquet)</option>
-                        <option value="npz">NumPy Compressed Archive (.npz)</option>
+                        <option value="npz">NumPy Compressed (.npz)</option>
+                        <option value="json">JSON Array (.json)</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Averaging (Averaging Window)</label>
+                    <label>Averaging (Window)</label>
                     <select id="export-downsample">
-                        <option value="0">Raw 1 Hz Samples</option>
+                        <option value="0">Raw Samples (No Downsampling)</option>
                         <option value="10">10-Second Averaging</option>
                         <option value="60">1-Minute Averaging</option>
                         <option value="3600">1-Hour Averaging</option>
                     </select>
                 </div>
                 <div class="form-group" style="align-self: flex-end;">
-                    <button onclick="downloadDataSubset()">Download Subset</button>
+                    <button onclick="downloadDataSubset()">📥 Export Data</button>
                 </div>
             </div>
         </div>
@@ -712,6 +746,7 @@
         function renderNodeList() {
             const listEl = document.getElementById('node-list');
             const selectEl = document.getElementById('export-node-id');
+            const prevVal = selectEl ? selectEl.value : '';
 
             const nodes = Object.values(nodesData);
             document.getElementById('node-count').innerText = `${nodes.length} nodes registered`;
@@ -765,7 +800,10 @@
             });
 
             listEl.innerHTML = listHtml;
-            selectEl.innerHTML = optionsHtml;
+            if (selectEl) {
+                selectEl.innerHTML = optionsHtml;
+                if (prevVal) selectEl.value = prevVal;
+            }
             updateMapMarkers();
         }
 
@@ -1144,14 +1182,60 @@
             };
         }
 
+        function toggleCustomRange() {
+            const range = document.getElementById('export-range').value;
+            const customDiv = document.getElementById('custom-range-inputs');
+            if (range === 'custom') {
+                customDiv.style.display = 'flex';
+            } else {
+                customDiv.style.display = 'none';
+            }
+        }
+
         function downloadDataSubset() {
             const nodeId = document.getElementById('export-node-id').value;
+            const range = document.getElementById('export-range').value;
+            const limitVal = parseInt(document.getElementById('export-limit').value, 10);
             const fmt = document.getElementById('export-format').value;
-            const downsampleSec = document.getElementById('export-downsample').value;
+            const downsampleSec = parseInt(document.getElementById('export-downsample').value, 10);
 
-            let url = `${apiBaseUrl}/api/v1/data?format=${fmt}`;
-            if (nodeId) url += `&node_id=${nodeId}`;
-            if (parseInt(downsampleSec) > 0) url += `&downsample_sec=${downsampleSec}`;
+            let url = `${apiBaseUrl}/api/v1/data?format=${encodeURIComponent(fmt)}`;
+            if (nodeId) {
+                url += `&node_id=${encodeURIComponent(nodeId)}`;
+            }
+
+            // Time range handling
+            if (range === 'custom') {
+                const startInput = document.getElementById('export-start').value;
+                const endInput = document.getElementById('export-end').value;
+                if (startInput) {
+                    url += `&start=${encodeURIComponent(new Date(startInput).toISOString())}`;
+                }
+                if (endInput) {
+                    url += `&end=${encodeURIComponent(new Date(endInput).toISOString())}`;
+                }
+            } else if (range !== 'all') {
+                const now = new Date();
+                let start = new Date();
+                if (range === '1h') start.setHours(now.getHours() - 1);
+                else if (range === '24h') start.setHours(now.getHours() - 24);
+                else if (range === '7d') start.setDate(now.getDate() - 7);
+                else if (range === '30d') start.setDate(now.getDate() - 30);
+                url += `&start=${encodeURIComponent(start.toISOString())}`;
+                url += `&end=${encodeURIComponent(now.toISOString())}`;
+            }
+
+            // Limit / Scope handling
+            if (limitVal === 0) {
+                url += '&all=true';
+            } else if (!isNaN(limitVal)) {
+                url += `&limit=${limitVal}`;
+            }
+
+            if (downsampleSec > 0) {
+                url += `&downsample_sec=${downsampleSec}`;
+            }
+
             window.open(url, '_blank');
         }
 

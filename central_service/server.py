@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("central_server")
 
-DB_FILE = os.getenv("DB_FILE", "magnetometer.db")
+DB_FILE = os.getenv("DB_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "magnetometer.db"))
 API_KEY = os.getenv("API_KEY", None)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
@@ -517,19 +517,36 @@ def query_data(
     node_id: Optional[str] = Query(None, description="Filter by node ID"),
     start: Optional[str] = Query(None, description="Start timestamp (ISO format)"),
     end: Optional[str] = Query(None, description="End timestamp (ISO format)"),
-    limit: Optional[int] = Query(None, ge=1, le=100000, description="Max records to return. Defaults to 5000 if no date range is given. Max 100000."),
-    downsample_sec: Optional[int] = Query(None, description="Downsample averaging window in seconds (e.g. 60 for 1-min)"),
+    limit: Optional[int] = Query(None, ge=0, description="Max records to return. Pass 0 or use all=true to export all records without limit cap."),
+    all_data: bool = Query(False, alias="all", description="Export all matching records without pagination limit cap"),
+    downsample_sec: Optional[int] = Query(None, ge=0, description="Downsample averaging window in seconds (e.g. 60 for 1-min)"),
     format: str = Query("csv", description="Output format: csv, json, npz, or parquet")
 ):
     """Query time-series telemetry subsets and download in CSV, JSON, NumPy (.npz), or Parquet (.parquet)."""
+    # Sanitize inputs (handles both FastAPI dependency injection and direct unit test calls)
+    node_id = node_id if (isinstance(node_id, str) and node_id.strip()) else None
+    start = start if (isinstance(start, str) and start.strip()) else None
+    end = end if (isinstance(end, str) and end.strip()) else None
+    limit = limit if isinstance(limit, int) else None
+    all_data = bool(all_data) if isinstance(all_data, bool) else False
+    downsample_sec = downsample_sec if isinstance(downsample_sec, int) else None
+    format = format.lower() if isinstance(format, str) else "csv"
+
     is_bounded = bool(start or end)
-    effective_limit = limit if limit is not None else (None if is_bounded else 5000)
+    if all_data or limit == 0:
+        effective_limit = None
+    elif limit is not None and limit > 0:
+        effective_limit = limit
+    elif is_bounded:
+        effective_limit = None
+    else:
+        effective_limit = 5000  # Default preview limit when no bounds or export-all are requested
 
     # When querying latest data (limit specified without a start timestamp), query DESC for index speed
     use_desc_fetch = bool(node_id and not start and effective_limit)
 
     query = """
-    SELECT timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags
+    SELECT timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags, extra_json
     FROM telemetry WHERE 1=1
     """
     params = []
@@ -555,11 +572,53 @@ def query_data(
         cursor = conn.execute(query, params)
         rows = cursor.fetchall()
 
+    filename_base = f"mag_data_{node_id or 'all'}"
+
+    # Handle empty dataset cleanly for all formats without errors or exceptions
     if not rows:
         if format == "json":
             return {"schema_version": "1.0", "count": 0, "data": []}
-        elif format == "csv":
-            return Response(content="timestamp_utc,node_id,x_nT,y_nT,z_nT,magnitude_nT,temp_c,vbat_mv,rssi_dbm,status_flags\n", media_type="text/csv")
+        elif format == "parquet":
+            empty_df = pd.DataFrame(columns=[
+                "timestamp_utc", "node_id", "x_nT", "y_nT", "z_nT", "magnitude_nT", "temp_c", "vbat_mv", "rssi_dbm", "status_flags"
+            ])
+            buf = io.BytesIO()
+            empty_df.to_parquet(buf, index=False)
+            buf.seek(0)
+            return StreamingResponse(
+                buf,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f"attachment; filename={filename_base}.parquet"}
+            )
+        elif format == "npz":
+            buf = io.BytesIO()
+            np.savez_compressed(
+                buf,
+                timestamp=np.array([], dtype=str),
+                node_id=np.array([], dtype=str),
+                x_nT=np.array([], dtype=np.float32),
+                y_nT=np.array([], dtype=np.float32),
+                z_nT=np.array([], dtype=np.float32),
+                magnitude_nT=np.array([], dtype=np.float32),
+                temp_c=np.array([], dtype=np.float32),
+                vbat_mv=np.array([], dtype=np.float32),
+                rssi_dbm=np.array([], dtype=np.float32),
+                status_flags=np.array([], dtype=str),
+                schema_version="1.0"
+            )
+            buf.seek(0)
+            return StreamingResponse(
+                buf,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f"attachment; filename={filename_base}.npz"}
+            )
+        else: # csv
+            cols = "timestamp_utc,node_id,x_nT,y_nT,z_nT,magnitude_nT,temp_c,vbat_mv,rssi_dbm,status_flags\n"
+            return Response(
+                content=cols,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={filename_base}.csv"}
+            )
 
     # If queried in DESC order for index acceleration, reverse back to chronological ASC order
     if use_desc_fetch:
@@ -582,54 +641,84 @@ def query_data(
     # Compute scalar total magnitude |B|
     df["magnitude_nT"] = np.sqrt(df["x_nT"]**2 + df["y_nT"]**2 + df["z_nT"]**2).round(2)
 
+    # Extract gateway battery voltage from extra_json if present
+    if "extra_json" in df.columns and df["extra_json"].notna().any():
+        def _parse_gw_vbat(val):
+            if not val or not isinstance(val, str):
+                return None
+            try:
+                parsed = json.loads(val)
+                return parsed.get("gw_vbat_mv")
+            except Exception:
+                return None
+        gw_vbats = df["extra_json"].apply(_parse_gw_vbat)
+        if gw_vbats.notna().any():
+            df["gw_vbat_mv"] = gw_vbats
+
+    if "extra_json" in df.columns and df["extra_json"].isna().all():
+        df.drop(columns=["extra_json"], inplace=True)
+
     # Apply optional time downsampling (averaging)
     if downsample_sec and downsample_sec > 1 and len(df) > 0:
         try:
-            df["dt"] = pd.to_datetime(df["timestamp_utc"])
+            df["dt"] = pd.to_datetime(df["timestamp_utc"], format="ISO8601", utc=True)
             agg_dict = {
                 "x_nT": "mean",
                 "y_nT": "mean",
                 "z_nT": "mean",
                 "magnitude_nT": "mean"
             }
-            for col in ["temp_c", "vbat_mv", "rssi_dbm"]:
+            for col in ["temp_c", "vbat_mv", "rssi_dbm", "gw_vbat_mv"]:
                 if col in df.columns:
                     agg_dict[col] = "mean"
-            if "status_flags" in df.columns:
-                agg_dict["status_flags"] = "first"
+            for col in ["status_flags", "units", "extra_json"]:
+                if col in df.columns:
+                    agg_dict[col] = "first"
 
             resampled = df.groupby(["node_id", pd.Grouper(key="dt", freq=f"{downsample_sec}s")]).agg(agg_dict).reset_index()
             resampled["timestamp_utc"] = resampled["dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             resampled.drop(columns=["dt"], inplace=True)
+            for col in ["x_nT", "y_nT", "z_nT", "magnitude_nT", "temp_c", "vbat_mv", "rssi_dbm", "gw_vbat_mv"]:
+                if col in resampled.columns:
+                    resampled[col] = resampled[col].round(2)
             df = resampled
         except Exception as ds_err:
             logger.error(f"Downsampling error: {ds_err}")
 
     # Output Formats
-    filename_base = f"mag_data_{node_id or 'all'}"
-
     if format == "csv":
-        stream = io.StringIO()
-        df.to_csv(stream, index=False)
-        return Response(
-            content=stream.getvalue(),
+        buf = io.BytesIO()
+        df.to_csv(buf, index=False, encoding="utf-8")
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename={filename_base}.csv"}
         )
     elif format == "npz":
         buf = io.BytesIO()
-        np.savez_compressed(
-            buf,
-            timestamp=df["timestamp_utc"].to_numpy(dtype=str),
-            node_id=df["node_id"].to_numpy(dtype=str),
-            x_nT=df["x_nT"].to_numpy(dtype=np.float32),
-            y_nT=df["y_nT"].to_numpy(dtype=np.float32),
-            z_nT=df["z_nT"].to_numpy(dtype=np.float32),
-            magnitude_nT=df["magnitude_nT"].to_numpy(dtype=np.float32),
-            temp_c=df["temp_c"].to_numpy(dtype=np.float32),
-            vbat_mv=df["vbat_mv"].to_numpy(dtype=np.float32),
-            schema_version="1.0"
-        )
+        def _get_float_arr(col_name):
+            if col_name in df.columns:
+                return pd.to_numeric(df[col_name], errors="coerce").to_numpy(dtype=np.float32)
+            return np.full(len(df), np.nan, dtype=np.float32)
+
+        npz_dict = {
+            "timestamp": df["timestamp_utc"].to_numpy(dtype=str),
+            "node_id": df["node_id"].to_numpy(dtype=str),
+            "x_nT": _get_float_arr("x_nT"),
+            "y_nT": _get_float_arr("y_nT"),
+            "z_nT": _get_float_arr("z_nT"),
+            "magnitude_nT": _get_float_arr("magnitude_nT"),
+            "temp_c": _get_float_arr("temp_c"),
+            "vbat_mv": _get_float_arr("vbat_mv"),
+            "rssi_dbm": _get_float_arr("rssi_dbm"),
+            "status_flags": df["status_flags"].fillna("").to_numpy(dtype=str) if "status_flags" in df.columns else np.array([""] * len(df), dtype=str),
+            "schema_version": "1.0"
+        }
+        if "gw_vbat_mv" in df.columns:
+            npz_dict["gw_vbat_mv"] = _get_float_arr("gw_vbat_mv")
+
+        np.savez_compressed(buf, **npz_dict)
         buf.seek(0)
         return StreamingResponse(
             buf,
@@ -648,7 +737,7 @@ def query_data(
             )
         except Exception as e:
             logger.warning(f"Parquet export error: {e}")
-            raise HTTPException(status_code=400, detail=f"Parquet export engine missing or failed: {str(e)}. Install pyarrow via 'pip install pyarrow'.")
+            raise HTTPException(status_code=400, detail=f"Parquet export failed: {str(e)}.")
     else:
         df_clean = df.where(pd.notnull(df), None)
         return {"schema_version": "1.0", "count": len(df_clean), "data": df_clean.to_dict(orient="records")}
