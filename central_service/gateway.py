@@ -384,12 +384,18 @@ def serial_listener_thread(port, baud):
 
         try:
             print(f"[Gateway Serial] Opening {target_port} at {baud} baud...")
-            ser = serial.Serial(target_port, baud, timeout=1.0)
-            ser.dtr = True
-            ser.rts = False # CRITICAL: RTS must be False for ESP32 run mode
+            ser = serial.Serial()
+            ser.port = target_port
+            ser.baudrate = baud
+            ser.timeout = 1.0
+            ser.dtr = False
+            ser.rts = False
+            ser.open()
             print(f"[Gateway Serial Connected] Active on {target_port}")
 
-            # Send STREAM ON trigger
+            time.sleep(0.5)
+            ser.reset_input_buffer()
+            # Send STREAM ON trigger to start telemetry if in idle CLI
             ser.write(b"\r\nSTREAM ON\r\n")
 
             while True:
