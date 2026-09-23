@@ -213,7 +213,21 @@ def test_downsampling():
     data = resp.json()["data"]
     assert len(data) == 1  # Aggregated into 1 minute bucket
     assert abs(data[0]["x_nT"] - 20029.5) < 1.0
-    print("[PASS] Server-side downsampling test passed.")
+
+    # Test 3600-second downsampling with mixed/missing metadata across buckets (regression test for NaN crash)
+    mixed_points = [
+        {"node_id": "TEST_NODE_7D", "timestamp": "2026-08-01T10:00:00Z", "x": 100.0, "y": 200.0, "z": 300.0, "extra_json": '{"gw_vbat_mv": 4150}'},
+        {"node_id": "TEST_NODE_7D", "timestamp": "2026-08-01T11:00:00Z", "x": 110.0, "y": 210.0, "z": 310.0, "extra_json": None}
+    ]
+    requests.post(f"{SERVER_URL}/api/v1/telemetry/batch", json={"node_id": "TEST_NODE_7D", "points": mixed_points})
+    resp_7d = requests.get(f"{SERVER_URL}/api/v1/data?node_id=TEST_NODE_7D&downsample_sec=3600&format=json")
+    assert resp_7d.status_code == 200, f"Downsampling 3600s failed with HTTP {resp_7d.status_code}: {resp_7d.text}"
+    body_7d = resp_7d.json()
+    assert body_7d["count"] == 2
+    assert body_7d["data"][0]["gw_vbat_mv"] == 4150.0
+    assert body_7d["data"][1]["gw_vbat_mv"] is None
+
+    print("[PASS] Server-side downsampling test (including 3600s and NaN safety) passed.")
 
 def test_api_key_auth():
     print("[TEST SETUP] Starting authenticated test server with API_KEY...")

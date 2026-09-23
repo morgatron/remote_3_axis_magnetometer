@@ -739,8 +739,12 @@ def query_data(
             logger.warning(f"Parquet export error: {e}")
             raise HTTPException(status_code=400, detail=f"Parquet export failed: {str(e)}.")
     else:
-        df_clean = df.where(pd.notnull(df), None)
-        return {"schema_version": "1.0", "count": len(df_clean), "data": df_clean.to_dict(orient="records")}
+        df_clean = df.astype(object).where(pd.notnull(df), None)
+        records = [
+            {k: (None if (isinstance(v, float) and (np.isnan(v) or np.isinf(v))) else v) for k, v in row.items()}
+            for row in df_clean.to_dict(orient="records")
+        ]
+        return {"schema_version": "1.0", "count": len(records), "data": records}
 
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):

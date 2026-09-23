@@ -355,6 +355,8 @@
                             <option value="6h">Last 6 Hours (1m Avg)</option>
                             <option value="24h">Last 24 Hours (1m Avg)</option>
                             <option value="7d">Last 7 Days (1h Avg)</option>
+                            <option value="30d">Last 30 Days (1h Avg)</option>
+                            <option value="all">All Time History (1h Avg)</option>
                         </select>
                         <!-- Field Component & Multi-Node Overlay Selector -->
                         <select id="field-selector" onchange="updateChartSeries()">
@@ -533,6 +535,17 @@
             });
         }
 
+        function formatTimeLabel(d, range) {
+            if (!d || isNaN(d.getTime())) return 'N/A';
+            if (range === 'live' || range === '1h' || range === '6h') {
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            } else if (range === '24h') {
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } else {
+                return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+            }
+        }
+
         async function onTimeRangeChange() {
             const range = document.getElementById('time-range-selector').value;
             if (range === 'live') {
@@ -550,29 +563,38 @@
             else if (range === '6h') { startTime.setHours(now.getHours() - 6); downsampleSec = 60; }
             else if (range === '24h') { startTime.setHours(now.getHours() - 24); downsampleSec = 60; }
             else if (range === '7d') { startTime.setDate(now.getDate() - 7); downsampleSec = 3600; }
+            else if (range === '30d') { startTime.setDate(now.getDate() - 30); downsampleSec = 3600; }
+            else if (range === 'all') { startTime = null; downsampleSec = 3600; }
 
+            const startIso = startTime ? startTime.toISOString() : null;
             const mode = document.getElementById('field-selector').value;
             if (mode.startsWith('overlay_')) {
-                await fetchHistoricalAllNodes(startTime.toISOString(), downsampleSec);
+                await fetchHistoricalAllNodes(startIso, downsampleSec);
             } else if (selectedNodeId) {
-                await fetchHistoricalSingleNode(selectedNodeId, startTime.toISOString(), downsampleSec);
+                await fetchHistoricalSingleNode(selectedNodeId, startIso, downsampleSec);
             }
         }
 
         async function fetchHistoricalSingleNode(nodeId, startIso, downsampleSec) {
             try {
-                let url = `${apiBaseUrl}/api/v1/data?node_id=${nodeId}&format=json`;
+                const range = document.getElementById('time-range-selector').value;
+                let url = `${apiBaseUrl}/api/v1/data?node_id=${encodeURIComponent(nodeId)}&format=json`;
                 if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
                 if (downsampleSec > 0) url += `&downsample_sec=${downsampleSec}`;
+                if (!startIso) url += '&all=true';
 
                 const res = await fetch(url);
+                if (!res.ok) {
+                    console.error(`HTTP error ${res.status} fetching historical data for ${nodeId}`);
+                    return;
+                }
                 const body = await res.json();
                 const rows = Array.isArray(body) ? body : (body.data || []);
 
                 historicalStore[nodeId] = rows.map(r => {
                     const ts_str = r.timestamp_utc || r.timestamp;
                     const d = ts_str ? new Date(ts_str) : new Date();
-                    const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const timeLabel = formatTimeLabel(d, range);
                     return {
                         timeLabel,
                         x: r.x_nT !== undefined ? r.x_nT : r.x,
@@ -584,7 +606,9 @@
                     };
                 });
 
-                document.getElementById('selected-node-title').innerText = `Historical (${document.getElementById('time-range-selector').value.toUpperCase()}): ${nodeId}`;
+                const rangeLabel = range === 'all' ? 'ALL TIME' : range.toUpperCase();
+                const countMsg = rows.length > 0 ? `(${rows.length} pts)` : '(No data in range)';
+                document.getElementById('selected-node-title').innerText = `Historical (${rangeLabel}): ${nodeId} ${countMsg}`;
                 refreshChartForNode();
             } catch (err) {
                 console.error(`Failed to fetch historical data for ${nodeId}`, err);
@@ -592,19 +616,22 @@
         }
 
         async function fetchHistoricalAllNodes(startIso, downsampleSec) {
+            const range = document.getElementById('time-range-selector').value;
             const nodes = Object.keys(nodesData);
             for (const nid of nodes) {
-                let url = `${apiBaseUrl}/api/v1/data?node_id=${nid}&format=json`;
+                let url = `${apiBaseUrl}/api/v1/data?node_id=${encodeURIComponent(nid)}&format=json`;
                 if (startIso) url += `&start=${encodeURIComponent(startIso)}`;
                 if (downsampleSec > 0) url += `&downsample_sec=${downsampleSec}`;
+                if (!startIso) url += '&all=true';
                 try {
                     const res = await fetch(url);
+                    if (!res.ok) continue;
                     const body = await res.json();
                     const rows = Array.isArray(body) ? body : (body.data || []);
                     historicalStore[nid] = rows.map(r => {
                         const ts_str = r.timestamp_utc || r.timestamp;
                         const d = ts_str ? new Date(ts_str) : new Date();
-                        const timeLabel = isNaN(d.getTime()) ? 'N/A' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        const timeLabel = formatTimeLabel(d, range);
                         return {
                             timeLabel,
                             x: r.x_nT !== undefined ? r.x_nT : r.x,
