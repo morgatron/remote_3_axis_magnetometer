@@ -23,6 +23,7 @@ QueueHandle_t telemetryQueue = NULL;
 NodeTracker nodeTracker;
 bool g_debugScheduler = false; // Disabled by default for low power; toggleable via DEBUG ON/OFF in ReceiverCLI
 bool g_dfsEnabled = true;     // Dynamic Frequency Scaling: 40MHz during sleep, 80MHz during burst/RX
+volatile uint8_t g_bleSchedulerState = 0;
 
 volatile uint32_t espnowRxCount = 0;
 volatile uint32_t bleRxCount = 0;

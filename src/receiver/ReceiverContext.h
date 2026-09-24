@@ -18,6 +18,7 @@ extern QueueHandle_t telemetryQueue;
 extern NodeTracker nodeTracker;
 extern bool g_debugScheduler;
 extern bool g_dfsEnabled;
+extern volatile uint8_t g_bleSchedulerState;
 
 extern volatile uint32_t espnowRxCount;
 extern volatile uint32_t bleRxCount;

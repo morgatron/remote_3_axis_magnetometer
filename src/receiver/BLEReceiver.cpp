@@ -53,8 +53,10 @@ class BLEReceiverCallbacks : public NimBLEScanCallbacks {
                 memcpy(&batch, mptr + offset, copyLen);
                 if (IngestionPipeline::ingestBatch(batch, mac, rssi, "BLE")) {
                     bleRxCount = bleRxCount + batch.sample_count;
+                    char safeId[sizeof(batch.device_id) + 1] = {0};
+                    memcpy(safeId, batch.device_id, sizeof(batch.device_id));
                     SCHED_PRINTF("[BLE RX BATCH ACCEPTED] Node: '%s', Samples: %d, RSSI: %d\r\n",
-                                 batch.device_id, batch.sample_count, rssi);
+                                 safeId, batch.sample_count, rssi);
                     return;
                 }
             }
@@ -90,7 +92,7 @@ void BLEReceiver::onRadioPowerUp() {
     if (!NimBLEDevice::isInitialized()) {
         NimBLEDevice::init("MAG_GATEWAY");
     }
-    NimBLEDevice::setPower(9);
+    NimBLEDevice::setPower(15); // +15 dBm TX power for robust AUX_SCAN_REQ hardware ACKs
     NimBLEScan* pScan = NimBLEDevice::getScan();
     pScan->setScanCallbacks(&s_bleScanCallbacks);
     pScan->setDuplicateFilter(false);
@@ -138,6 +140,7 @@ void BLEReceiver::begin() {
 
 void BLEReceiver::poll() {
     _scheduler.poll();
+    g_bleSchedulerState = (uint8_t)_scheduler.getState();
 }
 
 void BLEReceiver::setRendezvousEnabled(bool enabled) {

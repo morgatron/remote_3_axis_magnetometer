@@ -14,7 +14,7 @@ void BLEEgress::begin(const char* deviceName) {
     if (!NimBLEDevice::isInitialized()) {
         NimBLEDevice::init(deviceName);
     }
-    NimBLEDevice::setPower(9); // +9 dBm TX power
+    NimBLEDevice::setPower(15); // +15 dBm TX power matching sensor output
 
     _initialized = true;
     _lastBroadcastMs = millis();
@@ -96,7 +96,7 @@ void BLEEgress::poll() {
     uint32_t quietTimeoutMs = (nodeTracker.getNodeCount() > 0) ? 60000 : 15000;
     if (now - _lastBroadcastMs >= quietTimeoutMs) {
         const char* target = (nodeTracker.getNodeCount() > 0) ? nodeTracker.getLastNodeId() : "GW_IDLE";
-        broadcastDiagnostic(DIAG_EVENT_HEARTBEAT, 1 /* SLEEPING */, 0, target, 0);
+        broadcastDiagnostic(DIAG_EVENT_HEARTBEAT, g_bleSchedulerState, 0, target, 0);
     }
 }
 

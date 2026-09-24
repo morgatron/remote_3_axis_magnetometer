@@ -24,18 +24,22 @@ bool IngestionPipeline::isKnownSensorNodeId(const char *id) {
 }
 
 bool IngestionPipeline::isValidSensorPacket(const SensorBinaryPacket &pkt) {
-    if (!isKnownSensorNodeId(pkt.device_id)) return false;
-    if (pkt.packet_age_ms > 600000) return false; // Age <= 10 min
+    char safeId[sizeof(pkt.device_id) + 1] = {0};
+    memcpy(safeId, pkt.device_id, sizeof(pkt.device_id));
+    if (!isKnownSensorNodeId(safeId)) return false;
+    if (pkt.packet_age_ms > 86400000UL) return false; // Age <= 24 hours (expanded for multi-hour backlog replay)
     if (isnan(pkt.x_nT) || isnan(pkt.y_nT) || isnan(pkt.z_nT)) return false;
     if (fabsf(pkt.x_nT) > 10000000.0f || fabsf(pkt.y_nT) > 10000000.0f || fabsf(pkt.z_nT) > 10000000.0f) return false;
     return true;
 }
 
 bool IngestionPipeline::isValidBatchPacket(const SensorBatchPacket &batch) {
-    if (!isKnownSensorNodeId(batch.device_id)) return false;
+    char safeId[sizeof(batch.device_id) + 1] = {0};
+    memcpy(safeId, batch.device_id, sizeof(batch.device_id));
+    if (!isKnownSensorNodeId(safeId)) return false;
     if (batch.sample_count == 0 || batch.sample_count > 18) return false;
     if (batch.sample_interval_ms != 1000) return false; // 1 Hz nominal
-    if (batch.latest_sample_age_ms > 600000) return false; // Age <= 10 min
+    if (batch.latest_sample_age_ms > 86400000UL) return false; // Age <= 24 hours (expanded for multi-hour backlog replay)
     if (batch.vbat_mv > 5500) return false;
     for (uint8_t i = 0; i < batch.sample_count; i++) {
         if (isnan(batch.samples[i].x_nT) || isnan(batch.samples[i].y_nT) || isnan(batch.samples[i].z_nT)) return false;
@@ -55,7 +59,9 @@ bool IngestionPipeline::ingestBatch(const SensorBatchPacket &batch, const uint8_
     strncpy(item.protocol, protocol, sizeof(item.protocol) - 1);
 
     if (batch.device_id[0] != '\0') {
-        strncpy(item.node_id, batch.device_id, sizeof(item.node_id) - 1);
+        char safeId[sizeof(batch.device_id) + 1] = {0};
+        memcpy(safeId, batch.device_id, sizeof(batch.device_id));
+        strncpy(item.node_id, safeId, sizeof(item.node_id) - 1);
     } else if (mac) {
         snprintf(item.node_id, sizeof(item.node_id), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
     } else {
@@ -116,7 +122,9 @@ bool IngestionPipeline::ingestSingle(const SensorBinaryPacket &pkt, const uint8_
     strncpy(item.protocol, protocol, sizeof(item.protocol) - 1);
 
     if (pkt.device_id[0] != '\0') {
-        strncpy(item.node_id, pkt.device_id, sizeof(item.node_id) - 1);
+        char safeId[sizeof(pkt.device_id) + 1] = {0};
+        memcpy(safeId, pkt.device_id, sizeof(pkt.device_id));
+        strncpy(item.node_id, safeId, sizeof(item.node_id) - 1);
     } else if (mac) {
         snprintf(item.node_id, sizeof(item.node_id), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
     } else {

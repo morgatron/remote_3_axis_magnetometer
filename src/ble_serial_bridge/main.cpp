@@ -191,7 +191,7 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                         uint16_t vbatMv;
                         memcpy(&vbatMv, p + 17, sizeof(uint16_t));
 
-                        if (isValidNodeId(devId) && latestAgeMs <= 600000 && vbatMv <= 5500) {
+                        if (isValidNodeId(devId) && latestAgeMs <= 86400000UL && vbatMv <= 5500) {
                             float vbat = (float)vbatMv / 1000.0f;
                             float temp = 0.0f;
                             if (batchHdrSize >= 21) {
@@ -212,7 +212,8 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
                                 memcpy(&z, raw + sOff + 8, sizeof(float));
 
                                 uint64_t offsetUs = (uint64_t)(sampleCount - 1 - i) * (uint64_t)sampleIntervalMs * 1000ULL;
-                                uint64_t sTs = nowUs - ((uint64_t)latestAgeMs * 1000ULL) - offsetUs;
+                                uint64_t totalDelayUs = ((uint64_t)latestAgeMs * 1000ULL) + offsetUs;
+                                uint64_t sTs = (nowUs >= totalDelayUs) ? (nowUs - totalDelayUs) : 0;
 
                                 Serial.printf("%s,%llu,%.2f,%.2f,%.2f,%06X,%.2f,%.2f,%d,0.00\n",
                                               devId,
@@ -244,7 +245,7 @@ class BridgeScanCallbacks : public NimBLEScanCallbacks {
             memcpy(devId, pkt.device_id, 8);
 
             // Basic sanity validation
-            if (isValidNodeId(devId) && pkt.packet_age_ms <= 600000 &&
+            if (isValidNodeId(devId) && pkt.packet_age_ms <= 86400000UL &&
                 !isnan(pkt.x_nT) && !isnan(pkt.y_nT) && !isnan(pkt.z_nT) &&
                 abs(pkt.x_nT) < 1e7 && abs(pkt.y_nT) < 1e7 && abs(pkt.z_nT) < 1e7) {
                 
@@ -277,9 +278,9 @@ void setup() {
     delay(500);
 
     Serial.println(F("\n========================================================"));
-    Serial.println(F(" ESP32-C3 Supermini BLE 1M -> Serial Bridge"));
+    Serial.println(F(" ESP32-C3 Supermini BLE Dual-PHY -> Serial Bridge"));
     Serial.println(F("========================================================"));
-    Serial.println(F("  Listening for: BLE 1M Extended Advertising packets"));
+    Serial.println(F("  Listening for: 1M (Gateway Egress) + Coded PHY (Direct Sensors)"));
     Serial.println(F("  Output format: 10-column CSV (node_id,ts,x,y,z,status,temp,vbat,rssi,gw_vbat)"));
     Serial.println(F("  Baud rate:     921600 / Native USB CDC"));
     Serial.println(F("========================================================\n"));
@@ -302,6 +303,9 @@ void setup() {
     pScan->setInterval(40);           // 25 ms interval
     pScan->setWindow(40);             // 25 ms window (100% duty cycle)
     pScan->setMaxResults(0);          // Continuous streaming without caching
+#if CONFIG_BT_NIMBLE_EXT_ADV
+    pScan->setPhy(NimBLEScan::Phy::SCAN_ALL); // Listen concurrently for 1M (Gateway Egress) and Coded PHY (Direct Sensors)
+#endif
 
     if (pScan->start(0, false)) {
         Serial.println(F("[BRIDGE ACTIVE] 100% duty cycle BLE scanner listening..."));

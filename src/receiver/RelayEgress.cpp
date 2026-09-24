@@ -48,8 +48,9 @@ void RelayEgress::initAdvPacket(GatewayAdvPacket &advPkt, const TelemetryItem &i
     advPkt.magic[0] = 'M';
     advPkt.magic[1] = 'G';
     static uint8_t g_advSeq = 0;
-    advPkt.packet_seq = ++g_advSeq;
-    strncpy(advPkt.node_id, item.node_id, sizeof(advPkt.node_id) - 1);
+    size_t nodeLen = strlen(item.node_id);
+    if (nodeLen > sizeof(advPkt.node_id)) nodeLen = sizeof(advPkt.node_id);
+    memcpy(advPkt.node_id, item.node_id, nodeLen);
     advPkt.timestamp_us = item.timestamp_us;
     advPkt.sample_interval_ms = 1000;
     advPkt.status = (uint16_t)item.status;
