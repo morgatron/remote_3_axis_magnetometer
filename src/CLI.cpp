@@ -65,29 +65,47 @@ void CLI::handleCommand(String cmd) {
         } else {
             Serial.println("Usage: BATCH <1-10> (Set samples per burst for BLE & LoRa)");
         }
-    } else if (cmd == "STREAM ON") {
+    } else if (cmd == "STREAM ON" || cmd == "START") {
         _streaming = true;
         if (_saveCallback) _saveCallback();
         Serial.println("Streaming enabled.");
-    } else if (cmd == "STREAM OFF") {
+    } else if (cmd == "STREAM OFF" || cmd == "STOP") {
         _streaming = false;
         if (_saveCallback) _saveCallback();
         Serial.println("Streaming disabled.");
     } else if (cmd.startsWith("RATE ")) {
         String valStr = cmd.substring(5);
         _current_rate = (uint8_t)strtol(valStr.c_str(), NULL, 16);
+        extern TaskHandle_t adcTaskHandle;
+        extern void IRAM_ATTR drdyISR();
+        extern uint8_t sensorTypeConfig;
+        if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
+        detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
         _sensor->setContinuousMode(true, _current_rate);
+        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
+        if (adcTaskHandle) vTaskResume(adcTaskHandle);
         if (_saveCallback) _saveCallback();
         Serial.print("Rate set to 0x");
         Serial.println(_current_rate, HEX);
     } else if (cmd.startsWith("CYCLE ")) {
         String valStr = cmd.substring(6);
         uint16_t cycle = (uint16_t)valStr.toInt();
-        if (_sensor->getSensorName() == "RM3100") {
+        if (_sensor->getSensorName() == "RM3100" && cycle > 0) {
+            extern TaskHandle_t adcTaskHandle;
+            extern void IRAM_ATTR drdyISR();
+            extern uint16_t cycleCountConfig;
+            if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
+            detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
+
             static_cast<RM3100*>(_sensor)->setCycleCount(cycle, cycle, cycle);
+            cycleCountConfig = cycle;
+
+            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
+            if (adcTaskHandle) vTaskResume(adcTaskHandle);
             if (_saveCallback) _saveCallback();
-            Serial.print("Cycle count set to ");
-            Serial.println(cycle);
+            float gain = 0.3671f * (float)cycle + 1.5f;
+            Serial.printf("Cycle count set to %u (Gain: %.2f LSB/uT, Scale: %.2f nT/LSB)\r\n",
+                          cycle, gain, 1000.0f / gain);
         } else {
             Serial.println("CYCLE command not supported for this sensor.");
         }
@@ -300,19 +318,28 @@ void CLI::handleCommand(String cmd) {
         extern bool wifiConnected;
         extern void connectWiFi();
 
+        extern BLEStream bleStream;
+        extern void configurePowerManagement();
+
         if (modeStr == "SERIAL") {
             outputMode = 0;
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
+            bleStream.powerDownModem();
+            configurePowerManagement();
             Serial.println("Output Mode set to SERIAL.");
         } else if (modeStr == "WIFI") {
             outputMode = 1;
+            bleStream.powerDownModem();
+            configurePowerManagement();
             Serial.println("Output Mode set to WIFI.");
             if (wifiSSID.length() > 0 && !wifiConnected) {
                 connectWiFi();
             }
         } else if (modeStr == "BOTH") {
             outputMode = 2;
+            bleStream.powerDownModem();
+            configurePowerManagement();
             Serial.println("Output Mode set to BOTH (Serial & WiFi).");
             if (wifiSSID.length() > 0 && !wifiConnected) {
                 connectWiFi();
@@ -322,13 +349,15 @@ void CLI::handleCommand(String cmd) {
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
             extern String deviceID;
-            extern BLEStream bleStream;
             bleStream.begin(deviceID);
+            configurePowerManagement();
             Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
         } else if (modeStr == "LORA") {
             outputMode = 4;
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
+            bleStream.powerDownModem();
+            configurePowerManagement();
             #if defined(BOARD_HAS_LORA)
             extern LoRaStream loraStream;
             loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);

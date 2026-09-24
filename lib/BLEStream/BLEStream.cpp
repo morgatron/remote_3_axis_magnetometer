@@ -162,7 +162,7 @@ void BLEStream::notifyBinary(const SensorBinaryPacket &pkt) {
 #endif
 }
 
-void BLEStream::notifyBatchBinary(const SensorBatchPacket &batch) {
+void BLEStream::notifyBatchBinary(const SensorBatchPacket &batch, uint32_t burstDurationMs) {
     if (!_initialized) return;
 
 #if CONFIG_BT_NIMBLE_EXT_ADV
@@ -183,7 +183,7 @@ void BLEStream::notifyBatchBinary(const SensorBatchPacket &batch) {
 
         pAdvertising->setInstanceData(0, advData);
         g_lastBatchAcked = false;
-        pAdvertising->start(0, BLEConfig::BURST_DURATION_MS);
+        pAdvertising->start(0, burstDurationMs);
     }
 #endif
 }

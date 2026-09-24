@@ -37,10 +37,11 @@ public:
     void notifyBinary(const SensorBinaryPacket &pkt);
     
     /**
-     * @brief Broadcast 10-sample batch burst via Extended Advertising Coded PHY.
+     * @brief Broadcast batch burst via Extended Advertising Coded PHY.
      * @param batch SensorBatchPacket struct.
+     * @param burstDurationMs Burst duration in milliseconds (defaults to BLEConfig::BURST_DURATION_MS).
      */
-    void notifyBatchBinary(const SensorBatchPacket &batch);
+    void notifyBatchBinary(const SensorBatchPacket &batch, uint32_t burstDurationMs = BLEConfig::BURST_DURATION_MS);
     
     /**
      * @brief Check if gateway receiver sent a hardware AUX_SCAN_REQ acknowledgment for the last batch.

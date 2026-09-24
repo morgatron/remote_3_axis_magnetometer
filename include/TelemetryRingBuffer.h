@@ -10,7 +10,13 @@
  */
 class TelemetryRingBuffer {
 public:
-    static constexpr size_t CAPACITY = 600; // 10 minutes backlog @ 1 Hz
+#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
+    static constexpr size_t CAPACITY = 10800; // 3.0 hours backlog @ 1 Hz (172.8 KB on 512KB SRAM C6)
+#elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
+    static constexpr size_t CAPACITY = 3600;  // 1.0 hour backlog @ 1 Hz (57.6 KB on 320KB SRAM C3)
+#else
+    static constexpr size_t CAPACITY = 3600;  // 1.0 hour default
+#endif
 
     TelemetryRingBuffer() : _head(0), _tail(0), _unackedCount(0) {
         memset(_buffer, 0, sizeof(_buffer));
@@ -47,7 +53,9 @@ public:
 
         memset(&outBatch, 0, sizeof(outBatch));
         if (deviceId && deviceId[0] != '\0') {
-            strncpy(outBatch.device_id, deviceId, sizeof(outBatch.device_id) - 1);
+            size_t len = strlen(deviceId);
+            if (len > sizeof(outBatch.device_id)) len = sizeof(outBatch.device_id);
+            memcpy(outBatch.device_id, deviceId, len);
         }
         size_t newest_idx = (_tail + count - 1) % CAPACITY;
         uint32_t latest_ts_ms = _buffer[newest_idx].ts_ms;

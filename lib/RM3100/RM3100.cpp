@@ -174,9 +174,8 @@ void RM3100::readAndPushSample() {
     uint8_t buffer[9];
     uint64_t now = esp_timer_get_time();
 
-    // Atomic 9-byte SPI burst read locked against CPU interrupts to prevent Wi-Fi background task preemption
-    noInterrupts();
     _spi->beginTransaction(_spiSettings);
+    noInterrupts();
     digitalWrite(_csPin, LOW);
     delayMicroseconds(5); // CS to SCK setup time
     _spi->transfer(RM3100_REG_MX | 0x80);
@@ -185,8 +184,8 @@ void RM3100::readAndPushSample() {
         buffer[i] = _spi->transfer(0x00);
     }
     digitalWrite(_csPin, HIGH);
-    _spi->endTransaction();
     interrupts();
+    _spi->endTransaction();
 
     int32_t x = (int32_t)(((uint32_t)buffer[0] << 16) | ((uint32_t)buffer[1] << 8) | buffer[2]);
     if (x & 0x800000) x |= 0xFF000000;

@@ -32,6 +32,7 @@ Magnetometer* sensor = &sensorFLC100;
 bool streaming = true;
 uint8_t current_rate = DEFAULT_RATE;
 uint16_t current_downsample = 1;
+uint16_t cycleCountConfig = 200; // RM3100 cycle count (saved to NVS)
 
 // WiFi & UDP Globals
 WiFiUDP udp;
@@ -93,6 +94,7 @@ void saveSettings() {
     prefs.putUChar("sensor_type", sensorTypeConfig);
     prefs.putUChar("mode", outputMode);
     prefs.putUChar("batch_size", batchSizeConfig);
+    prefs.putUShort("cycle_count", cycleCountConfig);
     prefs.putString("ssid", wifiSSID);
     prefs.putString("pass", wifiPass);
     prefs.putString("target", targetIP.toString());
@@ -167,6 +169,7 @@ void loadSettings() {
     outputMode = prefs.getUChar("mode", MODE_BLE);
     batchSizeConfig = prefs.getUChar("batch_size", 10);
     if (batchSizeConfig < 1 || batchSizeConfig > 10) batchSizeConfig = 10;
+    cycleCountConfig = prefs.getUShort("cycle_count", 200);
     wifiSSID = prefs.getString("ssid", "");
     wifiPass = prefs.getString("pass", "");
     String tIP = prefs.getString("target", "255.255.255.255");
@@ -249,6 +252,7 @@ static uint32_t nextBurstTxMs = 0;
 static bool isTxActive = false;
 static uint32_t txStartMs = 0;
 static uint8_t txRetryCount = 0;
+static uint32_t activeBurstDurationMs = 1000;
 
 static bool isModemWarming = false;
 static uint32_t warmupStartMs = 0;
@@ -267,7 +271,10 @@ const uint32_t BLE_WARMUP_MS = 150; // 150ms pre-burst warmup for RF PLL and bas
 void checkBleAckTask() {
     if (isTxActive) {
         bool acked = bleStream.isBatchAcked();
-        if ((millis() - txStartMs >= 300 && acked) || (millis() - txStartMs >= 1100)) {
+        uint32_t elapsed = millis() - txStartMs;
+        uint32_t timeoutMs = activeBurstDurationMs + 100;
+        if ((elapsed >= 250 && acked) || (elapsed >= timeoutMs)) {
+            bleStream.stopAdvertising();
             bleStream.powerDownModem();
 #if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
             if (outputMode == MODE_BLE) {
@@ -290,7 +297,7 @@ void checkBleAckTask() {
 }
 
 void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
-    // Insert new sample into 10-minute circular buffer
+    // Insert new sample into circular buffer (3.0 hours capacity @ 1 Hz)
     uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
     telemetryRingBuffer.push(ts_ms, x, y, z);
 }
@@ -329,7 +336,8 @@ void checkBleBurstTransmission() {
                 batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
 
                 bleStream.clearBatchAck();
-                bleStream.notifyBatchBinary(batch);
+                activeBurstDurationMs = (txRetryCount > 0) ? 2500 : BLEConfig::BURST_DURATION_MS;
+                bleStream.notifyBatchBinary(batch, activeBurstDurationMs);
                 lastSentCount = countToSend;
 
                 // Drift-free periodic schedule on exact 10.0s grid
@@ -366,7 +374,9 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
         // Direct unbuffered single-sample transmission (1 packet per sample)
         SensorBinaryPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
-        strncpy(pkt.device_id, deviceID.c_str(), sizeof(pkt.device_id) - 1);
+        size_t idLen = deviceID.length();
+        if (idLen > sizeof(pkt.device_id)) idLen = sizeof(pkt.device_id);
+        memcpy(pkt.device_id, deviceID.c_str(), idLen);
         pkt.packet_age_ms = 0; // Transmitted immediately upon sample capture
         pkt.x_nT = x;
         pkt.y_nT = y;
@@ -526,6 +536,14 @@ void setup() {
 
     loadSettings();
 
+    // Provide virtual ground on GPIO 5 and GPIO 1 for easy RM3100 I2CEN grounding
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
+    pinMode(5, OUTPUT);
+    digitalWrite(5, LOW);
+    pinMode(1, OUTPUT);
+    digitalWrite(1, LOW);
+#endif
+
     // ALWAYS initialize SPI bus and DRDY pin regardless of initial configured sensor
     Serial.println("Initializing SPI Bus...");
     SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
@@ -563,9 +581,9 @@ void setup() {
         }
         if (found) {
             sensor = &sensorRM3100;
-            static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
+            static_cast<RM3100*>(sensor)->setCycleCount(cycleCountConfig, cycleCountConfig, cycleCountConfig);
             attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-            Serial.println("Sensor initialized: RM3100");
+            Serial.printf("Sensor initialized: RM3100 (Cycle count: %u)\r\n", cycleCountConfig);
         } else {
             Serial.println("[ERROR] Physical RM3100 did not respond! Falling back to MOCK for this session.");
             sensor = &sensorMock;
