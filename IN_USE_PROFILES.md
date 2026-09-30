@@ -32,5 +32,14 @@ All use battery power unless specified otherwise
     - communicates with desktop GUI host computer over USB Serial only (`MODE SERIAL`, 921600 baud)
     - 100 Hz output streaming rate (1 kHz raw ADS131E08 ADC data downsampled by a factor of 10)
     - not for use with wireless gateway or central server (BLE/LoRa/WiFi radios disabled)
+- Supermini ESP32-C3 Sensor (label: LYNEHAM1)
+    - connected to RM3100 3-axis magneto-inductive sensor
+    - Cycle count set to 600 on X, Y, Z (gain: 221.76 LSB/µT, resolution: 4.51 nT/LSB)
+    - Continuous sampling at ~40 Hz (`TMRC 0x96`), downsampled 40x via boxcar averaging to 1.00 Hz
+    - `I2CEN` held LOW via GPIO 5 virtual ground to force hardware SPI mode
+    - wired USB power (plugs directly into host computer)
+    - communicates with host computer over USB Serial only (`MODE SERIAL`, 921600 baud, 1 Hz CSV output)
+    - not for use with wireless gateway or central server (BLE/LoRa/WiFi radios disabled)
+
 
 

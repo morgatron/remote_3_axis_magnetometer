@@ -1,1 +1,1 @@
-{"port": "/dev/ttyACM0", "history": "10000", "fft_window": "256"}
+{"port": "/dev/ttyACM0", "history": "1000", "fft_window": "256"}

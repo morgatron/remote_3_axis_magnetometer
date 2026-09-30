@@ -10,6 +10,7 @@ Automates building, flashing, and configuring the in-use project profiles:
   5. CREEK_GATEWAY - Seeed Studio XIAO ESP32-C6 Receiver Gateway (BLE Coded PHY RX -> 1M BLE NUS Relay)
   6. SUPERMINI_GATEWAY - ESP32-C3 Supermini Receiver Gateway (BLE Coded PHY RX -> 1M BLE Extended Adv)
   7. LAB_BENCH     - Seeed Studio XIAO ESP32-C6 Sensor + FLC100 (100 Hz USB Serial GUI stream, 10x downsample)
+  8. LYNEHAM1      - ESP32-C3 Supermini Sensor + RM3100 (Cycle count 600, 40x downsample -> 1 Hz, USB Serial egress)
 
 Usage:
   python3 scripts/configure_profile.py --profile SPRINGBANK [--port /dev/ttyACM0]
@@ -19,6 +20,7 @@ Usage:
   python3 scripts/configure_profile.py --profile CREEK_GATEWAY [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile SUPERMINI_GATEWAY [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile LAB_BENCH [--port /dev/ttyACM0]
+  python3 scripts/configure_profile.py --profile LYNEHAM1 [--port /dev/ttyACM0]
   python3 scripts/configure_profile.py --profile SPRINGBANK --no-flash   # Skip PlatformIO upload
   python3 scripts/configure_profile.py --profile SPRINGBANK --mock       # Run synthetic test data
 """
@@ -216,6 +218,30 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "average": "22 - 26 mA @ 5V USB (C6 MCU @ 80MHz + FLC100 / ADS131E08 / Boost)",
             "runtime_1000mah": "Wired USB powered (Desktop GUI continuous acquisition)",
             "runtime_3000mah": "Wired USB powered (Desktop GUI continuous acquisition)"
+        }
+    },
+    "LYNEHAM1": {
+        "description": "ESP32-C3 Supermini Sensor + RM3100 (Cycle count 600, 40x downsample -> 1 Hz, USB Serial egress)",
+        "board_type": "ESP32-C3 Supermini (RISC-V)",
+        "pio_env": "esp32-c3-devkitm-1",
+        "role": "sensor",
+        "cli_commands": [
+            "ID LYNEHAM1",
+            "MODE SERIAL",
+            "SENSOR RM3100",
+            "CYCLE 600",
+            "RATE 0x96",
+            "DOWNSAMPLE 40",
+            "STREAM ON",
+            "SAVE",
+            "STATUS"
+        ],
+        "expected_current": {
+            "idle_sleep": "N/A (Continuous 1 Hz USB Serial stream)",
+            "tx_peak": "N/A (Radios disabled)",
+            "average": "12 - 15 mA @ 5V USB (C3 MCU @ 80MHz + RM3100 @ 40Hz)",
+            "runtime_1000mah": "Wired USB powered (Desktop acquisition / direct computer plug-in)",
+            "runtime_3000mah": "Wired USB powered (Desktop acquisition / direct computer plug-in)"
         }
     }
 }
