@@ -1,6 +1,8 @@
 #include "IngestionPipeline.h"
 #include "ReceiverContext.h"
 #include "NodeTracker.h"
+#include "WiFiManager.h"
+#include <sys/time.h>
 
 volatile uint32_t IngestionPipeline::_lastBatchRxMs = 0;
 char IngestionPipeline::_lastBatchNodeId[32] = {0};
@@ -78,6 +80,16 @@ bool IngestionPipeline::ingestBatch(const SensorBatchPacket &batch, const uint8_
     uint32_t oldest_sample_offset = (batch.sample_count > 0) ? (batch.sample_count - 1) * batch.sample_interval_ms : 0;
     uint32_t oldest_sample_ts_ms = (latest_sample_ts_ms >= oldest_sample_offset) ? (latest_sample_ts_ms - oldest_sample_offset) : 0;
 
+    uint64_t now_utc_us = 0;
+    uint64_t latest_sample_utc_us = 0;
+    if (WiFiManager::isNtpSynced()) {
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        now_utc_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+        uint64_t total_delay_us = (uint64_t)total_delay_ms * 1000ULL;
+        latest_sample_utc_us = (now_utc_us > total_delay_us) ? (now_utc_us - total_delay_us) : 0;
+    }
+
     int32_t s0_x = (batch.sample_count > 0) ? batch.samples[0].x_nT : 0;
     int32_t s0_y = (batch.sample_count > 0) ? batch.samples[0].y_nT : 0;
     int32_t s0_z = (batch.sample_count > 0) ? batch.samples[0].z_nT : 0;
@@ -96,9 +108,14 @@ bool IngestionPipeline::ingestBatch(const SensorBatchPacket &batch, const uint8_
 
     // Unpack individual samples with exact reconstructed timestamps
     for (uint8_t i = 0; i < batch.sample_count; i++) {
-        uint32_t offset_from_newest = (batch.sample_count - 1 - i) * batch.sample_interval_ms;
-        uint32_t sample_ts_ms = (latest_sample_ts_ms >= offset_from_newest) ? (latest_sample_ts_ms - offset_from_newest) : 0;
-        item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
+        if (latest_sample_utc_us > 0) {
+            uint64_t offset_us = (uint64_t)(batch.sample_count - 1 - i) * (uint64_t)batch.sample_interval_ms * 1000ULL;
+            item.timestamp_us = (latest_sample_utc_us > offset_us) ? (latest_sample_utc_us - offset_us) : 0;
+        } else {
+            uint32_t offset_from_newest = (batch.sample_count - 1 - i) * batch.sample_interval_ms;
+            uint32_t sample_ts_ms = (latest_sample_ts_ms >= offset_from_newest) ? (latest_sample_ts_ms - offset_from_newest) : 0;
+            item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
+        }
         item.x = (float)batch.samples[i].x_nT;
         item.y = (float)batch.samples[i].y_nT;
         item.z = (float)batch.samples[i].z_nT;
@@ -135,7 +152,16 @@ bool IngestionPipeline::ingestSingle(const SensorBinaryPacket &pkt, const uint8_
     uint32_t total_delay_ms = pkt.packet_age_ms + transportDelayMs;
     uint32_t sample_ts_ms = (now_ms >= total_delay_ms) ? (now_ms - total_delay_ms) : 0;
 
-    item.timestamp_us = (uint64_t)sample_ts_ms * 1000ULL;
+    uint64_t sample_utc_us = 0;
+    if (WiFiManager::isNtpSynced()) {
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        uint64_t now_utc_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+        uint64_t total_delay_us = (uint64_t)total_delay_ms * 1000ULL;
+        sample_utc_us = (now_utc_us > total_delay_us) ? (now_utc_us - total_delay_us) : 0;
+    }
+
+    item.timestamp_us = (sample_utc_us > 0) ? sample_utc_us : ((uint64_t)sample_ts_ms * 1000ULL);
     item.x = pkt.x_nT;
     item.y = pkt.y_nT;
     item.z = pkt.z_nT;

@@ -15,6 +15,7 @@
 #include "RelayEgress.h"
 #include "ReceiverCLI.h"
 #include "OLEDDisplay.h"
+#include "WiFiManager.h"
 
 float g_cachedBatteryVoltage = 0.0f;
 
@@ -38,60 +39,28 @@ String targetServerIP = "255.255.255.255";
 uint16_t targetServerPort = 9876;
 uint8_t espNowChannel = 1;
 bool wifiRelayConnected = false;
+String apSSID = "";
 
 Preferences prefs;
 
 void saveReceiverSettings() {
     prefs.begin("rcvr_v0", false);
     prefs.putUChar("mode", egressModeConfig);
-    prefs.putString("ssid", wifiSSID);
-    prefs.putString("pass", wifiPass);
     prefs.putString("target_ip", targetServerIP);
     prefs.putUShort("target_port", targetServerPort);
     prefs.putUChar("channel", espNowChannel);
     prefs.end();
+    WiFiManager::saveSettings();
 }
 
 void loadReceiverSettings() {
     prefs.begin("rcvr_v0", true);
     egressModeConfig = prefs.getUChar("mode", MODE_EGRESS_BLE);
-    wifiSSID = prefs.getString("ssid", "");
-    wifiPass = prefs.getString("pass", "");
     targetServerIP = prefs.getString("target_ip", "255.255.255.255");
     targetServerPort = prefs.getUShort("target_port", 9876);
     espNowChannel = prefs.getUChar("channel", 1);
     prefs.end();
-}
-
-String apSSID = "";
-String apPass = "magnetometer123";
-
-void setupSoftAP() {
-    WiFi.mode(WIFI_AP_STA);
-    delay(100);
-
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "MAG_GATEWAY_%02X%02X", mac[4], mac[5]);
-    apSSID = String(buf);
-    IPAddress apIP(192, 168, 4, 1);
-    IPAddress gateway(192, 168, 4, 1);
-    IPAddress subnet(255, 255, 255, 0);
-    WiFi.softAPConfig(apIP, gateway, subnet);
-    bool apSuccess = WiFi.softAP(apSSID.c_str(), apPass.c_str(), 1, 0, 8);
-
-    if (apSuccess) {
-        Serial.println(F("\r\n========================================================="));
-        Serial.printf(" [SOFTAP CREATED] Receiver Field Access Point Active!\r\n");
-        Serial.printf("   SSID:     %s\r\n", apSSID.c_str());
-        Serial.printf("   Password: %s\r\n", apPass.c_str());
-        Serial.printf("   AP IP:    192.168.4.1\r\n");
-        Serial.printf("   Channel:  1\r\n");
-        Serial.println(F("=========================================================\r\n"));
-    } else {
-        Serial.println(F("[SOFTAP ERROR] Failed to create SoftAP!"));
-    }
+    WiFiManager::loadSettings();
 }
 
 uint32_t lastOledActivityMs = 0;
@@ -99,9 +68,7 @@ bool oledScreenActive = true;
 
 void connectEgressWiFi() {
     if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BLE) {
-        WiFi.mode(WIFI_OFF);
-        Serial.printf("[POWER] Egress mode is %s. Wi-Fi radio turned OFF (~80mA saved).\r\n",
-                      (egressModeConfig == MODE_EGRESS_BLE) ? "BLE (1M GATT Relay)" : "SERIAL");
+        WiFiManager::connect();
         if (egressModeConfig == MODE_EGRESS_BLE) {
             BLEEgress::begin("MAG_GATEWAY");
         }
@@ -112,29 +79,9 @@ void connectEgressWiFi() {
         BLEEgress::begin("MAG_GATEWAY");
     }
 
-    setupSoftAP();
-
-    if (wifiSSID.length() > 0) {
-        Serial.printf("[WIFI RELAY] Connecting to External Egress Router: '%s'...\r\n", wifiSSID.c_str());
-        WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
-
-        unsigned long start = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - start < 8000)) {
-            delay(500);
-            Serial.print(".");
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            wifiRelayConnected = true;
-            Serial.println(F("\r\n[WIFI RELAY SUCCESS] Connected to External Router!"));
-            Serial.print(F("  Router Local IP: ")); Serial.println(WiFi.localIP());
-            Serial.print(F("  RSSI:            ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
-        } else {
-            wifiRelayConnected = false;
-            Serial.println(F("\r\n[WIFI RELAY NOTICE] External Router not reachable. Operating in standalone SoftAP mode."));
-        }
-    }
+    WiFiManager::connect();
 }
+
 
 static BLEReceiver bleRcvr;
 static ESPNowReceiver espnowRcvr;
@@ -263,6 +210,9 @@ void loop() {
         }
     }
 #endif
+
+    // Update Wi-Fi connection state and NTP clock sync
+    WiFiManager::update();
 
     // Process serial CLI commands
     if (Serial.available() > 0) {

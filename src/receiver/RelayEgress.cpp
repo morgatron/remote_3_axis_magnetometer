@@ -4,8 +4,11 @@
 #include "board_config.h"
 #include "BLEEgress.h"
 #include "PowerManager.h"
+#include "WiFiManager.h"
+#include "HttpBatchEgress.h"
 
 void RelayEgress::begin() {
+    HttpBatchEgress::begin();
     PowerManager::setSleepPredicate([]() {
         return !BLEEgress::isBroadcasting();
     });
@@ -29,8 +32,8 @@ void RelayEgress::dispatchSerialWiFi(const TelemetryItem &item, WiFiUDP &egressU
         }
     }
 
-    // 2. WiFi Egress (Forward to Central Server or UDP listener over WiFi network)
-    if ((egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) && wifiRelayConnected) {
+    // 2. UDP WiFi Egress (Fallback when no HTTP server URL is configured)
+    if (!HttpBatchEgress::hasServerUrl() && (egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) && WiFiManager::isConnected()) {
         size_t lineLen = strlen(item.line);
         if (batchLen + lineLen >= 2048 - 1) {
             flushWiFiBatch(egressUdp, batchBuf, batchLen);
@@ -80,6 +83,8 @@ void RelayEgress::relayTask(void *pvParameters) {
     static size_t batchLen = 0;
     static uint32_t lastBatchFlushMs = 0;
 
+    static TelemetryItem httpBatchItems[18];
+
     for (;;) {
         if (xQueueReceive(telemetryQueue, &item, pdMS_TO_TICKS(50)) == pdTRUE) {
             relayedPacketCount = relayedPacketCount + 1;
@@ -87,21 +92,40 @@ void RelayEgress::relayTask(void *pvParameters) {
 
             dispatchSerialWiFi(item, egressUdp, batchBuf, batchLen);
 
-            // 3. BLE 1M Extended Advertising Egress (Connectionless Broadcast)
-            if (egressModeConfig == MODE_EGRESS_BLE || egressModeConfig == MODE_EGRESS_BOTH) {
-                PowerManager::acquireLock();
-                GatewayAdvPacket advPkt;
-                initAdvPacket(advPkt, item);
+            // Collect batch for HTTP POST and/or BLE advertisement
+            size_t httpCount = 0;
+            bool doHttp = HttpBatchEgress::hasServerUrl() && (egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) && WiFiManager::isConnected();
+            if (doHttp) {
+                httpBatchItems[httpCount++] = item;
+            }
 
-                // Bundle up to 10 samples per Extended Advertising packet (host BT adapter MTU limit)
-                TelemetryItem nextItem;
-                while (advPkt.sample_count < 10 && xQueueReceive(telemetryQueue, &nextItem, 0) == pdTRUE) {
-                    relayedPacketCount = relayedPacketCount + 1;
-                    dispatchSerialWiFi(nextItem, egressUdp, batchBuf, batchLen);
+            GatewayAdvPacket advPkt;
+            bool doBle = (egressModeConfig == MODE_EGRESS_BLE || egressModeConfig == MODE_EGRESS_BOTH);
+            if (doBle) {
+                initAdvPacket(advPkt, item);
+            }
+
+            // Drain any pending items belonging to the same burst (up to 18 samples)
+            TelemetryItem nextItem;
+            while (httpCount < 18 && xQueueReceive(telemetryQueue, &nextItem, 0) == pdTRUE) {
+                relayedPacketCount = relayedPacketCount + 1;
+                dispatchSerialWiFi(nextItem, egressUdp, batchBuf, batchLen);
+                if (doHttp) {
+                    httpBatchItems[httpCount++] = nextItem;
+                }
+                if (doBle && advPkt.sample_count < 10) {
                     appendSampleToAdvPacket(advPkt, nextItem);
                 }
+            }
 
-                // Bundle and broadcast for 120 ms (or 100 ms if catch-up backlog exists in queue)
+            // 1. Direct HTTP POST to Central Server
+            if (doHttp && httpCount > 0) {
+                HttpBatchEgress::postBatch(httpBatchItems, httpCount);
+            }
+
+            // 2. BLE 1M Extended Advertising Egress (Connectionless Broadcast)
+            if (doBle) {
+                PowerManager::acquireLock();
                 uint32_t advDurMs = (uxQueueMessagesWaiting(telemetryQueue) > 0) ? 100 : 120;
                 BLEEgress::broadcast(advPkt, advDurMs);
                 vTaskDelay(pdMS_TO_TICKS(advDurMs));
@@ -109,9 +133,9 @@ void RelayEgress::relayTask(void *pvParameters) {
             }
         }
 
-        // Flush pending WiFi batch every 500ms
+        // Flush pending UDP batch every 500ms (if UDP mode active)
         if (batchLen > 0 && (millis() - lastBatchFlushMs >= 500)) {
-            if (wifiRelayConnected) {
+            if (WiFiManager::isConnected()) {
                 flushWiFiBatch(egressUdp, batchBuf, batchLen);
             }
             batchLen = 0;

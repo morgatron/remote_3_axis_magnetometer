@@ -5,8 +5,11 @@ All use battery power unless specified otherwise
     - connected to FLC100.
     - transmits over LoRa only
 - Heltec V4 Receiver (label: ROOF)
-    - Receives over LoRa
-    - communicates with host computer over serial
+    - Receives over LoRa (SX1262 Sub-GHz, batches from SPRINGBANK)
+    - Connects directly to campus enterprise Wi-Fi (ANU-Secure WPA2-Enterprise 802.1X PEAP or standard PSK)
+    - Synchronizes atomic UTC time via NTP (pool.ntp.org) and reconstructs millisecond-accurate ISO 8601 sample timestamps
+    - Egress: Direct HTTP POST JSON batch forwarding to Central Server (`/api/v1/telemetry/batch` with `X-API-Key`)
+    - Concurrent USB Serial CDC output preserved for local monitoring and CLI configuration
     - wired power
 - Seeed Studio Xiao ESP32-C6 Sensor (label: CREEK)
     - connected to FLC100

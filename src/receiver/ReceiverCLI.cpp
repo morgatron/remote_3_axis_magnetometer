@@ -3,6 +3,8 @@
 #include "board_config.h"
 #include "BLEEgress.h"
 #include "PowerManager.h"
+#include "WiFiManager.h"
+#include "HttpBatchEgress.h"
 
 #include "ReceiverContext.h"
 #include "NodeTracker.h"
@@ -40,8 +42,15 @@ void ReceiverCLI::printHelp() {
     Serial.println(F("   DEBUG <ON|OFF>      - Enable/Disable rendezvous diagnostic logging"));
     Serial.println(F("   DFS <ON|OFF>        - Enable/Disable Dynamic Frequency Scaling (40MHz sleep)"));
     Serial.println(F("   MODE <SERIAL|WIFI|BOTH|BLE|BLE_SERIAL> - Set egress forwarding mode"));
-    Serial.println(F("   WIFI <ssid> <pass>  - Set egress router WiFi credentials"));
-    Serial.println(F("   TARGET <ip> [port]  - Set target server IP & port for WiFi egress"));
+    Serial.println(F("   MAC                 - Print Wi-Fi Station MAC address"));
+    Serial.println(F("   WIFI <ssid> [pass]  - Set standard WPA2-PSK WiFi credentials"));
+    Serial.println(F("   EAP <ssid> <user> <pass> [id] - Set WPA2-Enterprise (802.1X PEAP)"));
+    Serial.println(F("   EAP CLEAR           - Clear Enterprise credentials"));
+    Serial.println(F("   SERVER <url>        - Set Central Server URL (e.g. http://10.28.x.x:8000/api/v1/telemetry/batch)"));
+    Serial.println(F("   APIKEY <key>        - Set Central Server X-API-Key token"));
+    Serial.println(F("   NTP                 - Show current NTP sync status and UTC time"));
+    Serial.println(F("   TESTPOST            - Send immediate synthetic test batch via HTTP POST"));
+    Serial.println(F("   TARGET <ip> [port]  - Set fallback UDP broadcast target IP & port"));
     Serial.println(F("   CHANNEL <1-13>      - Set ESP-NOW WiFi radio channel"));
     Serial.println(F("   TESTADV [1-10]      - Broadcast test BLE egress advertisement packet"));
     Serial.println(F("   SAVE                - Save settings to Flash NVS"));
@@ -66,8 +75,25 @@ void ReceiverCLI::printStatus() {
     Serial.printf(" Dynamic Clock (DFS):  %s (Current: %d MHz)\r\n", 
                   g_dfsEnabled ? "ENABLED (40MHz sleep / 80MHz burst)" : "DISABLED (Static 80MHz)", 
                   getCpuFrequencyMhz());
-    Serial.printf(" WiFi Router:          %s (%s, Local IP: %s)\r\n", wifiSSID.c_str(), wifiRelayConnected ? "CONNECTED" : "DISCONNECTED", WiFi.localIP().toString().c_str());
-    Serial.printf(" Target Server IP:     %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
+    Serial.printf(" Wi-Fi Station MAC:    %s\r\n", WiFiManager::getMacAddress().c_str());
+    Serial.printf(" Wi-Fi Network:        '%s' (%s, Mode: %s, RSSI: %d dBm)\r\n",
+                  WiFiManager::getSsid().c_str(),
+                  WiFiManager::isConnected() ? "CONNECTED" : "DISCONNECTED",
+                  WiFiManager::isEapConfigured() ? "WPA2-Enterprise (802.1X PEAP)" : "WPA2-PSK",
+                  WiFiManager::getRssi());
+    if (WiFiManager::isEapConfigured()) {
+        Serial.printf(" EAP User:             %s\r\n", WiFiManager::getEapUsername().c_str());
+    }
+    Serial.printf(" Station IP:           %s\r\n", WiFiManager::getIpAddress().c_str());
+    Serial.printf(" NTP Clock Sync:       %s (UTC: %s)\r\n",
+                  WiFiManager::isNtpSynced() ? "SYNCHRONIZED" : "NOT SYNCED",
+                  WiFiManager::getUtcIsoString().c_str());
+    Serial.printf(" Central Server URL:   %s\r\n",
+                  HttpBatchEgress::hasServerUrl() ? HttpBatchEgress::getServerUrl().c_str() : "NOT CONFIGURED");
+    if (HttpBatchEgress::getApiKey().length() > 0) {
+        Serial.println(F(" Central API Key:      CONFIGURED"));
+    }
+    Serial.printf(" UDP Fallback Target:  %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
     Serial.printf(" ESP-NOW Channel:      %d\r\n", espNowChannel);
     Serial.println(F("------------------------------------------"));
     Serial.printf(" ESP-NOW RX Packets:   %lu\r\n", (unsigned long)espnowRxCount);
@@ -157,42 +183,116 @@ void ReceiverCLI::handleCommand(const String &cmd) {
             Serial.println(F("[CLI ERROR] Invalid mode. Use SERIAL, WIFI, BOTH, BLE, or BLE_SERIAL."));
         }
         if (_saveCallback) _saveCallback();
+    } else if (upper == "MAC") {
+        Serial.printf("[CLI] Wi-Fi Station MAC: %s\r\n", WiFiManager::getMacAddress().c_str());
+    } else if (upper == "NTP") {
+        bool synced = WiFiManager::isNtpSynced();
+        Serial.printf("[CLI] NTP Status: %s\r\n", synced ? "SYNCHRONIZED" : "NOT SYNCHRONIZED");
+        if (synced) {
+            Serial.printf("  Current UTC ISO: %s\r\n", WiFiManager::getUtcIsoString().c_str());
+        }
+    } else if (upper == "TESTPOST") {
+        HttpBatchEgress::testPost();
+    } else if (upper.startsWith("SERVER ")) {
+        String url = cmd.substring(7);
+        url.trim();
+        HttpBatchEgress::setServerUrl(url);
+        Serial.printf("[CLI] Central Server URL configured: %s\r\n", url.c_str());
+    } else if (upper.startsWith("APIKEY ")) {
+        String key = cmd.substring(7);
+        key.trim();
+        HttpBatchEgress::setApiKey(key);
+        Serial.println(F("[CLI] Central Server X-API-Key token configured."));
+    } else if (upper.startsWith("EAP ")) {
+        String args = cmd.substring(4);
+        args.trim();
+        String upperArgs = args;
+        upperArgs.toUpperCase();
+        if (upperArgs == "CLEAR" || upperArgs == "OFF") {
+            WiFiManager::clearEapCredentials();
+            Serial.println(F("[CLI] WPA2-Enterprise credentials cleared."));
+        } else {
+            String ssid = "", user = "", pass = "", id = "";
+            int idx = 0;
+            if (args.startsWith("\"")) {
+                int q2 = args.indexOf('"', 1);
+                if (q2 > 1) {
+                    ssid = args.substring(1, q2);
+                    idx = q2 + 1;
+                }
+            }
+            if (ssid.length() == 0) {
+                int sp = args.indexOf(' ');
+                if (sp > 0) {
+                    ssid = args.substring(0, sp);
+                    idx = sp + 1;
+                }
+            }
+            if (idx > 0 && idx < (int)args.length()) {
+                String rem = args.substring(idx);
+                rem.trim();
+                int sp1 = rem.indexOf(' ');
+                if (sp1 > 0) {
+                    user = rem.substring(0, sp1);
+                    String rem2 = rem.substring(sp1 + 1);
+                    rem2.trim();
+                    int sp2 = rem2.indexOf(' ');
+                    if (sp2 > 0) {
+                        pass = rem2.substring(0, sp2);
+                        id = rem2.substring(sp2 + 1);
+                        id.trim();
+                    } else {
+                        pass = rem2;
+                    }
+                }
+            }
+            if (ssid.length() > 0 && user.length() > 0 && pass.length() > 0) {
+                WiFiManager::setEapCredentials(ssid, user, pass, id);
+                Serial.printf("[CLI] Configured WPA2-Enterprise: SSID '%s', User '%s'\r\n", ssid.c_str(), user.c_str());
+                Serial.println(F("[CLI] Rebooting to apply Enterprise Wi-Fi connection..."));
+                delay(500);
+                ESP.restart();
+            } else {
+                Serial.println(F("[CLI ERROR] Usage: EAP <ssid> <username> <password> [identity] or EAP CLEAR"));
+            }
+        }
     } else if (upper.startsWith("WIFI ")) {
         String args = cmd.substring(5);
         args.trim();
         String upperArgs = args;
         upperArgs.toUpperCase();
         if (upperArgs == "CLEAR" || upperArgs == "OFF") {
-            wifiSSID = "";
-            wifiPass = "";
+            WiFiManager::clearAllCredentials();
             if (_saveCallback) _saveCallback();
             Serial.println(F("[CLI] External router WiFi credentials cleared. Operating in standalone SoftAP mode."));
         } else if (upperArgs == "STATUS") {
             Serial.printf("[CLI] SoftAP Active SSID: '%s' (IP: 192.168.4.1)\r\n", apSSID.c_str());
-            Serial.printf("[CLI] External Router STA Connected: %s\r\n", wifiRelayConnected ? "YES" : "NO");
-            if (wifiRelayConnected) {
+            Serial.printf("[CLI] External Router STA Connected: %s\r\n", WiFiManager::isConnected() ? "YES" : "NO");
+            if (WiFiManager::isConnected()) {
                 Serial.printf("  STA IP: %s\r\n", WiFi.localIP().toString().c_str());
             }
         } else {
+            String ssid = "", pass = "";
             int firstQuote = args.indexOf('"');
             int secondQuote = args.indexOf('"', firstQuote + 1);
             if (firstQuote >= 0 && secondQuote > firstQuote) {
-                wifiSSID = args.substring(firstQuote + 1, secondQuote);
-                wifiPass = args.substring(secondQuote + 1);
-                wifiPass.trim();
+                ssid = args.substring(firstQuote + 1, secondQuote);
+                pass = args.substring(secondQuote + 1);
+                pass.trim();
             } else {
                 int lastSpace = args.lastIndexOf(' ');
                 if (lastSpace > 0) {
-                    wifiSSID = args.substring(0, lastSpace);
-                    wifiPass = args.substring(lastSpace + 1);
-                    wifiSSID.trim(); wifiPass.trim();
+                    ssid = args.substring(0, lastSpace);
+                    pass = args.substring(lastSpace + 1);
+                    ssid.trim(); pass.trim();
                 } else {
-                    wifiSSID = args;
-                    wifiPass = "";
+                    ssid = args;
+                    pass = "";
                 }
             }
-            if (wifiSSID.length() > 0) {
-                Serial.printf("[CLI] Configured External WiFi SSID: '%s'\r\n", wifiSSID.c_str());
+            if (ssid.length() > 0) {
+                WiFiManager::setPskCredentials(ssid, pass);
+                Serial.printf("[CLI] Configured External WiFi SSID: '%s'\r\n", ssid.c_str());
                 if (_saveCallback) _saveCallback();
                 Serial.println(F("[CLI] Rebooting to apply WiFi connection..."));
                 delay(500);
