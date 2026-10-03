@@ -4,6 +4,7 @@ import io
 import json
 import math
 import logging
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List, Union
 
@@ -47,8 +48,11 @@ def get_db():
     db_dir = os.path.dirname(DB_FILE)
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=15000;")
     return conn
 
 def init_db():
@@ -252,83 +256,40 @@ class NodeUpdate(BaseModel):
     baseline_z: Optional[float] = None
     notes: Optional[str] = None
 
-# --- Ingestion Helper ---
+# --- Ingestion Helpers ---
 
-async def store_telemetry_point(conn, point: TelemetryPoint):
-    ts = point.timestamp or datetime.now(timezone.utc).isoformat()
+def _sync_store_single_point(point: TelemetryPoint, ts: str):
     units = point.units or "nT"
     status_flags = point.status_flags or "0xC00000"
     cycle = point.cycle_count or 200
     model = point.sensor_model or "RM3100"
 
-    conn.execute(
-        """
-        INSERT INTO telemetry (timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags, extra_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (ts, point.node_id, point.x, point.y, point.z, units, point.temp, point.vbat, point.rssi, status_flags, point.extra_json)
-    )
-    
-    conn.execute(
-        """
-        INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count, record_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-        ON CONFLICT(node_id) DO UPDATE SET
-            last_seen = excluded.last_seen,
-            lat = COALESCE(excluded.lat, nodes.lat),
-            lon = COALESCE(excluded.lon, nodes.lon),
-            elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
-            sensor_model = COALESCE(excluded.sensor_model, nodes.sensor_model),
-            cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count),
-            record_count = COALESCE(nodes.record_count, 0) + 1
-        """,
-        (point.node_id, point.node_id, point.lat, point.lon, point.elevation_m or 0.0, ts, model, cycle)
-    )
-
-# --- API v1 Endpoints ---
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "api_version": "1.0", "db": DB_FILE}
-
-@app.post("/api/v1/telemetry", status_code=201)
-@app.post("/api/telemetry", status_code=201)
-async def ingest_sample(point: TelemetryPoint):
-    """Ingest a single telemetry reading (HTTP POST). Supported on /api/v1/telemetry and /api/telemetry."""
-    if not point.node_id:
-        raise HTTPException(status_code=422, detail="node_id is required for single telemetry ingestion")
-    ts = point.timestamp or datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
-        await store_telemetry_point(conn, point)
+        conn.execute(
+            """
+            INSERT INTO telemetry (timestamp, node_id, x, y, z, units, temp, vbat, rssi, status_flags, extra_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ts, point.node_id, point.x, point.y, point.z, units, point.temp, point.vbat, point.rssi, status_flags, point.extra_json)
+        )
+        conn.execute(
+            """
+            INSERT INTO nodes (node_id, name, lat, lon, elevation_m, last_seen, sensor_model, cycle_count, record_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(node_id) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                lat = COALESCE(excluded.lat, nodes.lat),
+                lon = COALESCE(excluded.lon, nodes.lon),
+                elevation_m = COALESCE(excluded.elevation_m, nodes.elevation_m),
+                sensor_model = COALESCE(excluded.sensor_model, nodes.sensor_model),
+                cycle_count = COALESCE(excluded.cycle_count, nodes.cycle_count),
+                record_count = COALESCE(nodes.record_count, 0) + 1
+            """,
+            (point.node_id, point.node_id, point.lat, point.lon, point.elevation_m or 0.0, ts, model, cycle)
+        )
         conn.commit()
 
-    # Broadcast live reading via WebSockets
-    await ws_manager.broadcast({
-        "type": "telemetry",
-        "node_id": point.node_id,
-        "timestamp": ts,
-        "x": point.x,
-        "y": point.y,
-        "z": point.z,
-        "units": point.units or "nT",
-        "temp": point.temp,
-        "vbat": point.vbat,
-        "rssi": point.rssi,
-        "status_flags": point.status_flags,
-        "extra_json": point.extra_json,
-        "sensor_model": point.sensor_model or "RM3100",
-        "cycle_count": point.cycle_count or 200
-    })
-    return {"status": "success", "node_id": point.node_id, "timestamp": ts}
-
-@app.post("/api/v1/telemetry/batch", status_code=201)
-@app.post("/api/telemetry/batch", status_code=201)
-async def ingest_batch(batch: BatchTelemetry):
-    """Ingest a batch of telemetry readings from a node (useful after offline periods)."""
-    if not batch.points:
-        return {"status": "success", "inserted": 0}
-
-    now_str = datetime.now(timezone.utc).isoformat()
+def _sync_store_batch(batch: BatchTelemetry, now_str: str) -> int:
     with get_db() as conn:
         rows = []
         for p in batch.points:
@@ -368,6 +329,51 @@ async def ingest_batch(batch: BatchTelemetry):
             (batch.node_id, batch.node_id, latest_p.lat, latest_p.lon, latest_p.elevation_m or 0.0, latest_ts, model, cycle, batch_len)
         )
         conn.commit()
+        return len(rows)
+
+# --- API v1 Endpoints ---
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "api_version": "1.0", "db": DB_FILE}
+
+@app.post("/api/v1/telemetry", status_code=201)
+@app.post("/api/telemetry", status_code=201)
+async def ingest_sample(point: TelemetryPoint):
+    """Ingest a single telemetry reading (HTTP POST). Supported on /api/v1/telemetry and /api/telemetry."""
+    if not point.node_id:
+        raise HTTPException(status_code=422, detail="node_id is required for single telemetry ingestion")
+    ts = point.timestamp or datetime.now(timezone.utc).isoformat()
+    await asyncio.to_thread(_sync_store_single_point, point, ts)
+
+    # Broadcast live reading via WebSockets
+    await ws_manager.broadcast({
+        "type": "telemetry",
+        "node_id": point.node_id,
+        "timestamp": ts,
+        "x": point.x,
+        "y": point.y,
+        "z": point.z,
+        "units": point.units or "nT",
+        "temp": point.temp,
+        "vbat": point.vbat,
+        "rssi": point.rssi,
+        "status_flags": point.status_flags,
+        "extra_json": point.extra_json,
+        "sensor_model": point.sensor_model or "RM3100",
+        "cycle_count": point.cycle_count or 200
+    })
+    return {"status": "success", "node_id": point.node_id, "timestamp": ts}
+
+@app.post("/api/v1/telemetry/batch", status_code=201)
+@app.post("/api/telemetry/batch", status_code=201)
+async def ingest_batch(batch: BatchTelemetry):
+    """Ingest a batch of telemetry readings from a node (useful after offline periods)."""
+    if not batch.points:
+        return {"status": "success", "inserted": 0}
+
+    now_str = datetime.now(timezone.utc).isoformat()
+    inserted_count = await asyncio.to_thread(_sync_store_batch, batch, now_str)
 
     # Broadcast all points in batch via WebSockets
     for p in batch.points:
