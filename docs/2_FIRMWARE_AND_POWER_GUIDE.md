@@ -108,3 +108,11 @@ Connect to the receiver gateway at **921600 baud**:
 4. **Sleep State Independence from USB CDC:**
    - On the `SUPERMINI_GATEWAY` receiver profile, USB-CDC is disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`), eliminating USB PHY power draw (~15 mA saved).
    - Real-time diagnostics (sync acquired, window timeout, lost sync discovery) are broadcast via BLE Extended Advertising diagnostic packets and parsed by `scripts/ble_monitor.py`.
+
+---
+
+## 5. Ongoing Profiling & Power Investigation Tasks
+
+- **Sensor Node Sleep Current Profiling ("CREEK")**: The current sensor build for `CREEK` still draws $\sim 30\text{ mA}$ between broadcasting batches of samples (in mock data mode, with no physical sensor attached). In principle, dynamic frequency scaling (DFS) and light sleep should drop this baseline to $\sim 10\text{ mA}$. All that is required during this inter-burst period is SPI polling of the ADC (for FLC100 fluxgate sensors) or DRDY interrupt waiting. Further investigation is needed to verify which peripheral clocks or FreeRTOS timers are preventing deeper idle states.
+- **Heltec V4 + LoRa Power Profiling ("SPRINGBANK")**: Conduct a parallel power profiling and sleep budget analysis for the Heltec V4 ESP32-S3 + SX1262 LoRa firmware, verifying SX1262 deep sleep current ($<1\,\mu\text{A}$) and ESP32-S3 light sleep current between scheduled LoRa transmission bursts.
+
