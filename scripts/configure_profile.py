@@ -58,12 +58,12 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         }
     },
     "ROOF": {
-        "description": "Heltec V4 Receiver (LoRa RX -> USB Serial Egress)",
+        "description": "Heltec V4 Receiver (LoRa RX -> Wi-Fi HTTP POST & USB Serial Egress)",
         "board_type": "Heltec WiFi LoRa 32 V4 (ESP32-S3 + SX1262)",
         "pio_env": "heltec_v4_receiver",
         "role": "receiver",
         "cli_commands": [
-            "MODE SERIAL",
+            "MODE BOTH",
             "SAVE",
             "STATUS"
         ],

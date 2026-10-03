@@ -187,7 +187,7 @@ def index_page():
 # --- Pydantic Data Models (Version 1.0) ---
 
 class TelemetryPoint(BaseModel):
-    node_id: str = Field(..., description="Unique hardware identifier string")
+    node_id: Optional[str] = Field(None, description="Unique hardware identifier string")
     timestamp: Optional[str] = Field(None, description="ISO8601 UTC timestamp string")
     x: float = Field(..., description="X-axis magnetic field in nT")
     y: float = Field(..., description="Y-axis magnetic field in nT")
@@ -295,6 +295,8 @@ def health():
 @app.post("/api/telemetry", status_code=201)
 async def ingest_sample(point: TelemetryPoint):
     """Ingest a single telemetry reading (HTTP POST). Supported on /api/v1/telemetry and /api/telemetry."""
+    if not point.node_id:
+        raise HTTPException(status_code=422, detail="node_id is required for single telemetry ingestion")
     ts = point.timestamp or datetime.now(timezone.utc).isoformat()
     with get_db() as conn:
         await store_telemetry_point(conn, point)

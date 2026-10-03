@@ -101,6 +101,127 @@ def test_batch_telemetry_ingestion():
     assert resp.json()["inserted"] == 3
     print("[PASS] Batch telemetry ingestion passed.")
 
+def test_roof_batch_payload_format():
+    """Verify exact JSON payload structure produced by HttpBatchEgress.cpp on ROOF Heltec v4."""
+    roof_payload = {
+        "node_id": "SPRINGBANK",
+        "points": [
+            {
+                "timestamp": "2026-10-03T11:45:00.123Z",
+                "x": 23415.20,
+                "y": -4120.80,
+                "z": 48910.10,
+                "temp": 24.50,
+                "vbat": 4120,
+                "rssi": -72,
+                "status_flags": "0x000000",
+                "sensor_model": "FLC100"
+            },
+            {
+                "timestamp": "2026-10-03T11:45:01.123Z",
+                "x": 23416.30,
+                "y": -4121.10,
+                "z": 48909.50,
+                "temp": 24.50,
+                "vbat": 4120,
+                "rssi": -72,
+                "status_flags": "0x000000",
+                "sensor_model": "FLC100"
+            }
+        ]
+    }
+    resp = requests.post(f"{SERVER_URL}/api/v1/telemetry/batch", json=roof_payload)
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "success"
+    assert resp.json()["node_id"] == "SPRINGBANK"
+    assert resp.json()["inserted"] == 2
+
+    # Query back the ingested points to verify fields were parsed and persisted
+    r_query = requests.get(f"{SERVER_URL}/api/v1/data?node_id=SPRINGBANK&format=json")
+    assert r_query.status_code == 200
+    pts = r_query.json()["data"]
+    assert len(pts) == 2
+    assert pts[0]["x_nT"] == 23415.20
+    assert pts[0]["vbat_mv"] == 4120
+    assert pts[0]["rssi_dbm"] == -72
+    assert pts[0]["status_flags"] == "0x000000"
+
+    # Verify node entry was updated with model and record_count
+    r_node = requests.get(f"{SERVER_URL}/api/v1/nodes")
+    nodes = {n["node_id"]: n for n in r_node.json()}
+    assert "SPRINGBANK" in nodes
+    assert nodes["SPRINGBANK"]["sensor_model"] == "FLC100"
+    assert nodes["SPRINGBANK"]["record_count"] >= 2
+    print("[PASS] ROOF HttpBatchEgress payload format and persistence test passed.")
+
+def test_roof_batch_null_fields():
+    """Verify batch handling when timestamps, temp, or vbat are null (e.g. before NTP sync)."""
+    batch_nulls = {
+        "node_id": "SPRINGBANK_NULLS",
+        "points": [
+            {
+                "timestamp": None,
+                "x": 23000.0,
+                "y": -4000.0,
+                "z": 48000.0,
+                "temp": None,
+                "vbat": None,
+                "rssi": -85,
+                "status_flags": "0xC00000",
+                "sensor_model": "RM3100"
+            }
+        ]
+    }
+    resp = requests.post(f"{SERVER_URL}/api/v1/telemetry/batch", json=batch_nulls)
+    assert resp.status_code == 201
+    assert resp.json()["inserted"] == 1
+
+    r_query = requests.get(f"{SERVER_URL}/api/v1/data?node_id=SPRINGBANK_NULLS&format=json")
+    assert r_query.status_code == 200
+    pt = r_query.json()["data"][0]
+    assert pt["timestamp_utc"] is not None  # Server backfilled with current UTC
+    assert pt["temp_c"] is None
+    assert pt["vbat_mv"] is None
+    print("[PASS] Batch with null timestamp/vbat/temp fallback test passed.")
+
+def test_large_backlog_batch():
+    """Verify an 18-sample catch-up batch from LoRa sensor after RF reconnect."""
+    points = []
+    base_t = "2026-10-03T10:00:"
+    for i in range(18):
+        points.append({
+            "timestamp": f"{base_t}{i:02d}.000Z",
+            "x": 23400.0 + i,
+            "y": -4100.0,
+            "z": 48900.0,
+            "temp": 22.0,
+            "vbat": 4050,
+            "rssi": -68,
+            "status_flags": "0x000000",
+            "sensor_model": "FLC100"
+        })
+    payload = {"node_id": "SPRINGBANK_BACKLOG", "points": points}
+    resp = requests.post(f"{SERVER_URL}/api/v1/telemetry/batch", json=payload)
+    assert resp.status_code == 201
+    assert resp.json()["inserted"] == 18
+
+    r_query = requests.get(f"{SERVER_URL}/api/v1/data?node_id=SPRINGBANK_BACKLOG&format=json")
+    assert r_query.status_code == 200
+    assert r_query.json()["count"] == 18
+    print("[PASS] 18-sample catch-up backlog batch test passed.")
+
+def test_single_telemetry_missing_node_id():
+    """Verify that single point ingestion still requires node_id."""
+    invalid_payload = {
+        "x": 100.0,
+        "y": 200.0,
+        "z": 300.0
+    }
+    resp = requests.post(f"{SERVER_URL}/api/v1/telemetry", json=invalid_payload)
+    assert resp.status_code == 422
+    print("[PASS] Single telemetry missing node_id 422 rejection test passed.")
+
+
 def test_list_nodes():
     resp = requests.get(f"{SERVER_URL}/api/v1/nodes")
     assert resp.status_code == 200
@@ -321,7 +442,11 @@ if __name__ == "__main__":
         proc = start_test_server()
         test_health_check()
         test_single_telemetry_ingestion()
+        test_single_telemetry_missing_node_id()
         test_batch_telemetry_ingestion()
+        test_roof_batch_payload_format()
+        test_roof_batch_null_fields()
+        test_large_backlog_batch()
         test_list_nodes()
         test_data_export_formats()
         test_unlimited_and_empty_exports()
