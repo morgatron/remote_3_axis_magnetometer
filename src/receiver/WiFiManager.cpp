@@ -3,6 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "esp_eap_client.h"
+#include <esp_mac.h>
 #include "ReceiverContext.h"
 
 String WiFiManager::_ssid = "";
@@ -183,6 +184,13 @@ bool WiFiManager::isEapConfigured() {
 }
 
 String WiFiManager::getMacAddress() {
+    uint8_t baseMac[6] = {0};
+    if (esp_read_mac(baseMac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        char macBuf[20];
+        snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 baseMac[0], baseMac[1], baseMac[2], baseMac[3], baseMac[4], baseMac[5]);
+        return String(macBuf);
+    }
     return WiFi.macAddress();
 }
 
