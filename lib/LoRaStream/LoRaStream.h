@@ -74,6 +74,9 @@ public:
      */
     size_t readPacket(uint8_t *buf, size_t maxLen, int &rssi, float &snr);
 
+    bool setOutputPower(int8_t power);
+    int8_t getOutputPower() const { return _config.power; }
+
     bool isInitialized() const { return _initialized; }
 
 private:

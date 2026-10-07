@@ -32,7 +32,7 @@ volatile uint32_t udpRxCount = 0;
 volatile uint32_t loraRxCount = 0;
 volatile uint32_t relayedPacketCount = 0;
 
-uint8_t egressModeConfig = MODE_EGRESS_BLE; // 0 = Serial, 1 = WiFi, 2 = Both, 3 = BLE
+uint8_t egressModeConfig = MODE_EGRESS_SERIAL; // 0 = Serial, 1 = WiFi, 2 = Both, 3 = BLE
 String wifiSSID = "";
 String wifiPass = "";
 String targetServerIP = "255.255.255.255";
@@ -55,41 +55,62 @@ void saveReceiverSettings() {
 
 void loadReceiverSettings() {
     prefs.begin("rcvr_v0", true);
-    egressModeConfig = prefs.getUChar("mode", MODE_EGRESS_BLE);
+#if defined(DEFAULT_RECEIVER_EGRESS_MODE)
+    egressModeConfig = prefs.getUChar("mode", DEFAULT_RECEIVER_EGRESS_MODE);
+#else
+    egressModeConfig = prefs.getUChar("mode", MODE_EGRESS_SERIAL);
+#endif
     targetServerIP = prefs.getString("target_ip", "255.255.255.255");
     targetServerPort = prefs.getUShort("target_port", 9876);
     espNowChannel = prefs.getUChar("channel", 1);
     prefs.end();
-    WiFiManager::begin();
+    if (egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) {
+        WiFiManager::begin();
+    }
 }
 
 uint32_t lastOledActivityMs = 0;
 bool oledScreenActive = true;
 
 void connectEgressWiFi() {
-    if (egressModeConfig == MODE_EGRESS_SERIAL || egressModeConfig == MODE_EGRESS_BLE) {
-        WiFiManager::connect();
-        if (egressModeConfig == MODE_EGRESS_BLE) {
-            BLEEgress::begin("MAG_GATEWAY");
-        }
+    if (egressModeConfig == MODE_EGRESS_SERIAL) {
+        WiFi.mode(WIFI_OFF);
+        Serial.println(F("[POWER] Egress mode is SERIAL. 2.4 GHz Wi-Fi radio powered OFF."));
+        return;
+    }
+
+    if (egressModeConfig == MODE_EGRESS_BLE) {
+        WiFi.mode(WIFI_OFF);
+        BLEEgress::begin("MAG_GATEWAY");
         return;
     }
 
     if (egressModeConfig == MODE_EGRESS_BOTH) {
         BLEEgress::begin("MAG_GATEWAY");
+        WiFiManager::connect();
+        return;
     }
 
-    WiFiManager::connect();
+    if (egressModeConfig == MODE_EGRESS_WIFI) {
+        WiFiManager::connect();
+        return;
+    }
 }
 
 
+#if defined(LORA_ONLY_RECEIVER)
+static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+static ITelemetryReceiver* receivers[] = { &loraRcvr };
+#elif defined(BOARD_HAS_LORA)
 static BLEReceiver bleRcvr;
 static ESPNowReceiver espnowRcvr;
 static UDPReceiver udpRcvr;
-#if defined(BOARD_HAS_LORA)
 static LoRaReceiver loraRcvr(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
 static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr, &loraRcvr };
 #else
+static BLEReceiver bleRcvr;
+static ESPNowReceiver espnowRcvr;
+static UDPReceiver udpRcvr;
 static ITelemetryReceiver* receivers[] = { &bleRcvr, &espnowRcvr, &udpRcvr };
 #endif
 
@@ -118,14 +139,21 @@ void setup() {
 
     Serial.println(F("\r\n========================================================="));
     Serial.println(F(" FIRMWARE: ESP32 Multi-Protocol Receiver & Data Relay Node"));
-#if defined(BOARD_HAS_LORA)
+#if defined(LORA_ONLY_RECEIVER)
+    Serial.println(F(" Supported Protocols: Sub-GHz SX1262 LoRa ONLY (2.4 GHz BLE/WiFi Ingress Disabled)"));
+#elif defined(BOARD_HAS_LORA)
     Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP, LoRa"));
 #else
     Serial.println(F(" Supported Protocols: ESP-NOW, BLE / Coded PHY, WiFi UDP"));
 #endif
-    Serial.println(F(" Egress Targets: USB Serial CDC + WiFi HTTP/UDP Central"));
+    Serial.println(F(" Egress Targets: USB Serial CDC"));
     Serial.println(F(" Power Mode: Low-Power Receiver (80 MHz CPU, OLED 30s Timeout)"));
     Serial.println(F("========================================================="));
+
+#if defined(LORA_ONLY_RECEIVER)
+    WiFi.mode(WIFI_OFF);
+    btStop();
+#endif
 
     loadReceiverSettings();
 
@@ -211,8 +239,10 @@ void loop() {
     }
 #endif
 
-    // Update Wi-Fi connection state and NTP clock sync
-    WiFiManager::update();
+    // Update Wi-Fi connection state only if Wi-Fi egress is active
+    if (egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH) {
+        WiFiManager::update();
+    }
 
     // Process serial CLI commands
     if (Serial.available() > 0) {

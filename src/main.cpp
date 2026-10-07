@@ -167,7 +167,7 @@ void connectWiFi() {
 
 void loadSettings() {
     prefs.begin("mcu_v0", true);
-    sensorTypeConfig = prefs.getUChar("sensor_type", 1);
+    sensorTypeConfig = prefs.getUChar("sensor_type", 255);
     current_rate = prefs.getUChar("rate", DEFAULT_RATE);
     current_downsample = prefs.getUShort("downsample", (sensorTypeConfig == 1) ? 1000 : 1);
     outputMode = prefs.getUChar("mode", DEFAULT_OUTPUT_MODE);
@@ -207,6 +207,8 @@ void loadSettings() {
         if (outputMode == MODE_BLE) {
             bleStream.powerDownModem();
         }
+    } else {
+        btStop();
     }
 
     if (outputMode == MODE_WIFI || outputMode == MODE_BOTH) {
@@ -466,7 +468,7 @@ TaskHandle_t adcTaskHandle = NULL;
 void adcSamplingTask(void *pvParameters) {
     for (;;) {
         if (sensorTypeConfig == 2) {
-            vTaskDelay(pdMS_TO_TICKS(13)); // ~75 Hz tick for MockSensor
+            vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz tick for MockSensor
             if (streaming && sensor != NULL) {
                 sensor->readAndPushSample();
             }
@@ -577,9 +579,19 @@ void setup() {
             attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
             Serial.println("Sensor initialized: FLC100-ADS131E08");
         } else {
-            Serial.println("[ERROR] Physical FLC100 did not respond! Falling back to MOCK for this session.");
-            sensor = &sensorMock;
-            sensor->begin();
+            Serial.println("FLC100 not detected. Cross-probing RM3100...");
+            if (sensorRM3100.begin()) {
+                sensorTypeConfig = 0;
+                sensor = &sensorRM3100;
+                current_downsample = 1;
+                static_cast<RM3100*>(sensor)->setCycleCount(cycleCountConfig, cycleCountConfig, cycleCountConfig);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
+                Serial.printf("Auto-detected sensor: RM3100 (Cycle count: %u)\r\n", cycleCountConfig);
+            } else {
+                Serial.println("[ERROR] Physical sensors did not respond! Falling back to MOCK for this session.");
+                sensor = &sensorMock;
+                sensor->begin();
+            }
         }
     } else if (sensorTypeConfig == 0) {
         Serial.println("Configured sensor: RM3100. Probing hardware...");
@@ -597,9 +609,19 @@ void setup() {
             attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
             Serial.printf("Sensor initialized: RM3100 (Cycle count: %u)\r\n", cycleCountConfig);
         } else {
-            Serial.println("[ERROR] Physical RM3100 did not respond! Falling back to MOCK for this session.");
-            sensor = &sensorMock;
-            sensor->begin();
+            Serial.println("RM3100 not detected. Cross-probing FLC100...");
+            if (sensorFLC100.begin()) {
+                sensorTypeConfig = 1;
+                sensor = &sensorFLC100;
+                current_downsample = 1000;
+                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
+                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
+                Serial.println("Auto-detected sensor: FLC100-ADS131E08");
+            } else {
+                Serial.println("[ERROR] Physical sensors did not respond! Falling back to MOCK for this session.");
+                sensor = &sensorMock;
+                sensor->begin();
+            }
         }
     } else if (sensorTypeConfig == 2) {
         sensor = &sensorMock;
@@ -800,7 +822,7 @@ void loop() {
             uint32_t status = sample.status;
             uint64_t ts = sample.ts;
 
-            uint16_t decimationFactor = current_downsample;
+            uint16_t decimationFactor = (sensorTypeConfig == 2) ? 1 : current_downsample;
             if (decimationFactor <= 1) {
                 // Direct streaming without averaging
                 sendOutputSample(ts, x, y, z, status);

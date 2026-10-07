@@ -7,6 +7,9 @@
 // Heltec WiFi LoRa 32 V3 / V4 (ESP32-S3 + SX1262)
 #define BOARD_NAME   "Heltec WiFi LoRa 32 V4 (ESP32-S3)"
 #define BOARD_HAS_LORA 1
+#ifndef LORA_TX_POWER_DBM
+#define LORA_TX_POWER_DBM 20 // +20 dBm for high-power antenna testing
+#endif
 #define SCK_PIN      41
 #define MOSI_PIN     42
 #define MISO_PIN     40
@@ -217,6 +220,10 @@ inline uint16_t getBatteryMilliVolts() {
 // Backward-compatible aliases
 inline float readBatteryVoltage() { return getBatteryVoltage(); }
 inline uint16_t readBatteryMilliVolts() { return getBatteryMilliVolts(); }
+
+#ifndef LORA_TX_POWER_DBM
+#define LORA_TX_POWER_DBM 22
+#endif
 
 inline void initBoardPower() {
 #ifdef VEXT_PIN

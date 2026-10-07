@@ -58,21 +58,21 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         }
     },
     "ROOF": {
-        "description": "Heltec V4 Receiver (LoRa RX -> Wi-Fi HTTP POST & USB Serial Egress)",
+        "description": "Heltec V4 Receiver (LoRa RX -> USB Serial Egress, 2.4 GHz Wi-Fi/BLE unpowered)",
         "board_type": "Heltec WiFi LoRa 32 V4 (ESP32-S3 + SX1262)",
         "pio_env": "heltec_v4_receiver",
         "role": "receiver",
         "cli_commands": [
-            "MODE BOTH",
+            "MODE SERIAL",
             "SAVE",
             "STATUS"
         ],
         "expected_current": {
             "idle_sleep": "N/A (Continuous RX)",
             "tx_peak": "N/A (Receiver only)",
-            "average": "28 - 35 mA @ 5V USB (~140 - 175 mW)",
-            "runtime_1000mah": "Wired USB powered (Battery: ~30 - 35 hours)",
-            "runtime_3000mah": "Wired USB powered (Battery: ~4 days)"
+            "average": "20 - 25 mA @ 5V USB (~100 - 125 mW, 2.4 GHz Wi-Fi/BLE unpowered)",
+            "runtime_1000mah": "Wired USB powered (Battery: ~40 - 50 hours)",
+            "runtime_3000mah": "Wired USB powered (Battery: ~5 - 6 days)"
         }
     },
     "CREEK": {

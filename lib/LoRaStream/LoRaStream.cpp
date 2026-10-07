@@ -128,6 +128,12 @@ bool LoRaStream::begin(int cs, int irq, int rst, int busy, int sck, int miso, in
     }
 }
 
+bool LoRaStream::setOutputPower(int8_t power) {
+    if (!_initialized || !pRadio) return false;
+    _config.power = power;
+    return (pRadio->setOutputPower(power) == RADIOLIB_ERR_NONE);
+}
+
 bool LoRaStream::transmit(const uint8_t *data, size_t len) {
     if (!_initialized || len == 0 || data == nullptr || !pRadio) return false;
     

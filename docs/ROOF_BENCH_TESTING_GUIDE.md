@@ -1,6 +1,6 @@
 # ROOF Heltec V4 Gateway & SPRINGBANK LoRa Benchtop Testing Guide
 
-This guide provides step-by-step instructions for bench testing, provisioning, and verifying the **ROOF** gateway receiver (Heltec V4 ESP32-S3 + SX1262 LoRa) and **SPRINGBANK** sensor pair, including WPA2-Enterprise (`ANU-Secure`) Wi-Fi, atomic NTP time synchronization, and HTTP batch forwarding to the Central Data Server.
+This guide provides step-by-step instructions for bench testing, provisioning, and verifying the **ROOF** gateway receiver (Heltec V4 ESP32-S3 + SX1262 LoRa) and **SPRINGBANK** sensor pair, operating with pure Sub-GHz SX1262 LoRa RF reception and direct USB Serial CDC telemetry egress (2.4 GHz Wi-Fi & BLE unpowered).
 
 ---
 
@@ -9,21 +9,22 @@ This guide provides step-by-step instructions for bench testing, provisioning, a
 ```
 [SPRINGBANK Sensor Node]
   - Heltec V4 (ESP32-S3 + SX1262 LoRa)
-  - FLC100 3-Axis Fluxgate Magnetometer
-  - 1 Hz Continuous Sampling, 10s Burst Interval (10 samples / burst)
+  - FLC100 3-Axis Fluxgate Magnetometer (or synthetic MOCK for bench test)
+  - 1 Hz Sampling, 10s Burst Interval (10 samples / burst @ +20 dBm LoRa)
+  - 2.4 GHz Wi-Fi & BLE modems fully powered off to conserve battery
        │
-       ▼ (LoRa 915 MHz / Sub-GHz RF Burst)
-[ROOF Gateway Node]
+       ▼ (LoRa 915 MHz AU915 / Sub-GHz RF Burst, +20 dBm, SF7, BW 125 kHz)
+[ROOF Receiver Node]
   - Heltec V4 (ESP32-S3 + SX1262 LoRa)
-  - SX1262 Radio in Continuous RX Mode
-  - Background NTP Client (pool.ntp.org)
-  - Reconstructs sample ages into absolute millisecond UTC ISO 8601 timestamps
+  - SX1262 Radio in Continuous RX Mode (Sub-GHz LoRa ONLY)
+  - 2.4 GHz Wi-Fi & BLE radios fully unpowered (WiFi.mode(WIFI_OFF), btStop())
+  - Dynamic relative-to-host timestamping & OLED display
        │
        ├────────────────────────────────────────┬────────────────────────────────────────┐
-       ▼ (HTTP POST /api/v1/telemetry/batch)    ▼ (Concurrent USB Serial CDC @ 921600)  ▼ (OLED Display)
-[Central Data Server]                     [Host PC Serial Terminal]               Live Status & Counts
-  - FastAPI + SQLite WAL Mode               - Real-time CSV logging & CLI
-  - WebSocket Live Stream Broadcast
+       ▼ (Direct USB Serial CDC @ 921600 baud)   ▼ (OLED Display)                         ▼ (Optional Wi-Fi Egress)
+  [Host PC / Edge Gateway / Logger]         Live Status & Counts                  [Central Data Server]
+  - Direct CSV telemetry stream                                                    - HTTP POST batch endpoint
+  - Clean CLI configuration interface                                              (Optional: 'MODE BOTH' or 'MODE WIFI')
 ```
 
 ---
@@ -71,69 +72,38 @@ pio device monitor -b 921600
 
 Press `ENTER` or type `HELP` to view the CLI menu.
 
-### 1. Check Device MAC Address
-If device MAC registration is required by network administrators:
+### 1. Set Egress Mode to USB Serial (Default Profile)
+For the pure LoRa-to-USB Serial setup (no Wi-Fi connection required, 2.4 GHz radio unpowered):
 ```text
-MAC
-```
-*Output:*
-```text
-[WIFI] Station MAC: 34:85:18:XX:XX:XX
-```
-
-### 2. Configure Wi-Fi Credentials
-Choose **one** of the following options based on your test environment:
-
-#### Option A: ANU-Secure Enterprise Wi-Fi (WPA2-Enterprise PEAP)
-```text
-EAP ANU-Secure uXXXXXXX YourPassword
-```
-*Note:* The optional fourth parameter specifies the outer anonymous identity. If omitted, it defaults to the username.
-
-#### Option B: Standard Wi-Fi / Test Hotspot (WPA2-PSK)
-For home, lab, or phone hotspot testing:
-```text
-WIFI MyHotspot MyPassword123
-```
-
-### 3. Configure Central Server URL & API Key
-Set the destination API endpoint and authorization token:
-```text
-SERVER http://10.28.x.x:8000/api/v1/telemetry/batch
-APIKEY your_secret_api_key_here
-```
-*(If your server has no API key configured, `APIKEY` can be left blank).*
-
-### 4. Enable Both Wi-Fi and Serial Egress
-Set the egress mode to `BOTH` so telemetry is sent to the central server via HTTP POST while simultaneously outputting CSV over USB serial:
-```text
-MODE BOTH
-```
-
-### 5. Save Configuration to NVS Flash
-Persist the network credentials, server URL, and mode across reboots:
-```text
+MODE SERIAL
 SAVE
 ```
+*Note:* The receiver powers down its 2.4 GHz Wi-Fi and Bluetooth modems when in `SERIAL` mode, drawing ~20–25 mA.
+
+### 2. Optional: Configure Wi-Fi & Central Server (If HTTP Egress Needed)
+If you wish to route telemetry over Wi-Fi HTTP POST concurrently or exclusively:
+- **Enterprise Wi-Fi:** `EAP ANU-Secure uXXXXXXX YourPassword`
+- **Standard Wi-Fi:** `WIFI MyHotspot MyPassword123`
+- **Destination Server:** `SERVER http://10.28.x.x:8000/api/v1/telemetry/batch`
+- **Egress Mode:** `MODE BOTH` (Serial + HTTP) or `MODE WIFI` (HTTP only)
+- **Save:** `SAVE`
 
 ---
 
-## 5. Step 3: Verifying Connectivity on the Gateway
+## 5. Step 3: Verifying Connectivity on the Receiver
 
-Once configured, verify connectivity using the diagnostic commands in the serial monitor:
+Once configured, verify device status using the diagnostic commands in the serial monitor:
 
-### 1. Verify Wi-Fi and Status
+### 1. Verify Status
 ```text
 STATUS
 ```
 Verify the output indicates:
 ```text
 [STATUS] Receiver Status:
-  Mode: BOTH (HTTP + Serial)
-  WiFi: Connected (IP: 10.28.x.x, RSSI: -62 dBm)
-  NTP:  Synchronized (UTC: 2026-10-04T08:30:15.120Z)
-  Server: http://10.28.x.x:8000/api/v1/telemetry/batch
+  Mode: SERIAL (USB Serial CDC Only, 2.4 GHz Wi-Fi/BLE OFF)
   LoRa: Frequency=915.0 MHz, SF=7, BW=125.0 kHz
+  Egress Relayed Count: 0
 ```
 
 ### 2. Verify Atomic NTP Synchronization
@@ -162,21 +132,26 @@ TESTPOST
 ## 6. Step 4: Verifying the SPRINGBANK $\rightarrow$ ROOF $\rightarrow$ Server Flow
 
 1. Power up the **SPRINGBANK** sensor node (via battery or USB).
-2. Watch the **ROOF** gateway serial console. Every 10 seconds, you should observe:
+2. Watch the **ROOF** receiver serial console. Every 10 seconds, you should observe:
    ```text
-   [LORA RX] Received batch from SPRINGBANK (10 samples, Age: 45 ms, RSSI: -72 dBm, SNR: 8.5 dB)
-   [TIME] Anchoring samples: TX base age = 45 ms, NTP UTC = 2026-10-04T08:35:10.045Z
-   [HTTP EGRESS] POST 10 samples -> HTTP 201 Created (38 ms)
-   SPRINGBANK,2026-10-04T08:35:01.045Z,23415.20,-4120.80,48910.10,23.50,4.12,-72,0x000000
-   SPRINGBANK,2026-10-04T08:35:02.045Z,23414.80,-4121.10,48911.20,23.50,4.12,-72,0x000000
-   ...
+   [LORA RX] RssiPkt=126, SigRssi=126 -> RSSI=-63 dBm, SnrPkt=48 -> 12.00 dB
+   SPRINGBA,0,21556.97,-3266.67,43115.65,008000,0.0,4.12,-63
+   SPRINGBA,0,21527.97,-3300.84,43112.47,008000,0.0,4.12,-63
+   SPRINGBA,0,21525.77,-3279.41,43119.60,008000,0.0,4.12,-63
+   SPRINGBA,0,21530.07,-3309.20,43116.54,008000,0.0,4.12,-63
+   SPRINGBA,0,21518.02,-3313.91,43106.42,008000,0.0,4.12,-63
+   SPRINGBA,0,21478.99,-3294.02,43113.64,008000,0.0,4.12,-63
+   SPRINGBA,0,21485.09,-3300.10,43107.64,008000,0.0,4.12,-63
+   SPRINGBA,0,21458.43,-3315.46,43097.78,008000,0.0,4.12,-63
+   SPRINGBA,0,21452.45,-3317.16,43095.95,008000,0.0,4.12,-63
+   SPRINGBA,0,21454.93,-3338.29,43099.78,008000,0.0,4.12,-63
    ```
-3. Observe the ROOF gateway OLED display:
+3. Observe the ROOF receiver OLED display:
    * Header: `ROOF GATEWAY`
-   * Line 1: `WiFi: OK (10.28.x.x)`
-   * Line 2: `NTP: SYNCED`
-   * Line 3: `Last: SPRINGBANK (-72dBm)`
-   * Line 4: `Batches: 24 | Post: OK (201)`
+   * Line 1: `WiFi: OFF (Serial Mode)`
+   * Line 2: `Status: READY`
+   * Line 3: `Last: SPRINGBA (-63dBm)`
+   * Line 4: `Batches: 24 | Egress: SERIAL`
 
 ---
 

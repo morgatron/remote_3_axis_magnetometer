@@ -37,6 +37,7 @@ void CLI::printHelp() {
     Serial.println("RATE <hex>    - Set rate code (saved)");
     Serial.println("CYCLE <int>   - Set cycle count (RM3100 specific)");
     Serial.println("BATCH <1-10>  - Set samples per burst (1 = instant 1Hz, 10 = 10s batch for BLE & LoRa)");
+    Serial.println("POWER <-9..22>- Set LoRa TX power in dBm");
     Serial.println("STATUS        - Show current status");
     Serial.println("-----------------------");
 }
@@ -195,9 +196,24 @@ void CLI::handleCommand(String cmd) {
         Serial.print("Batch Burst Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
 #if defined(BOARD_HAS_LORA)
         extern LoRaStream loraStream;
-        Serial.printf("LoRa SX1262: %s\r\n", loraStream.isInitialized() ? "INITIALIZED" : "NOT INITIALIZED");
+        Serial.printf("LoRa SX1262: %s (TX: +%d dBm)\r\n", 
+                      loraStream.isInitialized() ? "INITIALIZED" : "NOT INITIALIZED",
+                      loraStream.getOutputPower());
 #endif
         Serial.println(_sensor->getStatusString());
+    } else if (cmd.startsWith("POWER ")) {
+        int8_t pwr = (int8_t)cmd.substring(6).toInt();
+        if (pwr >= -9 && pwr <= 22) {
+#if defined(BOARD_HAS_LORA)
+            extern LoRaStream loraStream;
+            loraStream.setOutputPower(pwr);
+            Serial.printf("LoRa Transmit Power set to +%d dBm.\r\n", pwr);
+#else
+            Serial.println("LoRa hardware not supported on this board.");
+#endif
+        } else {
+            Serial.println("Usage: POWER <-9 to 22> (Set LoRa TX power in dBm)");
+        }
     } else if (cmd.startsWith("ID ")) {
         String newID = cmd.substring(3);
         newID.trim();

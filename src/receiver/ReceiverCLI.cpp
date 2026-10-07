@@ -82,37 +82,46 @@ void ReceiverCLI::printStatus() {
     Serial.printf(" Dynamic Clock (DFS):  %s (Current: %d MHz)\r\n", 
                   g_dfsEnabled ? "ENABLED (40MHz sleep / 80MHz burst)" : "DISABLED (Static 80MHz)", 
                   getCpuFrequencyMhz());
-    Serial.printf(" Wi-Fi Station MAC:    %s\r\n", WiFiManager::getMacAddress().c_str());
-    Serial.printf(" Wi-Fi Network:        '%s' (%s, Mode: %s, RSSI: %d dBm)\r\n",
-                  WiFiManager::getSsid().c_str(),
-                  WiFiManager::isConnected() ? "CONNECTED" : "DISCONNECTED",
-                  WiFiManager::isEapConfigured() ? "WPA2-Enterprise (802.1X PEAP)" : "WPA2-PSK",
-                  WiFiManager::getRssi());
-    if (WiFiManager::isEapConfigured()) {
-        Serial.printf(" EAP User:             %s (Password: %d chars)\r\n", 
-                      WiFiManager::getEapUsername().c_str(), WiFiManager::getEapPasswordLength());
-        if (WiFiManager::getEapIdentity().length() > 0) {
-            Serial.printf(" EAP Outer Identity:   %s\r\n", WiFiManager::getEapIdentity().c_str());
-        } else {
-            Serial.println(F(" EAP Outer Identity:   None (Anonymous/Omitted)"));
+    if (egressModeConfig == 0) {
+        Serial.println(F(" 2.4 GHz Wi-Fi/BLE:    POWERED OFF (Zero 2.4 GHz Radio Power)"));
+    } else {
+        Serial.printf(" Wi-Fi Station MAC:    %s\r\n", WiFiManager::getMacAddress().c_str());
+        Serial.printf(" Wi-Fi Network:        '%s' (%s, Mode: %s, RSSI: %d dBm)\r\n",
+                      WiFiManager::getSsid().c_str(),
+                      WiFiManager::isConnected() ? "CONNECTED" : "DISCONNECTED",
+                      WiFiManager::isEapConfigured() ? "WPA2-Enterprise (802.1X PEAP)" : "WPA2-PSK",
+                      WiFiManager::getRssi());
+        if (WiFiManager::isEapConfigured()) {
+            Serial.printf(" EAP User:             %s (Password: %d chars)\r\n", 
+                          WiFiManager::getEapUsername().c_str(), WiFiManager::getEapPasswordLength());
+            if (WiFiManager::getEapIdentity().length() > 0) {
+                Serial.printf(" EAP Outer Identity:   %s\r\n", WiFiManager::getEapIdentity().c_str());
+            } else {
+                Serial.println(F(" EAP Outer Identity:   None (Anonymous/Omitted)"));
+            }
         }
-    }
-    Serial.printf(" Station IP:           %s\r\n", WiFiManager::getIpAddress().c_str());
-    Serial.printf(" NTP Clock Sync:       %s (UTC: %s)\r\n",
-                  WiFiManager::isNtpSynced() ? "SYNCHRONIZED" : "NOT SYNCED",
-                  WiFiManager::getUtcIsoString().c_str());
-    Serial.printf(" Central Server URL:   %s\r\n",
-                  HttpBatchEgress::hasServerUrl() ? HttpBatchEgress::getServerUrl().c_str() : "NOT CONFIGURED");
-    if (HttpBatchEgress::getApiKey().length() > 0) {
-        Serial.println(F(" Central API Key:      CONFIGURED"));
+        Serial.printf(" Station IP:           %s\r\n", WiFiManager::getIpAddress().c_str());
+        Serial.printf(" NTP Clock Sync:       %s (UTC: %s)\r\n",
+                      WiFiManager::isNtpSynced() ? "SYNCHRONIZED" : "NOT SYNCED",
+                      WiFiManager::getUtcIsoString().c_str());
+        Serial.printf(" Central Server URL:   %s\r\n",
+                      HttpBatchEgress::hasServerUrl() ? HttpBatchEgress::getServerUrl().c_str() : "NOT CONFIGURED");
+        if (HttpBatchEgress::getApiKey().length() > 0) {
+            Serial.println(F(" Central API Key:      CONFIGURED"));
+        }
     }
     Serial.printf(" UDP Fallback Target:  %s:%d\r\n", targetServerIP.c_str(), targetServerPort);
     Serial.printf(" ESP-NOW Channel:      %d\r\n", espNowChannel);
     Serial.println(F("------------------------------------------"));
+#if defined(LORA_ONLY_RECEIVER)
+    Serial.println(F(" Ingress Protocols:    Sub-GHz SX1262 LoRa (2.4 GHz BLE/WiFi OFF)"));
+    Serial.printf(" LoRa RX Packets:      %lu\r\n", (unsigned long)loraRxCount);
+#else
     Serial.printf(" ESP-NOW RX Packets:   %lu\r\n", (unsigned long)espnowRxCount);
     Serial.printf(" BLE RX Packets:       %lu\r\n", (unsigned long)bleRxCount);
     Serial.printf(" UDP RX Packets:       %lu\r\n", (unsigned long)udpRxCount);
     Serial.printf(" LoRa RX Packets:      %lu\r\n", (unsigned long)loraRxCount);
+#endif
     Serial.printf(" Total Relayed:        %lu\r\n", (unsigned long)relayedPacketCount);
     Serial.printf(" Active Sensors:       %d\r\n", nodeTracker.getNodeCount());
     Serial.println(F("==========================================\r\n"));
