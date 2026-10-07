@@ -80,7 +80,7 @@ bool HttpBatchEgress::postBatch(const TelemetryItem* items, size_t count) {
         }
 
         // Magnetic Field Readings (nT)
-        char numBuf[32];
+        char numBuf[96];
         snprintf(numBuf, sizeof(numBuf), "\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,",
                  items[i].x, items[i].y, items[i].z);
         payload += numBuf;
@@ -137,8 +137,9 @@ bool HttpBatchEgress::postBatch(const TelemetryItem* items, size_t count) {
         Serial.printf("[HTTP EGRESS SUCCESS] POST %u samples from '%s' to Central Server (HTTP %d)\r\n",
                       (unsigned int)count, nodeId, httpCode);
     } else {
-        Serial.printf("[HTTP EGRESS WARNING] POST to '%s' failed (Code: %d, Error: %s)\r\n",
-                      _serverUrl.c_str(), httpCode, http.errorToString(httpCode).c_str());
+        String resp = http.getString();
+        Serial.printf("[HTTP EGRESS WARNING] POST to '%s' failed (Code: %d, Error: %s, Body: %s)\r\n",
+                      _serverUrl.c_str(), httpCode, http.errorToString(httpCode).c_str(), resp.c_str());
     }
 
     http.end();

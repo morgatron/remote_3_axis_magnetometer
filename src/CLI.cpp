@@ -193,6 +193,10 @@ void CLI::handleCommand(String cmd) {
         Serial.printf("CPU Frequency: %d MHz\r\n", getCpuFrequencyMhz());
         Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
         Serial.print("Batch Burst Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
+#if defined(BOARD_HAS_LORA)
+        extern LoRaStream loraStream;
+        Serial.printf("LoRa SX1262: %s\r\n", loraStream.isInitialized() ? "INITIALIZED" : "NOT INITIALIZED");
+#endif
         Serial.println(_sensor->getStatusString());
     } else if (cmd.startsWith("ID ")) {
         String newID = cmd.substring(3);

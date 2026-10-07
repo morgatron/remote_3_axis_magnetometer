@@ -18,6 +18,24 @@ static Preferences s_wifiPrefs;
 
 void WiFiManager::begin() {
     loadSettings();
+
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        Serial.println(F("\r\n[WIFI EVENT] Associated to AP, negotiating EAP/DHCP..."));
+    }, ARDUINO_EVENT_WIFI_STA_CONNECTED);
+
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        uint8_t reason = info.wifi_sta_disconnected.reason;
+        Serial.printf("\r\n[WIFI EVENT] Disconnected from AP. Reason code: %u (%s)\r\n",
+                      reason, WiFi.disconnectReasonName((wifi_err_reason_t)reason));
+    }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        wifiRelayConnected = true;
+        IPAddress ip = IPAddress(info.got_ip.ip_info.ip.addr);
+        Serial.printf("\r\n[WIFI SUCCESS] Station Connected! Obtained IP address: %s (Gateway: %s, RSSI: %d dBm)\r\n",
+                      ip.toString().c_str(), WiFi.gatewayIP().toString().c_str(), WiFi.RSSI());
+        startNtpSync();
+    }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
 }
 
 void WiFiManager::loadSettings() {
@@ -88,17 +106,28 @@ void WiFiManager::connect() {
 
     if (isEapConfigured()) {
         // WPA2-Enterprise (802.1X PEAP-MSCHAPv2)
-        Serial.printf("[WIFI EAP] Connecting to Enterprise Network '%s' as user '%s'...\r\n",
-                      _ssid.c_str(), _eapUser.c_str());
+        Serial.printf("[WIFI EAP] Connecting to Enterprise Network '%s' as user '%s' (Identity: %s, pass len: %d)...\r\n",
+                      _ssid.c_str(), _eapUser.c_str(), 
+                      _eapIdentity.length() > 0 ? _eapIdentity.c_str() : "None",
+                      (int)_eapPass.length());
         WiFi.mode(WIFI_STA);
 
-        String id = (_eapIdentity.length() > 0) ? _eapIdentity : _eapUser;
-        esp_eap_client_set_identity((const unsigned char*)id.c_str(), id.length());
+        esp_eap_client_clear_ca_cert();
+        esp_eap_client_clear_certificate_and_key();
+        esp_eap_client_set_disable_time_check(true);
+
+        if (_eapIdentity.length() > 0) {
+            esp_eap_client_set_identity((const unsigned char*)_eapIdentity.c_str(), _eapIdentity.length());
+        } else {
+            esp_eap_client_clear_identity();
+        }
+
         esp_eap_client_set_username((const unsigned char*)_eapUser.c_str(), _eapUser.length());
         esp_eap_client_set_password((const unsigned char*)_eapPass.c_str(), _eapPass.length());
         esp_wifi_sta_enterprise_enable();
 
-        WiFi.begin(_ssid.c_str());
+        wl_status_t st = WiFi.begin(_ssid.c_str());
+        Serial.printf("[WIFI EAP] Association requested. Initial status: %d\r\n", (int)st);
     } else {
         // Standard WPA2-Personal (PSK)
         setupSoftAP();
@@ -106,9 +135,9 @@ void WiFiManager::connect() {
         WiFi.begin(_ssid.c_str(), _pass.c_str());
     }
 
-    // Wait up to 10 seconds for association and DHCP lease
+    // Wait up to 35 seconds for association, enterprise handshake, and DHCP lease
     unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start < 10000)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 35000)) {
         delay(500);
         Serial.print(".");
     }
@@ -124,13 +153,13 @@ void WiFiManager::connect() {
         startNtpSync();
     } else {
         wifiRelayConnected = false;
-        Serial.println(F("\r\n[WIFI WARNING] Unable to connect to configured network."));
+        Serial.println(F("\r\n[WIFI WARNING] Unable to connect to configured network within initial timeout. Background retry active."));
     }
 }
 
 void WiFiManager::startNtpSync() {
-    Serial.println(F("[NTP] Initializing network time sync (pool.ntp.org)..."));
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    Serial.println(F("[NTP] Initializing network time sync (ntp.anu.edu.au, pool.ntp.org)..."));
+    configTime(0, 0, "ntp.anu.edu.au", "pool.ntp.org", "time.google.com");
 }
 
 void WiFiManager::update() {
@@ -142,7 +171,6 @@ void WiFiManager::update() {
         return;
     }
 
-    bool wasConnected = wifiRelayConnected;
     wifiRelayConnected = (WiFi.status() == WL_CONNECTED);
 
     // Check NTP sync status
@@ -160,13 +188,28 @@ void WiFiManager::update() {
         _ntpSynced = false;
     }
 
-    // Auto-reconnect if dropped
-    if (!wifiRelayConnected && _ssid.length() > 0 && wasConnected) {
-        Serial.println(F("[WIFI NOTICE] Connection lost. Attempting reconnection..."));
-        if (isEapConfigured()) {
-            WiFi.begin(_ssid.c_str());
-        } else {
-            WiFi.begin(_ssid.c_str(), _pass.c_str());
+    // Auto-reconnect if dropped or not yet connected
+    static uint32_t s_lastReconnectAttemptMs = 0;
+    if (!wifiRelayConnected && _ssid.length() > 0) {
+        if (now - s_lastReconnectAttemptMs >= 30000) {
+            s_lastReconnectAttemptMs = now;
+            Serial.printf("[WIFI NOTICE] Not connected. Attempting connection to '%s'...\r\n", _ssid.c_str());
+            if (isEapConfigured()) {
+                esp_eap_client_clear_ca_cert();
+                esp_eap_client_clear_certificate_and_key();
+                esp_eap_client_set_disable_time_check(true);
+                if (_eapIdentity.length() > 0) {
+                    esp_eap_client_set_identity((const unsigned char*)_eapIdentity.c_str(), _eapIdentity.length());
+                } else {
+                    esp_eap_client_clear_identity();
+                }
+                esp_eap_client_set_username((const unsigned char*)_eapUser.c_str(), _eapUser.length());
+                esp_eap_client_set_password((const unsigned char*)_eapPass.c_str(), _eapPass.length());
+                esp_wifi_sta_enterprise_enable();
+                WiFi.begin(_ssid.c_str());
+            } else {
+                WiFi.begin(_ssid.c_str(), _pass.c_str());
+            }
         }
     }
 }
@@ -213,6 +256,14 @@ String WiFiManager::getEapUsername() {
     return _eapUser;
 }
 
+String WiFiManager::getEapIdentity() {
+    return _eapIdentity;
+}
+
+int WiFiManager::getEapPasswordLength() {
+    return (int)_eapPass.length();
+}
+
 String WiFiManager::getUtcIsoString(uint64_t timestamp_us) {
     time_t sec;
     uint32_t ms;
@@ -255,7 +306,18 @@ void WiFiManager::setEapCredentials(const String& ssid, const String& user, cons
     _pass = "";
     _eapUser = user;
     _eapPass = pass;
-    _eapIdentity = (id.length() > 0) ? id : user;
+    _eapIdentity = id; // Leave empty if not explicitly provided
+    saveSettings();
+}
+
+void WiFiManager::setEapUsername(const String& user, const String& id) {
+    _eapUser = user;
+    _eapIdentity = id;
+    saveSettings();
+}
+
+void WiFiManager::setEapSsid(const String& ssid) {
+    _ssid = ssid;
     saveSettings();
 }
 

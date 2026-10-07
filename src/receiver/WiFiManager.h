@@ -23,10 +23,14 @@ public:
     static int getRssi();
     static String getSsid();
     static String getEapUsername();
+    static String getEapIdentity();
+    static int getEapPasswordLength();
     static String getUtcIsoString(uint64_t timestamp_us = 0);
 
     static void setPskCredentials(const String& ssid, const String& pass);
     static void setEapCredentials(const String& ssid, const String& user, const String& pass, const String& id = "");
+    static void setEapUsername(const String& user, const String& id = "");
+    static void setEapSsid(const String& ssid);
     static void clearEapCredentials();
     static void clearAllCredentials();
 

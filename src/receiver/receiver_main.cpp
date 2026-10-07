@@ -60,7 +60,7 @@ void loadReceiverSettings() {
     targetServerPort = prefs.getUShort("target_port", 9876);
     espNowChannel = prefs.getUChar("channel", 1);
     prefs.end();
-    WiFiManager::loadSettings();
+    WiFiManager::begin();
 }
 
 uint32_t lastOledActivityMs = 0;

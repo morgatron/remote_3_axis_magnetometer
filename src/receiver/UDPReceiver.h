@@ -24,6 +24,7 @@ public:
     }
 
     void poll() override {
+        if (WiFi.status() != WL_CONNECTED) return;
         int packetSize = _udp.parsePacket();
         if (packetSize <= 0) return;
 

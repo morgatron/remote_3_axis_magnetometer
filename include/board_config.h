@@ -26,6 +26,43 @@
 #define LORA_MOSI_PIN 10
 #define LORA_MISO_PIN 11
 
+// Heltec V4 Front-End Module (FEM: GC1109 / KCT8103L) Control Pins
+#define LORA_FEM_PWR_PIN  7   // VFEM_Ctrl (Active-HIGH: enables 3.3V power via TLV75733 LDO)
+#define LORA_FEM_CSD_PIN  2   // PA_CSD (Active-HIGH: enables FEM LNA/PA out of shutdown)
+#define LORA_FEM_CPS_PIN  46  // PA_CPS (Power select: High = +30dBm PA mode, Low = Bypass)
+#define LORA_FEM_CTX_PIN  5   // PA_CTX (V4.3 KCT8103L: LOW = RX LNA mode, HIGH = TX mode)
+
+#elif defined(XIAO_S3_WIO_SX1262) || defined(ARDUINO_XIAO_ESP32S3)
+// Seeed Studio XIAO ESP32-S3 + Wio-SX1262 Mezzanine Board
+#define BOARD_NAME   "Seeed Studio XIAO ESP32-S3 + Wio-SX1262"
+#define BOARD_HAS_LORA 1
+#ifndef LORA_TX_POWER_DBM
+#define LORA_TX_POWER_DBM 2 // +2 dBm for bench testing to avoid saturating Heltec V4 LNA at <1m
+#endif
+
+// Sensor SPI Pins (XIAO D8=SCK, D9=MISO, D10=MOSI)
+#define SCK_PIN      7
+#define MOSI_PIN     9
+#define MISO_PIN     8
+#define CS_PIN       4   // D3 (GPIO4)
+#define DRDY_PIN     3   // D2 (GPIO3)
+#define LED_PIN      21  // User LED on XIAO ESP32-S3 (Active-LOW)
+#define LED_ON       LOW
+#define LED_OFF      HIGH
+#define VBAT_ADC_PIN 1   // GPIO1 (D0 / A0) for Battery ADC
+#define VBAT_DIVIDER_RATIO 2.0f
+
+// LoRa Radio Pins for Seeed Wio-SX1262 (40-pin B2B mezzanine connector)
+#define LORA_CS_PIN        41
+#define LORA_DIO1_PIN      39
+#define LORA_RST_PIN       42
+#define LORA_BUSY_PIN      40
+#define LORA_RF_SWITCH_PIN 38
+#define LORA_SCK_PIN       7
+#define LORA_MISO_PIN      8
+#define LORA_MOSI_PIN      9
+#define LORA_TCXO_VOLTAGE  1.8f
+
 #elif defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
 // Seeed Studio XIAO ESP32-C6 Pinout (in Supermini carrier socket)
 #define BOARD_NAME   "Seeed Studio XIAO ESP32-C6"

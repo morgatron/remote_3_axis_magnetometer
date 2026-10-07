@@ -26,6 +26,10 @@ void ReceiverCLI::process() {
                 handleCommand(_inputBuffer);
                 _inputBuffer = "";
             }
+        } else if (c == '\b' || c == 0x7F) {
+            if (_inputBuffer.length() > 0) {
+                _inputBuffer.remove(_inputBuffer.length() - 1);
+            }
         } else {
             _inputBuffer += c;
         }
@@ -45,6 +49,9 @@ void ReceiverCLI::printHelp() {
     Serial.println(F("   MAC                 - Print Wi-Fi Station MAC address"));
     Serial.println(F("   WIFI <ssid> [pass]  - Set standard WPA2-PSK WiFi credentials"));
     Serial.println(F("   EAP <ssid> <user> <pass> [id] - Set WPA2-Enterprise (802.1X PEAP)"));
+    Serial.println(F("   EAP USER <username> - Update Enterprise username (keeps password, sets ID to None)"));
+    Serial.println(F("   EAP ID <id|NONE>    - Update Enterprise outer identity"));
+    Serial.println(F("   EAP SSID <ssid>     - Switch Enterprise SSID (e.g. ANU-Secure, eduroam)"));
     Serial.println(F("   EAP CLEAR           - Clear Enterprise credentials"));
     Serial.println(F("   SERVER <url>        - Set Central Server URL (e.g. http://10.28.x.x:8000/api/v1/telemetry/batch)"));
     Serial.println(F("   APIKEY <key>        - Set Central Server X-API-Key token"));
@@ -82,7 +89,13 @@ void ReceiverCLI::printStatus() {
                   WiFiManager::isEapConfigured() ? "WPA2-Enterprise (802.1X PEAP)" : "WPA2-PSK",
                   WiFiManager::getRssi());
     if (WiFiManager::isEapConfigured()) {
-        Serial.printf(" EAP User:             %s\r\n", WiFiManager::getEapUsername().c_str());
+        Serial.printf(" EAP User:             %s (Password: %d chars)\r\n", 
+                      WiFiManager::getEapUsername().c_str(), WiFiManager::getEapPasswordLength());
+        if (WiFiManager::getEapIdentity().length() > 0) {
+            Serial.printf(" EAP Outer Identity:   %s\r\n", WiFiManager::getEapIdentity().c_str());
+        } else {
+            Serial.println(F(" EAP Outer Identity:   None (Anonymous/Omitted)"));
+        }
     }
     Serial.printf(" Station IP:           %s\r\n", WiFiManager::getIpAddress().c_str());
     Serial.printf(" NTP Clock Sync:       %s (UTC: %s)\r\n",
@@ -211,6 +224,39 @@ void ReceiverCLI::handleCommand(const String &cmd) {
         if (upperArgs == "CLEAR" || upperArgs == "OFF") {
             WiFiManager::clearEapCredentials();
             Serial.println(F("[CLI] WPA2-Enterprise credentials cleared."));
+        } else if (upperArgs.startsWith("USER ")) {
+            String newUser = args.substring(5);
+            newUser.trim();
+            if (newUser.startsWith("\"") && newUser.endsWith("\"") && newUser.length() >= 2) {
+                newUser = newUser.substring(1, newUser.length() - 1);
+            }
+            WiFiManager::setEapUsername(newUser, "");
+            Serial.printf("[CLI] Updated EAP User to '%s' (Identity: None). Rebooting...\r\n", newUser.c_str());
+            delay(500);
+            ESP.restart();
+        } else if (upperArgs.startsWith("ID ")) {
+            String newId = args.substring(3);
+            newId.trim();
+            if (newId.equalsIgnoreCase("NONE") || newId.equalsIgnoreCase("CLEAR")) {
+                newId = "";
+            } else if (newId.startsWith("\"") && newId.endsWith("\"") && newId.length() >= 2) {
+                newId = newId.substring(1, newId.length() - 1);
+            }
+            WiFiManager::setEapUsername(WiFiManager::getEapUsername(), newId);
+            Serial.printf("[CLI] Updated EAP Outer Identity to '%s'. Rebooting...\r\n", 
+                          newId.length() > 0 ? newId.c_str() : "None");
+            delay(500);
+            ESP.restart();
+        } else if (upperArgs.startsWith("SSID ")) {
+            String newSsid = args.substring(5);
+            newSsid.trim();
+            if (newSsid.startsWith("\"") && newSsid.endsWith("\"") && newSsid.length() >= 2) {
+                newSsid = newSsid.substring(1, newSsid.length() - 1);
+            }
+            WiFiManager::setEapSsid(newSsid);
+            Serial.printf("[CLI] Updated EAP Network SSID to '%s'. Rebooting...\r\n", newSsid.c_str());
+            delay(500);
+            ESP.restart();
         } else {
             String ssid = "", user = "", pass = "", id = "";
             int idx = 0;
@@ -247,6 +293,9 @@ void ReceiverCLI::handleCommand(const String &cmd) {
                 }
             }
             if (ssid.length() > 0 && user.length() > 0 && pass.length() > 0) {
+                if (user.startsWith("\"") && user.endsWith("\"") && user.length() >= 2) user = user.substring(1, user.length() - 1);
+                if (pass.startsWith("\"") && pass.endsWith("\"") && pass.length() >= 2) pass = pass.substring(1, pass.length() - 1);
+                if (id.startsWith("\"") && id.endsWith("\"") && id.length() >= 2) id = id.substring(1, id.length() - 1);
                 WiFiManager::setEapCredentials(ssid, user, pass, id);
                 Serial.printf("[CLI] Configured WPA2-Enterprise: SSID '%s', User '%s'\r\n", ssid.c_str(), user.c_str());
                 Serial.println(F("[CLI] Rebooting to apply Enterprise Wi-Fi connection..."));
@@ -290,9 +339,15 @@ void ReceiverCLI::handleCommand(const String &cmd) {
                     pass = "";
                 }
             }
+            if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
+                ssid = ssid.substring(1, ssid.length() - 1);
+            }
+            if (pass.startsWith("\"") && pass.endsWith("\"") && pass.length() >= 2) {
+                pass = pass.substring(1, pass.length() - 1);
+            }
             if (ssid.length() > 0) {
                 WiFiManager::setPskCredentials(ssid, pass);
-                Serial.printf("[CLI] Configured External WiFi SSID: '%s'\r\n", ssid.c_str());
+                Serial.printf("[CLI] Configured External WiFi SSID: '%s' (Pass len: %d)\r\n", ssid.c_str(), (int)pass.length());
                 if (_saveCallback) _saveCallback();
                 Serial.println(F("[CLI] Rebooting to apply WiFi connection..."));
                 delay(500);

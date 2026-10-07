@@ -55,7 +55,8 @@ void PowerManager::powerDownRadio() {
     }
 #endif
     _radioPoweredDown = true;
-    if (g_dfsEnabled && getCpuFrequencyMhz() > 40) {
+    bool wifiActive = (egressModeConfig == MODE_EGRESS_WIFI || egressModeConfig == MODE_EGRESS_BOTH);
+    if (!wifiActive && g_dfsEnabled && getCpuFrequencyMhz() > 40) {
         setCpuFrequencyMhz(40);
     }
     if (g_debugScheduler) {

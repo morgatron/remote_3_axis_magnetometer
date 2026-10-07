@@ -45,8 +45,12 @@ uint16_t udpListenPort = 9876;
 #include "LoRaStream.h"
 #endif
 
+#ifndef DEFAULT_OUTPUT_MODE
+#define DEFAULT_OUTPUT_MODE MODE_BLE
+#endif
+
 enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3, MODE_LORA = 4 };
-uint8_t outputMode = MODE_BOTH; // Default: MODE_BOTH (Serial & BLE Coded PHY telemetry active)
+uint8_t outputMode = DEFAULT_OUTPUT_MODE;
 uint8_t batchSizeConfig = 10; // Default: 10 samples per Coded PHY burst (range 1-10)
 String wifiSSID = "";
 String wifiPass = "";
@@ -166,7 +170,7 @@ void loadSettings() {
     sensorTypeConfig = prefs.getUChar("sensor_type", 1);
     current_rate = prefs.getUChar("rate", DEFAULT_RATE);
     current_downsample = prefs.getUShort("downsample", (sensorTypeConfig == 1) ? 1000 : 1);
-    outputMode = prefs.getUChar("mode", MODE_BLE);
+    outputMode = prefs.getUChar("mode", DEFAULT_OUTPUT_MODE);
     batchSizeConfig = prefs.getUChar("batch_size", 10);
     if (batchSizeConfig < 1 || batchSizeConfig > 10) batchSizeConfig = 10;
     cycleCountConfig = prefs.getUShort("cycle_count", 200);
@@ -178,11 +182,15 @@ void loadSettings() {
     prefs.end();
 
     if (deviceID.length() == 0) {
+#if defined(DEFAULT_DEVICE_ID)
+        deviceID = String(DEFAULT_DEVICE_ID);
+#else
         uint8_t mac[6];
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
         char macBuf[32];
         snprintf(macBuf, sizeof(macBuf), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
         deviceID = String(macBuf);
+#endif
     }
 
     if (sensorTypeConfig == 0) {
@@ -364,7 +372,8 @@ void checkBleBurstTransmission() {
 void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
     #if defined(BOARD_HAS_LORA)
     if (!loraStream.isInitialized()) {
-        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
+        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg);
     }
     if (!loraStream.isInitialized()) return;
 
@@ -382,8 +391,9 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
         pkt.y_nT = y;
         pkt.z_nT = z;
         pkt.status = getTelemetryStatusWord(status);
-        loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
+        bool ok = loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
         loraStream.sleep();
+        Serial.printf("[LORA TX] Single packet sent (result: %s)\r\n", ok ? "OK" : "FAIL");
     } else {
         // Batched telemetry mode (e.g. 10 samples per burst every 10 seconds)
         uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
@@ -402,10 +412,12 @@ void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y,
                 batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
                 float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
                 batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
-                loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
+                bool ok = loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
                 loraStream.sleep(); // Put SX1262 into ultra-low-power sleep during idle gap
                 loraRingBuffer.confirmAck(countToSend);
                 lastLoraBurstTxMs = millis();
+                Serial.printf("[LORA TX] Sent batch of %d samples from '%s' (result: %s, unacked: %d)\r\n",
+                              countToSend, deviceID.c_str(), ok ? "OK" : "FAIL", loraRingBuffer.getUnackedCount());
             }
         }
     }
@@ -655,7 +667,8 @@ void setup() {
 
     if (outputMode == MODE_LORA) {
         #if defined(BOARD_HAS_LORA)
-        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN)) {
+        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
+        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg)) {
             loraStream.sleep(); // Deep sleep SX1262 until first packet transmission
         }
         #endif

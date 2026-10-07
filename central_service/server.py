@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Union
 
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -175,6 +176,12 @@ async def api_key_middleware(request: Request, call_next):
                     content={"detail": "Unauthorized: Invalid or missing X-API-Key header"}
                 )
     return await call_next(request)
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    raw_body = await request.body()
+    logger.error(f"[VALIDATION ERROR 422] Errors: {exc.errors()} | Raw body: {raw_body.decode('utf-8', errors='replace')}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(STATIC_DIR):
