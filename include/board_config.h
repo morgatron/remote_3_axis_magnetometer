@@ -8,7 +8,7 @@
 #define BOARD_NAME   "Heltec WiFi LoRa 32 V4 (ESP32-S3)"
 #define BOARD_HAS_LORA 1
 #ifndef LORA_TX_POWER_DBM
-#define LORA_TX_POWER_DBM 20 // +20 dBm for high-power antenna testing
+#define LORA_TX_POWER_DBM 0 // 0 dBm SX1262 drive level + ~20 dB FEM PA gain = ~+20 dBm total radiated EIRP
 #endif
 #define SCK_PIN      41
 #define MOSI_PIN     42

@@ -137,6 +137,13 @@ bool LoRaStream::setOutputPower(int8_t power) {
 bool LoRaStream::transmit(const uint8_t *data, size_t len) {
     if (!_initialized || len == 0 || data == nullptr || !pRadio) return false;
     
+#if defined(LORA_FEM_PWR_PIN) && (LORA_FEM_PWR_PIN >= 0)
+    digitalWrite(LORA_FEM_PWR_PIN, HIGH); // Power up Heltec V4 FEM 3.3V LDO regulator (TLV75733)
+    delay(2);                             // Allow LDO rail to stabilize
+#endif
+#if defined(LORA_FEM_CSD_PIN) && (LORA_FEM_CSD_PIN >= 0)
+    digitalWrite(LORA_FEM_CSD_PIN, HIGH); // Wake FEM out of shutdown
+#endif
 #if defined(LORA_FEM_CPS_PIN) && (LORA_FEM_CPS_PIN >= 0)
     digitalWrite(LORA_FEM_CPS_PIN, HIGH); // Enable +30dBm PA mode on Heltec V4.2
 #endif
