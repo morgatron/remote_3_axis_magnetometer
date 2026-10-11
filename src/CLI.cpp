@@ -9,8 +9,8 @@
 #endif
 #include <WiFi.h>
 
-CLI::CLI(Magnetometer*& sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)())
-    : _sensor(sensor), _streaming(streaming), _current_rate(current_rate), _saveCallback(saveCallback) {}
+CLI::CLI(Magnetometer*& sensor, SensorConfig& config, ChangeCallback changeCallback)
+    : _sensor(sensor), _config(config), _changeCallback(changeCallback) {}
 
 void CLI::begin() {
     _inputBuffer.reserve(64);
@@ -58,52 +58,54 @@ void CLI::handleCommand(String cmd) {
         printHelp();
     } else if (cmd.startsWith("BATCH ")) {
         uint8_t count = (uint8_t)cmd.substring(6).toInt();
-        if (count >= 1 && count <= 10) {
-            extern uint8_t batchSizeConfig;
-            batchSizeConfig = count;
-            if (_saveCallback) _saveCallback();
-            Serial.printf("Batch Burst Size set to %d samples per burst (BLE & LoRa).\r\n", batchSizeConfig);
+        if (count >= 1 && count <= 18) {
+            _config.batchSize = count;
+            _config.save();
+            if (_changeCallback) _changeCallback();
+            Serial.printf("Batch Burst Size set to %d samples per burst (BLE & LoRa).\r\n", _config.batchSize);
         } else {
-            Serial.println("Usage: BATCH <1-10> (Set samples per burst for BLE & LoRa)");
+            Serial.println("Usage: BATCH <1-18> (Set samples per burst for BLE & LoRa)");
         }
     } else if (cmd == "STREAM ON" || cmd == "START") {
-        _streaming = true;
-        if (_saveCallback) _saveCallback();
+        _config.streaming = true;
+        _config.save();
+        if (_changeCallback) _changeCallback();
         Serial.println("Streaming enabled.");
     } else if (cmd == "STREAM OFF" || cmd == "STOP") {
-        _streaming = false;
-        if (_saveCallback) _saveCallback();
+        _config.streaming = false;
+        _config.save();
+        if (_changeCallback) _changeCallback();
         Serial.println("Streaming disabled.");
     } else if (cmd.startsWith("RATE ")) {
         String valStr = cmd.substring(5);
-        _current_rate = (uint8_t)strtol(valStr.c_str(), NULL, 16);
+        _config.rate = (uint8_t)strtol(valStr.c_str(), NULL, 16);
         extern TaskHandle_t adcTaskHandle;
         extern void IRAM_ATTR drdyISR();
-        extern uint8_t sensorTypeConfig;
         if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
         detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
-        _sensor->setContinuousMode(true, _current_rate);
-        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
+        _sensor->setContinuousMode(true, _config.rate);
+        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, _config.sensorType == 0 ? RISING : FALLING);
         if (adcTaskHandle) vTaskResume(adcTaskHandle);
-        if (_saveCallback) _saveCallback();
+        _config.save();
+        if (_changeCallback) _changeCallback();
         Serial.print("Rate set to 0x");
-        Serial.println(_current_rate, HEX);
+        Serial.println(_config.rate, HEX);
     } else if (cmd.startsWith("CYCLE ")) {
         String valStr = cmd.substring(6);
         uint16_t cycle = (uint16_t)valStr.toInt();
         if (_sensor->getSensorName() == "RM3100" && cycle > 0) {
             extern TaskHandle_t adcTaskHandle;
             extern void IRAM_ATTR drdyISR();
-            extern uint16_t cycleCountConfig;
             if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
             detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
 
             static_cast<RM3100*>(_sensor)->setCycleCount(cycle, cycle, cycle);
-            cycleCountConfig = cycle;
+            _config.cycleCount = cycle;
 
             attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
             if (adcTaskHandle) vTaskResume(adcTaskHandle);
-            if (_saveCallback) _saveCallback();
+            _config.save();
+            if (_changeCallback) _changeCallback();
             float gain = 0.3671f * (float)cycle + 1.5f;
             Serial.printf("Cycle count set to %u (Gain: %.2f LSB/uT, Scale: %.2f nT/LSB)\r\n",
                           cycle, gain, 1000.0f / gain);
@@ -113,39 +115,37 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("DOWNSAMPLE ")) {
         uint16_t ratio = (uint16_t)cmd.substring(11).toInt();
         if (ratio >= 1) {
-            extern uint16_t current_downsample;
-            current_downsample = ratio;
-            if (_saveCallback) _saveCallback();
+            _config.downsample = ratio;
+            _config.save();
+            if (_changeCallback) _changeCallback();
             Serial.print("Downsample ratio set to ");
-            Serial.print(current_downsample);
+            Serial.print(_config.downsample);
             Serial.println("x");
         }
     } else if (cmd.startsWith("SENSOR ")) {
         String sub = cmd.substring(7);
         sub.trim();
-        extern uint8_t sensorTypeConfig;
         extern Magnetometer* sensor;
         extern RM3100 sensorRM3100;
         extern FLC100_ADS131 sensorFLC100;
         extern MockSensor sensorMock;
-        uint8_t newType = sensorTypeConfig;
+        uint8_t newType = _config.sensorType;
         if (sub == "RM3100" || sub == "0") {
-            newType = 0;
+            newType = SENSOR_TYPE_RM3100;
             sensor = &sensorRM3100;
-            _current_rate = 0x96; // RM3100 default rate 37 Hz
+            _config.rate = 0x96; // RM3100 default rate 37 Hz
         } else if (sub == "FLC100" || sub == "ADS131" || sub == "1") {
-            newType = 1;
+            newType = SENSOR_TYPE_FLC100;
             sensor = &sensorFLC100;
-            _current_rate = 0x06; // ADS131 default rate 1 kSPS
-            extern uint16_t current_downsample;
-            if (current_downsample <= 1) current_downsample = 1000;
+            _config.rate = 0x06; // ADS131 default rate 1 kSPS
+            if (_config.downsample <= 1) _config.downsample = 1000;
         } else if (sub == "MOCK" || sub == "2") {
-            newType = 2;
+            newType = SENSOR_TYPE_MOCK;
             sensor = &sensorMock;
-            _current_rate = 0x95; // Synthetic Mock default rate 75 Hz
+            _config.rate = 0x95; // Synthetic Mock default rate 75 Hz
         }
         extern void IRAM_ATTR drdyISR();
-        sensorTypeConfig = newType;
+        _config.sensorType = newType;
         _sensor = sensor;
 
         Serial.print("Active sensor set to: ");
@@ -155,45 +155,34 @@ void CLI::handleCommand(String cmd) {
         SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
         pinMode(DRDY_PIN, INPUT_PULLUP);
 
-        if (newType == 2) {
+        if (newType == SENSOR_TYPE_MOCK) {
             detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
         }
 
         if (!sensor->begin()) {
             Serial.println("Warning: Selected sensor failed initialization!");
         } else {
-            if (newType == 1) {
+            if (newType == SENSOR_TYPE_FLC100) {
                 static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
                 attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
-            } else if (newType == 0) {
+            } else if (newType == SENSOR_TYPE_RM3100) {
                 static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
                 attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
             }
-            sensor->setContinuousMode(true, _current_rate);
+            sensor->setContinuousMode(true, _config.rate);
             Serial.println("Sensor initialized and continuous mode started.");
         }
-        if (_saveCallback) _saveCallback();
+        _config.save();
+        if (_changeCallback) _changeCallback();
     } else if (cmd == "STATUS") {
-        extern String deviceID;
-        extern uint8_t batchSizeConfig;
-        extern uint8_t outputMode;
-        extern uint16_t current_downsample;
-        Serial.print("Device ID: "); Serial.println(deviceID);
-        Serial.print("Streaming: "); Serial.println(_streaming ? "ON" : "OFF");
+        Serial.print("Device ID: "); Serial.println(_config.deviceID);
+        Serial.print("Streaming: "); Serial.println(_config.streaming ? "ON" : "OFF");
         Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
-        Serial.print("Output Mode: ");
-        switch(outputMode) {
-            case 0: Serial.println("SERIAL"); break;
-            case 1: Serial.println("WIFI"); break;
-            case 2: Serial.println("BOTH (Serial+WiFi)"); break;
-            case 3: Serial.println("BLE (Bluetooth 5.0 Long Range)"); break;
-            case 4: Serial.println("LORA"); break;
-            default: Serial.println(outputMode); break;
-        }
-        Serial.print("Downsample: "); Serial.print(current_downsample); Serial.println("x");
+        Serial.print("Output Mode: "); Serial.println(_config.getModeString());
+        Serial.print("Downsample: "); Serial.print(_config.downsample); Serial.println("x");
         Serial.printf("CPU Frequency: %d MHz\r\n", getCpuFrequencyMhz());
-        Serial.print("Rate Code: 0x"); Serial.println(_current_rate, HEX);
-        Serial.print("Batch Burst Size: "); Serial.print(batchSizeConfig); Serial.println(" samples/burst");
+        Serial.print("Rate Code: 0x"); Serial.println(_config.rate, HEX);
+        Serial.print("Batch Burst Size: "); Serial.print(_config.batchSize); Serial.println(" samples/burst");
 #if defined(BOARD_HAS_LORA)
         extern LoRaStream loraStream;
         Serial.printf("LoRa SX1262: %s (TX: +%d dBm)\r\n", 
@@ -218,10 +207,10 @@ void CLI::handleCommand(String cmd) {
         String newID = cmd.substring(3);
         newID.trim();
         if (newID.length() > 0) {
-            extern String deviceID;
-            deviceID = newID;
-            Serial.print("Device ID set to "); Serial.println(deviceID);
-            if (_saveCallback) _saveCallback();
+            _config.deviceID = newID;
+            _config.save();
+            Serial.print("Device ID set to "); Serial.println(_config.deviceID);
+            if (_changeCallback) _changeCallback();
         }
     } else if (cmd == "TEST ON") {
         if (_sensor->getSensorName() == "FLC100-ADS131E08") {
@@ -239,7 +228,8 @@ void CLI::handleCommand(String cmd) {
         uint8_t gain = (uint8_t)cmd.substring(5).toInt();
         if (_sensor->getSensorName() == "FLC100-ADS131E08") {
             static_cast<FLC100_ADS131*>(_sensor)->setCalibration(2.4f, 20.0f, gain);
-            if (_saveCallback) _saveCallback();
+            _config.save();
+            if (_changeCallback) _changeCallback();
             Serial.print("PGA Gain set to ");
             Serial.println(gain);
         }
@@ -254,23 +244,23 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("SSID ")) {
         String ssid = originalCmd.substring(5);
         ssid.trim();
-        extern String wifiSSID, wifiPass;
         extern void connectWiFi();
-        wifiSSID = ssid;
-        Serial.print("WiFi SSID set to "); Serial.println(wifiSSID);
-        if (_saveCallback) _saveCallback();
-        if (wifiSSID.length() > 0 && wifiPass.length() > 0) {
+        _config.wifiSSID = ssid;
+        _config.save();
+        Serial.print("WiFi SSID set to "); Serial.println(_config.wifiSSID);
+        if (_changeCallback) _changeCallback();
+        if (_config.wifiSSID.length() > 0 && _config.wifiPass.length() > 0) {
             connectWiFi();
         }
     } else if (cmd.startsWith("PASS ")) {
         String pass = originalCmd.substring(5);
         pass.trim();
-        extern String wifiSSID, wifiPass;
         extern void connectWiFi();
-        wifiPass = pass;
+        _config.wifiPass = pass;
+        _config.save();
         Serial.println("WiFi Password updated.");
-        if (_saveCallback) _saveCallback();
-        if (wifiSSID.length() > 0 && wifiPass.length() > 0) {
+        if (_changeCallback) _changeCallback();
+        if (_config.wifiSSID.length() > 0 && _config.wifiPass.length() > 0) {
             connectWiFi();
         }
     } else if (cmd.startsWith("WIFI ")) {
@@ -307,14 +297,14 @@ void CLI::handleCommand(String cmd) {
             rawSub.trim();
             int spaceIdx = rawSub.lastIndexOf(' ');
             if (spaceIdx > 0) {
-                extern String wifiSSID, wifiPass;
                 extern void connectWiFi();
-                wifiSSID = rawSub.substring(0, spaceIdx);
-                wifiPass = rawSub.substring(spaceIdx + 1);
-                wifiSSID.trim();
-                wifiPass.trim();
+                _config.wifiSSID = rawSub.substring(0, spaceIdx);
+                _config.wifiPass = rawSub.substring(spaceIdx + 1);
+                _config.wifiSSID.trim();
+                _config.wifiPass.trim();
+                _config.save();
                 connectWiFi();
-                _saveCallback();
+                if (_changeCallback) _changeCallback();
             } else {
                 Serial.println("Usage: WIFI <ssid> <password>");
             }
@@ -322,10 +312,10 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("TARGET ")) {
         String ipStr = cmd.substring(7);
         ipStr.trim();
-        extern IPAddress targetIP;
-        if (targetIP.fromString(ipStr)) {
-            Serial.print("Target IP set to "); Serial.println(targetIP);
-            _saveCallback();
+        if (_config.targetIP.fromString(ipStr)) {
+            _config.save();
+            Serial.print("Target IP set to "); Serial.println(_config.targetIP);
+            if (_changeCallback) _changeCallback();
         } else {
             Serial.println("Invalid IP address format. Example: TARGET 192.168.1.100");
         }
@@ -333,47 +323,43 @@ void CLI::handleCommand(String cmd) {
         String modeStr = cmd.substring(5);
         modeStr.trim();
         modeStr.toUpperCase();
-        extern uint8_t outputMode;
-        extern String wifiSSID;
         extern bool wifiConnected;
         extern void connectWiFi();
-
         extern BLEStream bleStream;
         extern void configurePowerManagement();
 
         if (modeStr == "SERIAL") {
-            outputMode = 0;
+            _config.outputMode = MODE_SERIAL;
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
             bleStream.powerDownModem();
             configurePowerManagement();
             Serial.println("Output Mode set to SERIAL.");
         } else if (modeStr == "WIFI") {
-            outputMode = 1;
+            _config.outputMode = MODE_WIFI;
             bleStream.powerDownModem();
             configurePowerManagement();
             Serial.println("Output Mode set to WIFI.");
-            if (wifiSSID.length() > 0 && !wifiConnected) {
+            if (_config.wifiSSID.length() > 0 && !wifiConnected) {
                 connectWiFi();
             }
         } else if (modeStr == "BOTH") {
-            outputMode = 2;
+            _config.outputMode = MODE_BOTH;
             bleStream.powerDownModem();
             configurePowerManagement();
             Serial.println("Output Mode set to BOTH (Serial & WiFi).");
-            if (wifiSSID.length() > 0 && !wifiConnected) {
+            if (_config.wifiSSID.length() > 0 && !wifiConnected) {
                 connectWiFi();
             }
         } else if (modeStr == "BLE") {
-            outputMode = 3;
+            _config.outputMode = MODE_BLE;
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
-            extern String deviceID;
-            bleStream.begin(deviceID);
+            bleStream.begin(_config.deviceID);
             configurePowerManagement();
             Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
         } else if (modeStr == "LORA") {
-            outputMode = 4;
+            _config.outputMode = MODE_LORA;
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
             bleStream.powerDownModem();
@@ -388,9 +374,11 @@ void CLI::handleCommand(String cmd) {
         } else {
             Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE|LORA>");
         }
-        _saveCallback();
+        _config.save();
+        if (_changeCallback) _changeCallback();
     } else if (cmd == "SAVE") {
-        if (_saveCallback) _saveCallback();
+        _config.save();
+        if (_changeCallback) _changeCallback();
         Serial.println("Configuration saved to NVS.");
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");

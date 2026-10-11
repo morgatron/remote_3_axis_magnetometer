@@ -3,18 +3,20 @@
 
 #include <Arduino.h>
 #include "Magnetometer.h"
+#include "SensorConfig.h"
 
 class CLI {
 public:
+    using ChangeCallback = void (*)();
+
     /**
      * @brief Construct a new CLI object
      * 
-     * @param sensor Pointer to the active magnetometer sensor
-     * @param streaming Reference to the streaming state variable
-     * @param current_rate Reference to the current sampling rate variable
-     * @param saveCallback Function pointer to call when settings need to be saved
+     * @param sensor Reference to active magnetometer sensor pointer
+     * @param config Reference to sensor configuration object
+     * @param changeCallback Function pointer called when settings are modified
      */
-    CLI(Magnetometer*& sensor, bool& streaming, uint8_t& current_rate, void (*saveCallback)());
+    CLI(Magnetometer*& sensor, SensorConfig& config, ChangeCallback changeCallback = nullptr);
 
     /**
      * @brief Initialize the CLI (e.g., reserve buffer)
@@ -38,12 +40,10 @@ public:
     void handleCommand(String cmd);
 
 private:
-    
     Magnetometer*& _sensor;
-    bool& _streaming;
-    uint8_t& _current_rate;
-    void (*_saveCallback)();
+    SensorConfig& _config;
+    ChangeCallback _changeCallback;
     String _inputBuffer;
 };
 
-#endif
+#endif // CLI_H

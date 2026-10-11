@@ -19,43 +19,37 @@ RM3100 sensorRM3100(CS_PIN, DRDY_PIN);
 FLC100_ADS131 sensorFLC100(CS_PIN, DRDY_PIN, RESET_PIN);
 MockSensor sensorMock;
 
-uint8_t sensorTypeConfig = 1; // 0 = RM3100, 1 = FLC100-ADS131E08, 2 = Mock Sensor
-const uint8_t DEFAULT_RATE = 0x95;
-
+#include "SensorConfig.h"
 #include "CLI.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
-Preferences prefs;
 Magnetometer* sensor = &sensorFLC100;
 
-bool streaming = true;
-uint8_t current_rate = DEFAULT_RATE;
-uint16_t current_downsample = 1;
-uint16_t cycleCountConfig = 200; // RM3100 cycle count (saved to NVS)
+// Centralized SensorConfig references for main.cpp
+bool &streaming = g_sensorConfig.streaming;
+uint8_t &current_rate = g_sensorConfig.rate;
+uint16_t &current_downsample = g_sensorConfig.downsample;
+uint8_t &sensorTypeConfig = g_sensorConfig.sensorType;
+uint8_t &outputMode = g_sensorConfig.outputMode;
+uint8_t &batchSizeConfig = g_sensorConfig.batchSize;
+uint16_t &cycleCountConfig = g_sensorConfig.cycleCount;
+String &wifiSSID = g_sensorConfig.wifiSSID;
+String &wifiPass = g_sensorConfig.wifiPass;
+IPAddress &targetIP = g_sensorConfig.targetIP;
+uint16_t &targetPort = g_sensorConfig.targetPort;
+uint16_t &udpListenPort = g_sensorConfig.udpListenPort;
+String &deviceID = g_sensorConfig.deviceID;
+
+bool wifiConnected = false;
 
 // WiFi & UDP Globals
 WiFiUDP udp;
-IPAddress targetIP(255, 255, 255, 255); // Default broadcast
-uint16_t targetPort = 9876;
-uint16_t udpListenPort = 9876;
 
 #include "BLEStream.h"
 #if defined(BOARD_HAS_LORA)
 #include "LoRaStream.h"
 #endif
-
-#ifndef DEFAULT_OUTPUT_MODE
-#define DEFAULT_OUTPUT_MODE MODE_BLE
-#endif
-
-enum OutputMode { MODE_SERIAL = 0, MODE_WIFI = 1, MODE_BOTH = 2, MODE_BLE = 3, MODE_LORA = 4 };
-uint8_t outputMode = DEFAULT_OUTPUT_MODE;
-uint8_t batchSizeConfig = 10; // Default: 10 samples per Coded PHY burst (range 1-10)
-String wifiSSID = "";
-String wifiPass = "";
-bool wifiConnected = false;
-String deviceID = "";
 
 #if defined(ESP_PLATFORM)
 portMUX_TYPE g_spiFrequencyMux = portMUX_INITIALIZER_UNLOCKED;
@@ -91,19 +85,7 @@ void configurePowerManagement() {
 }
 
 void saveSettings() {
-    prefs.begin("mcu_v0", false);
-    prefs.putBool("streaming", streaming);
-    prefs.putUChar("rate", current_rate);
-    prefs.putUShort("downsample", current_downsample);
-    prefs.putUChar("sensor_type", sensorTypeConfig);
-    prefs.putUChar("mode", outputMode);
-    prefs.putUChar("batch_size", batchSizeConfig);
-    prefs.putUShort("cycle_count", cycleCountConfig);
-    prefs.putString("ssid", wifiSSID);
-    prefs.putString("pass", wifiPass);
-    prefs.putString("target", targetIP.toString());
-    prefs.putString("device_id", deviceID);
-    prefs.end();
+    g_sensorConfig.save();
 }
 
 static char udpBatchBuf[4096];
@@ -166,32 +148,7 @@ void connectWiFi() {
 }
 
 void loadSettings() {
-    prefs.begin("mcu_v0", true);
-    sensorTypeConfig = prefs.getUChar("sensor_type", 255);
-    current_rate = prefs.getUChar("rate", DEFAULT_RATE);
-    current_downsample = prefs.getUShort("downsample", (sensorTypeConfig == 1) ? 1000 : 1);
-    outputMode = prefs.getUChar("mode", DEFAULT_OUTPUT_MODE);
-    batchSizeConfig = prefs.getUChar("batch_size", 10);
-    if (batchSizeConfig < 1 || batchSizeConfig > 10) batchSizeConfig = 10;
-    cycleCountConfig = prefs.getUShort("cycle_count", 200);
-    wifiSSID = prefs.getString("ssid", "");
-    wifiPass = prefs.getString("pass", "");
-    String tIP = prefs.getString("target", "255.255.255.255");
-    targetIP.fromString(tIP);
-    deviceID = prefs.getString("device_id", "");
-    prefs.end();
-
-    if (deviceID.length() == 0) {
-#if defined(DEFAULT_DEVICE_ID)
-        deviceID = String(DEFAULT_DEVICE_ID);
-#else
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        char macBuf[32];
-        snprintf(macBuf, sizeof(macBuf), "NODE_%02X%02X%02X", mac[3], mac[4], mac[5]);
-        deviceID = String(macBuf);
-#endif
-    }
+    g_sensorConfig.load();
 
     if (sensorTypeConfig == 0) {
         sensor = &sensorRM3100;
@@ -456,7 +413,7 @@ void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, flo
     }
 }
 
-CLI serialCLI(sensor, streaming, current_rate, saveSettings);
+CLI serialCLI(sensor, g_sensorConfig);
 
 volatile bool drdyInterruptFlag = false;
 volatile uint64_t lastDrdyTimeUs = 0;
