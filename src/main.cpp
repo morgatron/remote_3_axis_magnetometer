@@ -43,8 +43,11 @@ String &deviceID = g_sensorConfig.deviceID;
 
 bool wifiConnected = false;
 
+#include "TelemetryEgress.h"
+
 // WiFi & UDP Globals
 WiFiUDP udp;
+TelemetryEgress telemetry(g_sensorConfig, sensor, udp, wifiConnected);
 
 #include "BLEStream.h"
 #if defined(BOARD_HAS_LORA)
@@ -88,18 +91,8 @@ void saveSettings() {
     g_sensorConfig.save();
 }
 
-static char udpBatchBuf[4096];
-static size_t udpBatchLen = 0;
-static uint32_t lastUdpFlushMs = 0;
-
 void flushUdpBatch() {
-    if (udpBatchLen > 0 && wifiConnected) {
-        udp.beginPacket(targetIP, targetPort);
-        udp.write((const uint8_t*)udpBatchBuf, udpBatchLen);
-        udp.endPacket();
-        udpBatchLen = 0;
-        lastUdpFlushMs = millis();
-    }
+    telemetry.flushUdp();
 }
 
 void connectWiFi() {
@@ -178,239 +171,8 @@ void loadSettings() {
     }
 }
 
-volatile uint32_t sampleCounter = 0;
-float lastBmag_nT = 0.0f;
-
-void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len);
-
-inline uint16_t getTelemetryStatusWord(uint32_t rawStatus = 0) {
-    if (sensorTypeConfig == 2 || sensor == &sensorMock) {
-        return STATUS_FLAG_MOCK;
-    }
-    if (sensorTypeConfig == 1) {
-        return (uint16_t)(rawStatus & 0x7FFE) | STATUS_FLAG_FLC100;
-    }
-    if (sensorTypeConfig == 0) {
-        return (uint16_t)(rawStatus & 0x7FFD) | STATUS_FLAG_RM3100;
-    }
-    return 0x0000;
-}
-
-void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
-    sampleCounter = sampleCounter + 1;
-    lastBmag_nT = sqrtf(x * x + y * y + z * z);
-    char line[160];
-    uint32_t finalStatus = status;
-    if (sensorTypeConfig == 2 || sensor == &sensorMock) {
-        finalStatus = 0x800000 | STATUS_FLAG_MOCK;
-    }
-    float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
-    float tVal = (tC > -200.0f && tC < 200.0f) ? tC : 0.0f;
-    int len = snprintf(line, sizeof(line), "%s,%llu,%.2f,%.2f,%.2f,%06X,%.1f,%.2f\n",
-                       deviceID.c_str(), (unsigned long long)ts, x, y, z,
-                       (unsigned int)(finalStatus & 0xFFFFFF), tVal, g_cachedBatteryVoltage);
-    sendOutputSample(deviceID, ts, x, y, z, finalStatus, line, (size_t)len);
-}
-
-
-static TelemetryRingBuffer telemetryRingBuffer;
-static uint8_t lastSentCount = 0;
-static uint32_t nextBurstTxMs = 0;
-static bool isTxActive = false;
-static uint32_t txStartMs = 0;
-static uint8_t txRetryCount = 0;
-static uint32_t activeBurstDurationMs = 1000;
-
-static bool isModemWarming = false;
-static uint32_t warmupStartMs = 0;
-const uint32_t BLE_WARMUP_MS = 150; // 150ms pre-burst warmup for RF PLL and baseband stabilization
-
-#ifndef DEBUG_BLE_TX
-#define DEBUG_BLE_TX 1 // Set to 0 (or pass -D DEBUG_BLE_TX=0 in platformio.ini) to disable TX debug prints
-#endif
-
-#if DEBUG_BLE_TX
-  #define TX_DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
-#else
-  #define TX_DEBUG_PRINTF(...) ((void)0)
-#endif
-
-void checkBleAckTask() {
-    if (isTxActive) {
-        bool acked = bleStream.isBatchAcked();
-        uint32_t elapsed = millis() - txStartMs;
-        uint32_t timeoutMs = activeBurstDurationMs + 100;
-        if ((elapsed >= 250 && acked) || (elapsed >= timeoutMs)) {
-            bleStream.stopAdvertising();
-            bleStream.powerDownModem();
-#if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
-            if (outputMode == MODE_BLE) {
-                safeSetCpuFrequencyMhz(40);
-            }
-#endif
-            isTxActive = false;
-            isModemWarming = false;
-            if (acked) {
-                TX_DEBUG_PRINTF("[TX] Burst ACKED! Cleared %d samples.\n", lastSentCount);
-                txRetryCount = 0;
-                telemetryRingBuffer.confirmAck(lastSentCount);
-            } else {
-                txRetryCount++;
-                TX_DEBUG_PRINTF("[TX] Burst NOT ACKED (timeout). Retry count: %d. Backlog: %d\n", txRetryCount, telemetryRingBuffer.getUnackedCount());
-            }
-            lastSentCount = 0;
-        }
-    }
-}
-
-void processBleTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
-    // Insert new sample into circular buffer (3.0 hours capacity @ 1 Hz)
-    uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
-    telemetryRingBuffer.push(ts_ms, x, y, z);
-}
-
-void checkBleBurstTransmission() {
-    checkBleAckTask();
-
-    if (!isTxActive && (outputMode == MODE_BLE || outputMode == MODE_BOTH)) {
-        uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 18) ? batchSizeConfig : 10;
-        uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
-        uint16_t unacked = telemetryRingBuffer.getUnackedCount();
-        bool readyToSend = (unacked > 0 && (unacked >= targetBatchSize || !streaming));
-
-        // Phase 1: Pre-burst Wakeup (150 ms lead time)
-        // Re-enables the BLE controller and RF PLL so oscillators stabilize before packet transmission
-        if (!isModemWarming && readyToSend && (millis() + BLE_WARMUP_MS >= nextBurstTxMs)) {
-            safeSetCpuFrequencyMhz(80);
-            bleStream.powerUpModem(deviceID);
-            isModemWarming = true;
-            warmupStartMs = millis();
-        }
-
-        // Phase 2: Transmit Burst once target time is reached and stabilization period has completed
-        if (isModemWarming && (millis() >= nextBurstTxMs || (millis() - warmupStartMs >= BLE_WARMUP_MS))) {
-            uint8_t countToPack = targetBatchSize;
-            if (unacked > targetBatchSize) {
-                countToPack = min((uint16_t)18, unacked);
-            }
-
-            SensorBatchPacket batch;
-            uint8_t countToSend = telemetryRingBuffer.getBatch(batch, deviceID.c_str(), countToPack);
-            if (countToSend > 0) {
-                batch.status = getTelemetryStatusWord();
-                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during burst wakeup
-                float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
-                batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
-
-                bleStream.clearBatchAck();
-                activeBurstDurationMs = (txRetryCount > 0) ? 2500 : BLEConfig::BURST_DURATION_MS;
-                bleStream.notifyBatchBinary(batch, activeBurstDurationMs);
-                lastSentCount = countToSend;
-
-                // Drift-free periodic schedule on exact 10.0s grid
-                nextBurstTxMs += minBurstIntervalMs;
-                if (nextBurstTxMs <= millis() + BLE_WARMUP_MS) {
-                    nextBurstTxMs = millis() + minBurstIntervalMs;
-                }
-                txStartMs = millis();
-                isTxActive = true;
-                isModemWarming = false;
-            } else {
-                bleStream.powerDownModem();
-#if !defined(CONFIG_IDF_TARGET_ESP32C6) && !defined(ARDUINO_ARCH_ESP32C6)
-                if (outputMode == MODE_BLE) {
-                    safeSetCpuFrequencyMhz(40);
-                }
-#endif
-                isModemWarming = false;
-            }
-        }
-    }
-}
-
-void processLoRaTelemetry(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line) {
-    #if defined(BOARD_HAS_LORA)
-    if (!loraStream.isInitialized()) {
-        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
-        loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg);
-    }
-    if (!loraStream.isInitialized()) return;
-
-    uint8_t targetBatchSize = (batchSizeConfig >= 1 && batchSizeConfig <= 10) ? batchSizeConfig : 10;
-
-    if (targetBatchSize == 1) {
-        // Direct unbuffered single-sample transmission (1 packet per sample)
-        SensorBinaryPacket pkt;
-        memset(&pkt, 0, sizeof(pkt));
-        size_t idLen = deviceID.length();
-        if (idLen > sizeof(pkt.device_id)) idLen = sizeof(pkt.device_id);
-        memcpy(pkt.device_id, deviceID.c_str(), idLen);
-        pkt.packet_age_ms = 0; // Transmitted immediately upon sample capture
-        pkt.x_nT = x;
-        pkt.y_nT = y;
-        pkt.z_nT = z;
-        pkt.status = getTelemetryStatusWord(status);
-        bool ok = loraStream.transmit((const uint8_t*)&pkt, sizeof(pkt));
-        loraStream.sleep();
-        Serial.printf("[LORA TX] Single packet sent (result: %s)\r\n", ok ? "OK" : "FAIL");
-    } else {
-        // Batched telemetry mode (e.g. 10 samples per burst every 10 seconds)
-        uint32_t ts_ms = (uint32_t)(ts / 1000ULL);
-        static TelemetryRingBuffer loraRingBuffer;
-        loraRingBuffer.push(ts_ms, x, y, z);
-
-        static uint32_t lastLoraBurstTxMs = 0;
-        uint32_t minBurstIntervalMs = (uint32_t)targetBatchSize * 1000UL;
-        uint16_t unacked = loraRingBuffer.getUnackedCount();
-
-        if (unacked > 0 && (unacked >= targetBatchSize || !streaming) && (millis() - lastLoraBurstTxMs >= minBurstIntervalMs)) {
-            SensorBatchPacket batch;
-            uint8_t countToSend = loraRingBuffer.getBatch(batch, deviceID.c_str(), targetBatchSize);
-            if (countToSend > 0) {
-                batch.status = getTelemetryStatusWord(status);
-                batch.vbat_mv = sampleBatteryMilliVolts(); // Sample fresh ADC reading during 10s burst wakeup
-                float tC = (sensor != nullptr) ? sensor->readTemperatureC() : -999.0f;
-                batch.temp_c_x100 = (tC > -200.0f && tC < 200.0f) ? (int16_t)roundf(tC * 100.0f) : 0x7FFF;
-                bool ok = loraStream.transmit((const uint8_t*)&batch, sizeof(batch));
-                loraStream.sleep(); // Put SX1262 into ultra-low-power sleep during idle gap
-                loraRingBuffer.confirmAck(countToSend);
-                lastLoraBurstTxMs = millis();
-                Serial.printf("[LORA TX] Sent batch of %d samples from '%s' (result: %s, unacked: %d)\r\n",
-                              countToSend, deviceID.c_str(), ok ? "OK" : "FAIL", loraRingBuffer.getUnackedCount());
-            }
-        }
-    }
-    #endif
-}
-
-void sendOutputSample(const String &deviceID, uint64_t ts, float x, float y, float z, uint32_t status, const char *line, size_t len) {
-    // Non-blocking Serial output (prevents USB CDC buffer stalls when host monitor is not attached)
-    if (outputMode == MODE_SERIAL || outputMode == MODE_BOTH) {
-        if (Serial.availableForWrite() >= len) {
-            Serial.print(line);
-        }
-    }
-
-    if ((outputMode == MODE_WIFI || outputMode == MODE_BOTH) && wifiConnected) {
-        if (udpBatchLen + len >= sizeof(udpBatchBuf) - 1) {
-            flushUdpBatch();
-        }
-        memcpy(udpBatchBuf + udpBatchLen, line, len);
-        udpBatchLen += len;
-
-        // Flush UDP batch every 1000 ms (1 Hz packet rate)
-        if (millis() - lastUdpFlushMs >= 1000) {
-            flushUdpBatch();
-        }
-    }
-
-    if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
-        processBleTelemetry(deviceID, ts, x, y, z, status, line);
-    }
-
-    if (outputMode == MODE_LORA) {
-        processLoRaTelemetry(deviceID, ts, x, y, z, status, line);
-    }
+inline void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t status = 0xC00000) {
+    telemetry.sendSample(ts, x, y, z, status);
 }
 
 CLI serialCLI(sensor, g_sensorConfig);
@@ -644,27 +406,14 @@ void setup() {
     digitalWrite(LED_PIN, LED_OFF);
 #endif
 
-    if (outputMode == MODE_LORA) {
-        #if defined(BOARD_HAS_LORA)
-        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
-        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg)) {
-            loraStream.sleep(); // Deep sleep SX1262 until first packet transmission
-        }
-        #endif
-    }
-
-    // Stagger initial burst transmission based on MAC address to prevent multi-sensor collisions
-    uint8_t staMac[6];
-    esp_read_mac(staMac, ESP_MAC_WIFI_STA);
-    uint32_t slotOffsetMs = (staMac[5] % 8) * 1250;
-    nextBurstTxMs = millis() + slotOffsetMs + 10000;
+    telemetry.begin();
 
     // Enable Automatic Tickless Light Sleep and Dynamic Frequency Scaling
     configurePowerManagement();
 }
 
 void loop() {
-    checkBleBurstTransmission();
+    telemetry.update();
 
 #if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
     // Check USER/PRG button press (GPIO 0) to wake OLED screen
@@ -698,8 +447,8 @@ void loop() {
             oledDisplay.updateSensorScreen(
                 deviceID.c_str(),
                 sensor ? sensor->getSensorName().c_str() : "NONE",
-                lastBmag_nT,
-                sampleCounter,
+                telemetry.getLastBmag(),
+                telemetry.getSampleCount(),
                 getBatteryVoltage(), // 0ms instantaneous read from cache
                 modeNames[outputMode % 5]
             );
@@ -744,12 +493,8 @@ void loop() {
         }
     }
 
-    // WiFi UDP Command Listening & Low-Latency Batch Flushing
+    // WiFi UDP Command Listening
     if (wifiConnected) {
-        if (udpBatchLen > 0 && (millis() - lastUdpFlushMs >= 50)) {
-            flushUdpBatch();
-        }
-
         int packetSize = udp.parsePacket();
         if (packetSize) {
             targetIP = udp.remoteIP(); // Auto-discover desktop app's IP address
