@@ -1,4 +1,5 @@
 #include "SensorManager.h"
+#include "TelemetryEgress.h"
 #include "board_config.h"
 #include <SPI.h>
 #include <esp_timer.h>
@@ -238,6 +239,11 @@ bool SensorManager::switchSensor(uint8_t newType) {
         _config.rate = 0x95; // Default Mock rate 75 Hz
     }
 
+    _sumX = 0.0f;
+    _sumY = 0.0f;
+    _sumZ = 0.0f;
+    _decimationCounter = 0;
+
     Serial.print("Active sensor set to: ");
     Serial.println(_activeSensor->getSensorName());
 
@@ -306,4 +312,42 @@ bool SensorManager::setTestSignal(bool enable) {
         return true;
     }
     return false;
+}
+
+void SensorManager::processSamples(TelemetryEgress& telemetry) {
+    if (!_config.streaming || _activeSensor == nullptr) return;
+
+    float scaleFactor = _activeSensor->getScaleFactor();
+    ADCSample sample;
+    while (_activeSensor->popSample(sample)) {
+        float x = (float)sample.x * scaleFactor;
+        float y = (float)sample.y * scaleFactor;
+        float z = (float)sample.z * scaleFactor;
+        uint32_t status = sample.status;
+        uint64_t ts = sample.ts;
+
+        uint16_t decimationFactor = (_config.sensorType == SENSOR_TYPE_MOCK) ? 1 : _config.downsample;
+        if (decimationFactor <= 1) {
+            // Direct streaming without averaging
+            telemetry.sendSample(ts, x, y, z, status);
+        } else {
+            _sumX += x;
+            _sumY += y;
+            _sumZ += z;
+            _decimationCounter++;
+
+            if (_decimationCounter >= decimationFactor) {
+                float avgX = _sumX / (float)_decimationCounter;
+                float avgY = _sumY / (float)_decimationCounter;
+                float avgZ = _sumZ / (float)_decimationCounter;
+
+                _sumX = 0.0f;
+                _sumY = 0.0f;
+                _sumZ = 0.0f;
+                _decimationCounter = 0;
+
+                telemetry.sendSample(ts, avgX, avgY, avgZ, status);
+            }
+        }
+    }
 }

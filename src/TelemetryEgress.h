@@ -14,7 +14,8 @@ void safeSetCpuFrequencyMhz(uint32_t freq);
 
 /**
  * @brief Manages dispatching of magnetometer telemetry across all enabled outputs:
- * Serial, WiFi UDP (batched), BLE Coded PHY bursts, and LoRa packets/bursts.
+ * Serial, WiFi UDP (batched), BLE Coded PHY bursts, and LoRa packets/bursts,
+ * as well as output mode lifecycle and power management.
  */
 class TelemetryEgress {
 public:
@@ -23,13 +24,11 @@ public:
      * 
      * @param config Reference to global SensorConfig
      * @param sensor Reference to active Magnetometer pointer
-     * @param udp Reference to WiFiUDP socket
-     * @param wifiConnected Reference to wifiConnected boolean flag
      */
-    TelemetryEgress(SensorConfig& config, Magnetometer*& sensor, WiFiUDP& udp, const bool& wifiConnected);
+    TelemetryEgress(SensorConfig& config, Magnetometer*& sensor);
 
     /**
-     * @brief Initialize telemetry subsystems (stagger initial burst schedule, sleep LoRa).
+     * @brief Initialize telemetry subsystems and active output mode (BLE, WiFi, LoRa).
      */
     void begin();
 
@@ -56,6 +55,58 @@ public:
     void flushUdp();
 
     /**
+     * @brief Apply current output mode configuration, managing radio/modem power states.
+     */
+    bool applyMode();
+
+    /**
+     * @brief Set and apply output mode (MODE_SERIAL, MODE_WIFI, MODE_BOTH, MODE_BLE, MODE_LORA).
+     */
+    bool setOutputMode(uint8_t mode);
+
+    /**
+     * @brief Attempt connection to configured WiFi network.
+     */
+    bool connectWiFi();
+
+    /**
+     * @brief Disconnect WiFi and turn off WiFi radio.
+     */
+    void disconnectWiFi();
+
+    /**
+     * @brief Check whether WiFi is currently connected.
+     */
+    bool isWifiConnected() const { return _wifiConnected; }
+
+    /**
+     * @brief Configure Dynamic Frequency Scaling and Tickless Light Sleep for active mode.
+     */
+    void configurePowerManagement();
+
+    /**
+     * @brief Access UDP socket for command reception.
+     */
+    WiFiUDP& getUdp() { return _udp; }
+
+#if defined(BOARD_HAS_LORA)
+    /**
+     * @brief Configure LoRa SX1262 transmission power in dBm.
+     */
+    void setLoRaPower(int8_t powerDbm);
+
+    /**
+     * @brief Check whether LoRa radio is initialized.
+     */
+    bool isLoRaInitialized() const;
+
+    /**
+     * @brief Get active LoRa transmit power in dBm.
+     */
+    int8_t getLoRaPower() const;
+#endif
+
+    /**
      * @brief Get cumulative sample count processed.
      */
     uint32_t getSampleCount() const { return _sampleCounter; }
@@ -79,8 +130,9 @@ private:
 
     SensorConfig& _config;
     Magnetometer*& _sensor;
-    WiFiUDP& _udp;
-    const bool& _wifiConnected;
+
+    WiFiUDP _udp;
+    bool _wifiConnected = false;
 
     uint32_t _sampleCounter = 0;
     float _lastBmag = 0.0f;

@@ -8,6 +8,8 @@
 #include "FLC100_ADS131.h"
 #include "MockSensor.h"
 
+class TelemetryEgress;
+
 /**
  * @brief Manages magnetometer hardware lifecycle, auto-probing, continuous acquisition task,
  * DRDY interrupt servicing, and bus recovery.
@@ -74,6 +76,13 @@ public:
     void recoverSensor();
 
     /**
+     * @brief Pop samples from active sensor ring buffer, apply scaling,
+     * perform downsampling averaging, and dispatch through TelemetryEgress.
+     * Call regularly in loop().
+     */
+    void processSamples(TelemetryEgress& telemetry);
+
+    /**
      * @brief Get pointer to active sensor.
      */
     Magnetometer* getActiveSensor() const { return _activeSensor; }
@@ -101,6 +110,12 @@ private:
 
     Magnetometer* _activeSensor;
     uint32_t _lastWdCheckMs = 0;
+
+    // Decimation moving average accumulators
+    float _sumX = 0.0f;
+    float _sumY = 0.0f;
+    float _sumZ = 0.0f;
+    uint16_t _decimationCounter = 0;
 };
 
 #endif // SENSOR_MANAGER_H

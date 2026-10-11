@@ -19,18 +19,26 @@
 
 static const uint32_t BLE_WARMUP_MS = 150; // 150ms pre-burst warmup for RF PLL and baseband stabilization
 
-TelemetryEgress::TelemetryEgress(SensorConfig& config, Magnetometer*& sensor, WiFiUDP& udp, const bool& wifiConnected)
-    : _config(config), _sensor(sensor), _udp(udp), _wifiConnected(wifiConnected) {}
+#if defined(ESP_PLATFORM)
+portMUX_TYPE g_spiFrequencyMux = portMUX_INITIALIZER_UNLOCKED;
+
+void safeSetCpuFrequencyMhz(uint32_t freq) {
+    if (getCpuFrequencyMhz() == freq) return;
+    portENTER_CRITICAL(&g_spiFrequencyMux);
+    setCpuFrequencyMhz(freq);
+    portEXIT_CRITICAL(&g_spiFrequencyMux);
+}
+#else
+void safeSetCpuFrequencyMhz(uint32_t freq) {
+    setCpuFrequencyMhz(freq);
+}
+#endif
+
+TelemetryEgress::TelemetryEgress(SensorConfig& config, Magnetometer*& sensor)
+    : _config(config), _sensor(sensor) {}
 
 void TelemetryEgress::begin() {
-#if defined(BOARD_HAS_LORA)
-    if (_config.outputMode == MODE_LORA) {
-        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
-        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg)) {
-            loraStream.sleep(); // Deep sleep SX1262 until first packet transmission
-        }
-    }
-#endif
+    applyMode();
 
     // Stagger initial burst transmission based on MAC address to prevent multi-sensor collisions
     uint8_t staMac[6];
@@ -38,6 +46,138 @@ void TelemetryEgress::begin() {
     uint32_t slotOffsetMs = (staMac[5] % 8) * 1250;
     _nextBurstTxMs = millis() + slotOffsetMs + 10000;
 }
+
+bool TelemetryEgress::applyMode() {
+    if (_config.outputMode == MODE_SERIAL) {
+        disconnectWiFi();
+        bleStream.powerDownModem();
+        configurePowerManagement();
+        Serial.println("Output Mode set to SERIAL.");
+    } else if (_config.outputMode == MODE_WIFI) {
+        bleStream.powerDownModem();
+        configurePowerManagement();
+        Serial.println("Output Mode set to WIFI.");
+        if (_config.wifiSSID.length() > 0 && !_wifiConnected) {
+            connectWiFi();
+        }
+    } else if (_config.outputMode == MODE_BOTH) {
+        bleStream.powerDownModem();
+        configurePowerManagement();
+        Serial.println("Output Mode set to BOTH (Serial & WiFi).");
+        if (_config.wifiSSID.length() > 0 && !_wifiConnected) {
+            connectWiFi();
+        }
+    } else if (_config.outputMode == MODE_BLE) {
+        disconnectWiFi();
+        bleStream.begin(_config.deviceID);
+        delay(150); // Allow NimBLE memory allocation to settle cleanly
+        bleStream.powerDownModem();
+        configurePowerManagement();
+        Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
+    } else if (_config.outputMode == MODE_LORA) {
+        disconnectWiFi();
+        bleStream.powerDownModem();
+#if defined(BOARD_HAS_LORA)
+        LoRaConfig cfg = {915.0f, 125.0f, 7, 5, LORA_TX_POWER_DBM, 8};
+        if (loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, nullptr, cfg)) {
+            loraStream.sleep(); // Deep sleep SX1262 until first packet transmission
+        }
+#endif
+        configurePowerManagement();
+        Serial.println("Output Mode set to LORA (SX1262 LoRa 915MHz).");
+    }
+    return true;
+}
+
+bool TelemetryEgress::setOutputMode(uint8_t mode) {
+    _config.outputMode = mode;
+    return applyMode();
+}
+
+bool TelemetryEgress::connectWiFi() {
+    if (_config.wifiSSID.length() == 0) return false;
+
+    Serial.println("\r\n==========================================");
+    Serial.printf("[WIFI DEBUG] Initiating connection to SSID: '%s'...\r\n", _config.wifiSSID.c_str());
+
+    WiFi.disconnect(true);
+    delay(100);
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_POWER_15dBm); // Cap TX power to 15dBm to prevent 3.3V power supply dips
+    WiFi.begin(_config.wifiSSID.c_str(), _config.wifiPass.c_str());
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start < 12000)) {
+        delay(500);
+        wl_status_t status = WiFi.status();
+        Serial.print("[WIFI DEBUG] Connecting... State=");
+        Serial.print((int)status);
+        if (status == WL_NO_SSID_AVAIL) Serial.println(" (SSID Not Found in 2.4GHz scan)");
+        else if (status == WL_CONNECT_FAILED) Serial.println(" (Connection Failed - Check Password)");
+        else if (status == WL_DISCONNECTED) Serial.println(" (Associating...)");
+        else Serial.println();
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        _wifiConnected = true;
+        Serial.println("[WIFI SUCCESS] Connected to network!");
+        Serial.print("  Local IP:    "); Serial.println(WiFi.localIP());
+        Serial.print("  Subnet Mask: "); Serial.println(WiFi.subnetMask());
+        Serial.print("  Gateway IP:  "); Serial.println(WiFi.gatewayIP());
+        Serial.printf("  RSSI Signal: %d dBm\r\n", WiFi.RSSI());
+        Serial.print("  Target IP:   "); Serial.println(_config.targetIP);
+        _udp.begin(_config.udpListenPort);
+        Serial.printf("  UDP Active on Port %u\r\n", _config.udpListenPort);
+        Serial.println("==========================================\r\n");
+        return true;
+    } else {
+        _wifiConnected = false;
+        Serial.println("[WIFI ERROR] Connection timed out after 12 seconds!");
+        Serial.println("  Check SSID spelling, WPA2 password, or 2.4GHz band availability.");
+        Serial.println("==========================================\r\n");
+        return false;
+    }
+}
+
+void TelemetryEgress::disconnectWiFi() {
+    WiFi.mode(WIFI_OFF);
+    _wifiConnected = false;
+}
+
+void TelemetryEgress::configurePowerManagement() {
+#if defined(ESP_PLATFORM)
+#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
+    // ESP32-C6 Bluetooth baseband & hardware encryption controller require active PLL (minimum 80 MHz)
+    safeSetCpuFrequencyMhz(80);
+    Serial.printf("[POWER] ESP32-C6 Low-Power Mode: CPU @ %d MHz (PLL active, Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
+#else
+    if (_config.outputMode == MODE_BLE) {
+        safeSetCpuFrequencyMhz(40);
+        Serial.printf("[POWER] Low-Power BLE Mode: CPU @ %d MHz (Modem OFF between bursts).\r\n", getCpuFrequencyMhz());
+    } else {
+        safeSetCpuFrequencyMhz(80);
+        Serial.printf("[POWER] CPU Frequency set to %d MHz (80MHz APB retained, zero SPI latency).\r\n", getCpuFrequencyMhz());
+    }
+#endif
+#endif
+}
+
+#if defined(BOARD_HAS_LORA)
+void TelemetryEgress::setLoRaPower(int8_t powerDbm) {
+    if (loraStream.isInitialized()) {
+        loraStream.setOutputPower(powerDbm);
+        Serial.printf("LoRa Transmit Power set to +%d dBm.\r\n", powerDbm);
+    }
+}
+
+bool TelemetryEgress::isLoRaInitialized() const {
+    return loraStream.isInitialized();
+}
+
+int8_t TelemetryEgress::getLoRaPower() const {
+    return loraStream.getOutputPower();
+}
+#endif
 
 uint16_t TelemetryEgress::getStatusWord(uint32_t rawStatus) const {
     if (_config.sensorType == SENSOR_TYPE_MOCK || (_sensor != nullptr && _sensor->getSensorName().indexOf("Mock") >= 0)) {

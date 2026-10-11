@@ -1,13 +1,10 @@
 #include "CLI.h"
 #include "board_config.h"
-#include "BLEStream.h"
-#if defined(BOARD_HAS_LORA)
-#include "LoRaStream.h"
-#endif
-#include <WiFi.h>
 
-CLI::CLI(SensorManager& sensorManager, SensorConfig& config, ChangeCallback changeCallback)
-    : _sensorManager(sensorManager), _config(config), _changeCallback(changeCallback) {}
+CLI::CLI(SensorManager& sensorManager, TelemetryEgress& telemetry, SensorConfig& config, 
+         ChangeCallback changeCallback, ActivityCallback activityCallback)
+    : _sensorManager(sensorManager), _telemetry(telemetry), _config(config), 
+      _changeCallback(changeCallback), _activityCallback(activityCallback) {}
 
 void CLI::begin() {
     _inputBuffer.reserve(64);
@@ -41,10 +38,7 @@ void CLI::printHelp() {
 }
 
 void CLI::handleCommand(String cmd) {
-#if defined(HELTEC_V4) || defined(ARDUINO_heltec_wifi_lora_32_V3)
-    extern uint32_t lastOledActivityMs;
-    lastOledActivityMs = millis(); // Refresh OLED wake timer upon user CLI interaction
-#endif
+    if (_activityCallback) _activityCallback();
 
     String originalCmd = cmd;
     originalCmd.trim();
@@ -127,18 +121,15 @@ void CLI::handleCommand(String cmd) {
         Serial.print("Rate Code: 0x"); Serial.println(_config.rate, HEX);
         Serial.print("Batch Burst Size: "); Serial.print(_config.batchSize); Serial.println(" samples/burst");
 #if defined(BOARD_HAS_LORA)
-        extern LoRaStream loraStream;
         Serial.printf("LoRa SX1262: %s (TX: +%d dBm)\r\n", 
-                      loraStream.isInitialized() ? "INITIALIZED" : "NOT INITIALIZED",
-                      loraStream.getOutputPower());
+                      _telemetry.isLoRaInitialized() ? "INITIALIZED" : "NOT INITIALIZED",
+                      _telemetry.getLoRaPower());
 #endif
     } else if (cmd.startsWith("POWER ")) {
         int8_t pwr = (int8_t)cmd.substring(6).toInt();
         if (pwr >= -9 && pwr <= 22) {
 #if defined(BOARD_HAS_LORA)
-            extern LoRaStream loraStream;
-            loraStream.setOutputPower(pwr);
-            Serial.printf("LoRa Transmit Power set to +%d dBm.\r\n", pwr);
+            _telemetry.setLoRaPower(pwr);
 #else
             Serial.println("LoRa hardware not supported on this board.");
 #endif
@@ -182,24 +173,22 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("SSID ")) {
         String ssid = originalCmd.substring(5);
         ssid.trim();
-        extern void connectWiFi();
         _config.wifiSSID = ssid;
         _config.save();
         Serial.print("WiFi SSID set to "); Serial.println(_config.wifiSSID);
         if (_changeCallback) _changeCallback();
         if (_config.wifiSSID.length() > 0 && _config.wifiPass.length() > 0) {
-            connectWiFi();
+            _telemetry.connectWiFi();
         }
     } else if (cmd.startsWith("PASS ")) {
         String pass = originalCmd.substring(5);
         pass.trim();
-        extern void connectWiFi();
         _config.wifiPass = pass;
         _config.save();
         Serial.println("WiFi Password updated.");
         if (_changeCallback) _changeCallback();
         if (_config.wifiSSID.length() > 0 && _config.wifiPass.length() > 0) {
-            connectWiFi();
+            _telemetry.connectWiFi();
         }
     } else if (cmd.startsWith("WIFI ")) {
         String rawSub = originalCmd.substring(5);
@@ -207,7 +196,6 @@ void CLI::handleCommand(String cmd) {
         if (rawSub.length() > 0 && rawSub.charAt(0) == '"') {
             int closeQuote = rawSub.indexOf('"', 1);
             if (closeQuote > 1) {
-                extern void connectWiFi();
                 _config.wifiSSID = rawSub.substring(1, closeQuote);
                 String rest = rawSub.substring(closeQuote + 1);
                 rest.trim();
@@ -219,7 +207,7 @@ void CLI::handleCommand(String cmd) {
                 _config.wifiSSID.trim();
                 _config.wifiPass.trim();
                 _config.save();
-                connectWiFi();
+                _telemetry.connectWiFi();
                 if (_changeCallback) _changeCallback();
             } else {
                 Serial.println("Usage: WIFI \"SSID with spaces\" \"Password\"");
@@ -228,13 +216,12 @@ void CLI::handleCommand(String cmd) {
             rawSub.trim();
             int spaceIdx = rawSub.lastIndexOf(' ');
             if (spaceIdx > 0) {
-                extern void connectWiFi();
                 _config.wifiSSID = rawSub.substring(0, spaceIdx);
                 _config.wifiPass = rawSub.substring(spaceIdx + 1);
                 _config.wifiSSID.trim();
                 _config.wifiPass.trim();
                 _config.save();
-                connectWiFi();
+                _telemetry.connectWiFi();
                 if (_changeCallback) _changeCallback();
             } else {
                 Serial.println("Usage: WIFI <ssid> <password>");
@@ -254,52 +241,17 @@ void CLI::handleCommand(String cmd) {
         String modeStr = cmd.substring(5);
         modeStr.trim();
         modeStr.toUpperCase();
-        extern bool wifiConnected;
-        extern void connectWiFi();
-        extern BLEStream bleStream;
-        extern void configurePowerManagement();
 
         if (modeStr == "SERIAL") {
-            _config.outputMode = MODE_SERIAL;
-            WiFi.mode(WIFI_OFF);
-            wifiConnected = false;
-            bleStream.powerDownModem();
-            configurePowerManagement();
-            Serial.println("Output Mode set to SERIAL.");
+            _telemetry.setOutputMode(MODE_SERIAL);
         } else if (modeStr == "WIFI") {
-            _config.outputMode = MODE_WIFI;
-            bleStream.powerDownModem();
-            configurePowerManagement();
-            Serial.println("Output Mode set to WIFI.");
-            if (_config.wifiSSID.length() > 0 && !wifiConnected) {
-                connectWiFi();
-            }
+            _telemetry.setOutputMode(MODE_WIFI);
         } else if (modeStr == "BOTH") {
-            _config.outputMode = MODE_BOTH;
-            bleStream.powerDownModem();
-            configurePowerManagement();
-            Serial.println("Output Mode set to BOTH (Serial & WiFi).");
-            if (_config.wifiSSID.length() > 0 && !wifiConnected) {
-                connectWiFi();
-            }
+            _telemetry.setOutputMode(MODE_BOTH);
         } else if (modeStr == "BLE") {
-            _config.outputMode = MODE_BLE;
-            WiFi.mode(WIFI_OFF);
-            wifiConnected = false;
-            bleStream.begin(_config.deviceID);
-            configurePowerManagement();
-            Serial.println("Output Mode set to BLE (Bluetooth 5.0 Long Range).");
+            _telemetry.setOutputMode(MODE_BLE);
         } else if (modeStr == "LORA") {
-            _config.outputMode = MODE_LORA;
-            WiFi.mode(WIFI_OFF);
-            wifiConnected = false;
-            bleStream.powerDownModem();
-            #if defined(BOARD_HAS_LORA)
-            extern LoRaStream loraStream;
-            loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-            #endif
-            configurePowerManagement();
-            Serial.println("Output Mode set to LORA (SX1262 LoRa 915MHz).");
+            _telemetry.setOutputMode(MODE_LORA);
         } else {
             Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE|LORA>");
         }
