@@ -6,25 +6,20 @@
 #include "board_config.h"
 #include "TelemetryRingBuffer.h"
 
-#include "RM3100.h"
-#include "FLC100_ADS131.h"
-#include "MockSensor.h"
 #include "OLEDDisplay.h"
+#include "SensorConfig.h"
+#include "SensorManager.h"
 
 float g_cachedBatteryVoltage = 0.0f;
 
 void configurePowerManagement();
 
-RM3100 sensorRM3100(CS_PIN, DRDY_PIN);
-FLC100_ADS131 sensorFLC100(CS_PIN, DRDY_PIN, RESET_PIN);
-MockSensor sensorMock;
+SensorManager sensorManager(g_sensorConfig);
+Magnetometer*& sensor = sensorManager.getSensorRef();
 
-#include "SensorConfig.h"
 #include "CLI.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
-
-Magnetometer* sensor = &sensorFLC100;
 
 // Centralized SensorConfig references for main.cpp
 bool &streaming = g_sensorConfig.streaming;
@@ -143,14 +138,6 @@ void connectWiFi() {
 void loadSettings() {
     g_sensorConfig.load();
 
-    if (sensorTypeConfig == 0) {
-        sensor = &sensorRM3100;
-    } else if (sensorTypeConfig == 1) {
-        sensor = &sensorFLC100;
-    } else if (sensorTypeConfig == 2) {
-        sensor = &sensorMock;
-    }
-
     if (outputMode == MODE_BLE || outputMode == MODE_BOTH) {
         bleStream.begin(deviceID);
         delay(150); // Allow NimBLE BTDM controller memory allocation to complete cleanly before Wi-Fi init
@@ -175,67 +162,7 @@ inline void sendOutputSample(uint64_t ts, float x, float y, float z, uint32_t st
     telemetry.sendSample(ts, x, y, z, status);
 }
 
-CLI serialCLI(sensor, g_sensorConfig);
-
-volatile bool drdyInterruptFlag = false;
-volatile uint64_t lastDrdyTimeUs = 0;
-volatile uint32_t lastDrdyIntervalUs = 0;
-volatile uint32_t drdyAnomalyCount = 0;
-
-TaskHandle_t adcTaskHandle = NULL;
-
-void adcSamplingTask(void *pvParameters) {
-    for (;;) {
-        if (sensorTypeConfig == 2) {
-            vTaskDelay(pdMS_TO_TICKS(1000)); // 1 Hz tick for MockSensor
-            if (streaming && sensor != NULL) {
-                sensor->readAndPushSample();
-            }
-        } else {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(13))) { // ~75 Hz fallback tick
-                if (streaming && sensor != NULL) {
-                    sensor->readAndPushSample();
-                }
-            }
-        }
-    }
-}
-
-void IRAM_ATTR drdyISR() {
-    uint64_t now = esp_timer_get_time();
-    if (lastDrdyTimeUs > 0) {
-        uint32_t dt = (uint32_t)(now - lastDrdyTimeUs);
-        lastDrdyIntervalUs = dt;
-        if (dt < 800 || dt > 1200) {
-            drdyAnomalyCount = drdyAnomalyCount + 1;
-        }
-    }
-    lastDrdyTimeUs = now;
-    drdyInterruptFlag = true;
-
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (adcTaskHandle != NULL) {
-        vTaskNotifyGiveFromISR(adcTaskHandle, &xHigherPriorityTaskWoken);
-        if (xHigherPriorityTaskWoken) {
-            portYIELD_FROM_ISR();
-        }
-    }
-}
-
-void recoverSensor() {
-    Serial.println("\r\n[WATCHDOG STALL DETECTED] No DRDY interrupt for >500ms! Recovering sensor...");
-    detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
-
-    pinMode(CS_PIN, OUTPUT);
-    digitalWrite(CS_PIN, HIGH);
-
-    sensor->setContinuousMode(true, current_rate);
-    sensor->readAndPushSample(); // Clear pending DRDY latch on ASIC
-
-    lastDrdyTimeUs = esp_timer_get_time();
-    attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, sensorTypeConfig == 0 ? RISING : FALLING);
-    Serial.println("[WATCHDOG RECOVERY] Sensor streaming recovered successfully.\r\n");
-}
+CLI serialCLI(sensorManager, g_sensorConfig);
 
 
 uint32_t lastOledActivityMs = 0;
@@ -269,132 +196,7 @@ void setup() {
 
     loadSettings();
 
-    // Provide virtual ground on GPIO 5 and GPIO 1 for easy RM3100 I2CEN grounding
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3)
-    pinMode(5, OUTPUT);
-    digitalWrite(5, LOW);
-    pinMode(1, OUTPUT);
-    digitalWrite(1, LOW);
-#endif
-
-    // ALWAYS initialize SPI bus and DRDY pin regardless of initial configured sensor
-    Serial.println("Initializing SPI Bus...");
-    SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-    pinMode(DRDY_PIN, INPUT_PULLUP);
-
-    if (sensorTypeConfig == 1) {
-        Serial.println("Configured sensor: FLC100-ADS131E08. Probing hardware...");
-        bool found = false;
-        for (int retry = 0; retry < 5 && !found; retry++) {
-            if (sensorFLC100.begin()) {
-                found = true;
-                break;
-            }
-            delay(150);
-        }
-        if (found) {
-            sensor = &sensorFLC100;
-            static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
-            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
-            Serial.println("Sensor initialized: FLC100-ADS131E08");
-        } else {
-            Serial.println("FLC100 not detected. Cross-probing RM3100...");
-            if (sensorRM3100.begin()) {
-                sensorTypeConfig = 0;
-                sensor = &sensorRM3100;
-                current_downsample = 1;
-                static_cast<RM3100*>(sensor)->setCycleCount(cycleCountConfig, cycleCountConfig, cycleCountConfig);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-                Serial.printf("Auto-detected sensor: RM3100 (Cycle count: %u)\r\n", cycleCountConfig);
-            } else {
-                Serial.println("[ERROR] Physical sensors did not respond! Falling back to MOCK for this session.");
-                sensor = &sensorMock;
-                sensor->begin();
-            }
-        }
-    } else if (sensorTypeConfig == 0) {
-        Serial.println("Configured sensor: RM3100. Probing hardware...");
-        bool found = false;
-        for (int retry = 0; retry < 5 && !found; retry++) {
-            if (sensorRM3100.begin()) {
-                found = true;
-                break;
-            }
-            delay(150);
-        }
-        if (found) {
-            sensor = &sensorRM3100;
-            static_cast<RM3100*>(sensor)->setCycleCount(cycleCountConfig, cycleCountConfig, cycleCountConfig);
-            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-            Serial.printf("Sensor initialized: RM3100 (Cycle count: %u)\r\n", cycleCountConfig);
-        } else {
-            Serial.println("RM3100 not detected. Cross-probing FLC100...");
-            if (sensorFLC100.begin()) {
-                sensorTypeConfig = 1;
-                sensor = &sensorFLC100;
-                current_downsample = 1000;
-                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
-                Serial.println("Auto-detected sensor: FLC100-ADS131E08");
-            } else {
-                Serial.println("[ERROR] Physical sensors did not respond! Falling back to MOCK for this session.");
-                sensor = &sensorMock;
-                sensor->begin();
-            }
-        }
-    } else if (sensorTypeConfig == 2) {
-        sensor = &sensorMock;
-        sensor->begin();
-        Serial.println("[MOCK MODE] Explicit Synthetic Sensor Mode Active (Range Testing)");
-        Serial.println("Status Header: 0x80MOCK");
-    } else {
-        Serial.println("Auto-probing physical sensor hardware...");
-        bool found = false;
-        for (int retry = 0; retry < 5 && !found; retry++) {
-            if (sensorFLC100.begin()) {
-                sensor = &sensorFLC100;
-                sensorTypeConfig = 1;
-                found = true;
-                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
-                Serial.println("Auto-detected sensor: FLC100-ADS131E08");
-                saveSettings();
-                break;
-            } else if (sensorRM3100.begin()) {
-                sensor = &sensorRM3100;
-                sensorTypeConfig = 0;
-                found = true;
-                static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-                Serial.println("Auto-detected sensor: RM3100");
-                saveSettings();
-                break;
-            }
-            delay(150);
-        }
-
-        if (!found) {
-            Serial.print("[SENSOR NOTICE] No physical SPI sensor detected. Falling back to Synthetic MOCK mode.\r\n");
-            Serial.print("[HINT] Connect RM3100 or FLC100-ADS131E08 and reboot, or send 'SENSOR RM3100' / 'SENSOR FLC100'.\r\n");
-            sensor = &sensorMock;
-            sensorTypeConfig = 2;
-            sensor->begin();
-        }
-    }
-
-    Serial.print("Active Sensor: ");
-    Serial.println(sensor->getSensorName());
-    Serial.println(sensor->getStatusString());
-
-    // Resume continuous mode with saved rate
-    sensor->setContinuousMode(true, current_rate);
-
-    // Create high-priority task for immediate ISR-notified ADC sampling (Pinned to Core 1 to isolate from WiFi on Core 0)
-#if CONFIG_FREERTOS_UNICORE
-    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, 10, &adcTaskHandle, 0);
-#else
-    xTaskCreatePinnedToCore(adcSamplingTask, "ADC_Task", 4096, NULL, configMAX_PRIORITIES - 1, &adcTaskHandle, 1);
-#endif
+    sensorManager.begin();
 
     Serial.print("Device ID: ");
     Serial.println(deviceID);
@@ -483,15 +285,7 @@ void loop() {
     serialCLI.update();
 
     // Hardware Watchdog: Detect DRDY interrupt stall due to physical bumps or power glitches
-    static uint32_t lastWdCheckMs = 0;
-    uint32_t nowWdMs = millis();
-    if (streaming && sensor != NULL && sensorTypeConfig != 2 && (nowWdMs - lastWdCheckMs >= 500)) {
-        lastWdCheckMs = nowWdMs;
-        uint64_t nowUs = esp_timer_get_time();
-        if (lastDrdyTimeUs > 0 && (nowUs - lastDrdyTimeUs > 500000ULL)) {
-            recoverSensor();
-        }
-    }
+    sensorManager.checkWatchdog();
 
     // WiFi UDP Command Listening
     if (wifiConnected) {

@@ -2,8 +2,8 @@
 #define CLI_H
 
 #include <Arduino.h>
-#include "Magnetometer.h"
 #include "SensorConfig.h"
+#include "SensorManager.h"
 
 class CLI {
 public:
@@ -12,11 +12,11 @@ public:
     /**
      * @brief Construct a new CLI object
      * 
-     * @param sensor Reference to active magnetometer sensor pointer
+     * @param sensorManager Reference to SensorManager
      * @param config Reference to sensor configuration object
      * @param changeCallback Function pointer called when settings are modified
      */
-    CLI(Magnetometer*& sensor, SensorConfig& config, ChangeCallback changeCallback = nullptr);
+    CLI(SensorManager& sensorManager, SensorConfig& config, ChangeCallback changeCallback = nullptr);
 
     /**
      * @brief Initialize the CLI (e.g., reserve buffer)
@@ -40,7 +40,7 @@ public:
     void handleCommand(String cmd);
 
 private:
-    Magnetometer*& _sensor;
+    SensorManager& _sensorManager;
     SensorConfig& _config;
     ChangeCallback _changeCallback;
     String _inputBuffer;

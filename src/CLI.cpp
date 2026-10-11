@@ -1,16 +1,13 @@
 #include "CLI.h"
 #include "board_config.h"
-#include "RM3100.h"
-#include "FLC100_ADS131.h"
-#include "MockSensor.h"
 #include "BLEStream.h"
 #if defined(BOARD_HAS_LORA)
 #include "LoRaStream.h"
 #endif
 #include <WiFi.h>
 
-CLI::CLI(Magnetometer*& sensor, SensorConfig& config, ChangeCallback changeCallback)
-    : _sensor(sensor), _config(config), _changeCallback(changeCallback) {}
+CLI::CLI(SensorManager& sensorManager, SensorConfig& config, ChangeCallback changeCallback)
+    : _sensorManager(sensorManager), _config(config), _changeCallback(changeCallback) {}
 
 void CLI::begin() {
     _inputBuffer.reserve(64);
@@ -36,8 +33,9 @@ void CLI::printHelp() {
     Serial.println("STREAM ON/OFF - Enable/Disable data streaming");
     Serial.println("RATE <hex>    - Set rate code (saved)");
     Serial.println("CYCLE <int>   - Set cycle count (RM3100 specific)");
-    Serial.println("BATCH <1-10>  - Set samples per burst (1 = instant 1Hz, 10 = 10s batch for BLE & LoRa)");
+    Serial.println("BATCH <1-18>  - Set samples per burst (1 = instant 1Hz, 10 = 10s batch for BLE & LoRa)");
     Serial.println("POWER <-9..22>- Set LoRa TX power in dBm");
+    Serial.println("SENSOR <name> - Switch sensor (RM3100, FLC100, MOCK)");
     Serial.println("STATUS        - Show current status");
     Serial.println("-----------------------");
 }
@@ -79,13 +77,9 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("RATE ")) {
         String valStr = cmd.substring(5);
         _config.rate = (uint8_t)strtol(valStr.c_str(), NULL, 16);
-        extern TaskHandle_t adcTaskHandle;
-        extern void IRAM_ATTR drdyISR();
-        if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
-        detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
-        _sensor->setContinuousMode(true, _config.rate);
-        attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, _config.sensorType == 0 ? RISING : FALLING);
-        if (adcTaskHandle) vTaskResume(adcTaskHandle);
+        if (_sensorManager.getActiveSensor() != nullptr) {
+            _sensorManager.getActiveSensor()->setContinuousMode(true, _config.rate);
+        }
         _config.save();
         if (_changeCallback) _changeCallback();
         Serial.print("Rate set to 0x");
@@ -93,24 +87,15 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("CYCLE ")) {
         String valStr = cmd.substring(6);
         uint16_t cycle = (uint16_t)valStr.toInt();
-        if (_sensor->getSensorName() == "RM3100" && cycle > 0) {
-            extern TaskHandle_t adcTaskHandle;
-            extern void IRAM_ATTR drdyISR();
-            if (adcTaskHandle) vTaskSuspend(adcTaskHandle);
-            detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
-
-            static_cast<RM3100*>(_sensor)->setCycleCount(cycle, cycle, cycle);
+        if (_sensorManager.setCycleCount(cycle)) {
             _config.cycleCount = cycle;
-
-            attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-            if (adcTaskHandle) vTaskResume(adcTaskHandle);
             _config.save();
             if (_changeCallback) _changeCallback();
             float gain = 0.3671f * (float)cycle + 1.5f;
             Serial.printf("Cycle count set to %u (Gain: %.2f LSB/uT, Scale: %.2f nT/LSB)\r\n",
                           cycle, gain, 1000.0f / gain);
         } else {
-            Serial.println("CYCLE command not supported for this sensor.");
+            Serial.println("CYCLE command not supported for active sensor.");
         }
     } else if (cmd.startsWith("DOWNSAMPLE ")) {
         uint16_t ratio = (uint16_t)cmd.substring(11).toInt();
@@ -125,59 +110,17 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.startsWith("SENSOR ")) {
         String sub = cmd.substring(7);
         sub.trim();
-        extern Magnetometer* sensor;
-        extern RM3100 sensorRM3100;
-        extern FLC100_ADS131 sensorFLC100;
-        extern MockSensor sensorMock;
-        uint8_t newType = _config.sensorType;
-        if (sub == "RM3100" || sub == "0") {
-            newType = SENSOR_TYPE_RM3100;
-            sensor = &sensorRM3100;
-            _config.rate = 0x96; // RM3100 default rate 37 Hz
-        } else if (sub == "FLC100" || sub == "ADS131" || sub == "1") {
-            newType = SENSOR_TYPE_FLC100;
-            sensor = &sensorFLC100;
-            _config.rate = 0x06; // ADS131 default rate 1 kSPS
-            if (_config.downsample <= 1) _config.downsample = 1000;
-        } else if (sub == "MOCK" || sub == "2") {
-            newType = SENSOR_TYPE_MOCK;
-            sensor = &sensorMock;
-            _config.rate = 0x95; // Synthetic Mock default rate 75 Hz
+        if (_sensorManager.switchSensorByName(sub)) {
+            _config.save();
+            if (_changeCallback) _changeCallback();
         }
-        extern void IRAM_ATTR drdyISR();
-        _config.sensorType = newType;
-        _sensor = sensor;
-
-        Serial.print("Active sensor set to: ");
-        Serial.println(_sensor->getSensorName());
-
-        // Ensure SPI bus is active
-        SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CS_PIN);
-        pinMode(DRDY_PIN, INPUT_PULLUP);
-
-        if (newType == SENSOR_TYPE_MOCK) {
-            detachInterrupt(digitalPinToInterrupt(DRDY_PIN));
-        }
-
-        if (!sensor->begin()) {
-            Serial.println("Warning: Selected sensor failed initialization!");
-        } else {
-            if (newType == SENSOR_TYPE_FLC100) {
-                static_cast<FLC100_ADS131*>(sensor)->setCalibration(2.4f, 20.0f, 1);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, FALLING);
-            } else if (newType == SENSOR_TYPE_RM3100) {
-                static_cast<RM3100*>(sensor)->setCycleCount(200, 200, 200);
-                attachInterrupt(digitalPinToInterrupt(DRDY_PIN), drdyISR, RISING);
-            }
-            sensor->setContinuousMode(true, _config.rate);
-            Serial.println("Sensor initialized and continuous mode started.");
-        }
-        _config.save();
-        if (_changeCallback) _changeCallback();
     } else if (cmd == "STATUS") {
         Serial.print("Device ID: "); Serial.println(_config.deviceID);
         Serial.print("Streaming: "); Serial.println(_config.streaming ? "ON" : "OFF");
-        Serial.print("Sensor: "); Serial.println(_sensor->getSensorName());
+        if (_sensorManager.getActiveSensor() != nullptr) {
+            Serial.print("Sensor: "); Serial.println(_sensorManager.getActiveSensor()->getSensorName());
+            Serial.println(_sensorManager.getActiveSensor()->getStatusString());
+        }
         Serial.print("Output Mode: "); Serial.println(_config.getModeString());
         Serial.print("Downsample: "); Serial.print(_config.downsample); Serial.println("x");
         Serial.printf("CPU Frequency: %d MHz\r\n", getCpuFrequencyMhz());
@@ -189,7 +132,6 @@ void CLI::handleCommand(String cmd) {
                       loraStream.isInitialized() ? "INITIALIZED" : "NOT INITIALIZED",
                       loraStream.getOutputPower());
 #endif
-        Serial.println(_sensor->getStatusString());
     } else if (cmd.startsWith("POWER ")) {
         int8_t pwr = (int8_t)cmd.substring(6).toInt();
         if (pwr >= -9 && pwr <= 22) {
@@ -213,21 +155,18 @@ void CLI::handleCommand(String cmd) {
             if (_changeCallback) _changeCallback();
         }
     } else if (cmd == "TEST ON") {
-        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
-            static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(true);
+        if (_sensorManager.setTestSignal(true)) {
             Serial.println("Internal test signal enabled (1Hz square wave).");
         } else {
             Serial.println("TEST command only supported for FLC100-ADS131E08.");
         }
     } else if (cmd == "TEST OFF") {
-        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
-            static_cast<FLC100_ADS131*>(_sensor)->setTestSignal(false);
+        if (_sensorManager.setTestSignal(false)) {
             Serial.println("Internal test signal disabled. Normal inputs active.");
         }
     } else if (cmd.startsWith("GAIN ")) {
         uint8_t gain = (uint8_t)cmd.substring(5).toInt();
-        if (_sensor->getSensorName() == "FLC100-ADS131E08") {
-            static_cast<FLC100_ADS131*>(_sensor)->setCalibration(2.4f, 20.0f, gain);
+        if (_sensorManager.setPgaGain(gain)) {
             _config.save();
             if (_changeCallback) _changeCallback();
             Serial.print("PGA Gain set to ");
@@ -235,8 +174,7 @@ void CLI::handleCommand(String cmd) {
         }
     } else if (cmd.startsWith("VREF ")) {
         float vref = cmd.substring(5).toFloat();
-        if (vref > 0.0f && _sensor->getSensorName() == "FLC100-ADS131E08") {
-            static_cast<FLC100_ADS131*>(_sensor)->setCalibration(vref, 20.0f, 1);
+        if (_sensorManager.setVref(vref)) {
             Serial.print("VREF set to ");
             Serial.print(vref);
             Serial.println(" V");
@@ -264,36 +202,29 @@ void CLI::handleCommand(String cmd) {
             connectWiFi();
         }
     } else if (cmd.startsWith("WIFI ")) {
-        String subUpper = cmd.substring(5);
-        subUpper.trim();
-        if (subUpper == "OFF") {
-            extern bool wifiConnected;
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
-            wifiConnected = false;
-            Serial.println("WiFi Disabled.");
-        } else if (subUpper == "STATUS") {
-            extern bool wifiConnected;
-            Serial.print("WiFi Connected: "); Serial.println(wifiConnected ? "YES" : "NO");
-            if (wifiConnected) {
-                Serial.print("IP Address: "); Serial.println(WiFi.localIP());
-                Serial.print("RSSI: "); Serial.print(WiFi.RSSI()); Serial.println(" dBm");
-            }
-        } else if (subUpper == "SCAN") {
-            Serial.println("Scanning 2.4GHz WiFi networks...");
-            WiFi.mode(WIFI_STA);
-            WiFi.disconnect();
-            delay(100);
-            int n = WiFi.scanNetworks();
-            Serial.print("Scan completed. Found "); Serial.print(n); Serial.println(" networks:");
-            for (int i = 0; i < n; ++i) {
-                Serial.print("  "); Serial.print(i + 1); Serial.print(": ");
-                Serial.print(WiFi.SSID(i)); Serial.print(" (");
-                Serial.print(WiFi.RSSI(i)); Serial.println(" dBm)");
-                delay(10);
+        String rawSub = originalCmd.substring(5);
+        rawSub.trim();
+        if (rawSub.length() > 0 && rawSub.charAt(0) == '"') {
+            int closeQuote = rawSub.indexOf('"', 1);
+            if (closeQuote > 1) {
+                extern void connectWiFi();
+                _config.wifiSSID = rawSub.substring(1, closeQuote);
+                String rest = rawSub.substring(closeQuote + 1);
+                rest.trim();
+                if (rest.startsWith("\"") && rest.endsWith("\"") && rest.length() >= 2) {
+                    _config.wifiPass = rest.substring(1, rest.length() - 1);
+                } else {
+                    _config.wifiPass = rest;
+                }
+                _config.wifiSSID.trim();
+                _config.wifiPass.trim();
+                _config.save();
+                connectWiFi();
+                if (_changeCallback) _changeCallback();
+            } else {
+                Serial.println("Usage: WIFI \"SSID with spaces\" \"Password\"");
             }
         } else {
-            String rawSub = originalCmd.substring(5);
             rawSub.trim();
             int spaceIdx = rawSub.lastIndexOf(' ');
             if (spaceIdx > 0) {
@@ -363,14 +294,12 @@ void CLI::handleCommand(String cmd) {
             WiFi.mode(WIFI_OFF);
             wifiConnected = false;
             bleStream.powerDownModem();
-            configurePowerManagement();
             #if defined(BOARD_HAS_LORA)
             extern LoRaStream loraStream;
             loraStream.begin(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-            Serial.println("Output Mode set to LORA (Sub-GHz SX1262 LoRa).");
-            #else
-            Serial.println("LORA mode not supported on this hardware.");
             #endif
+            configurePowerManagement();
+            Serial.println("Output Mode set to LORA (SX1262 LoRa 915MHz).");
         } else {
             Serial.println("Usage: MODE <SERIAL|WIFI|BOTH|BLE|LORA>");
         }
@@ -383,5 +312,6 @@ void CLI::handleCommand(String cmd) {
     } else if (cmd.length() > 0) {
         Serial.print("Unknown command: ");
         Serial.println(cmd);
+        Serial.println("Type HELP for available commands.");
     }
 }
