@@ -4,6 +4,7 @@ All use battery power unless specified otherwise
 - Heltec V4 sensor (label: SPRINGBANK)
     - connected to FLC100.
     - transmits over LoRa only
+    - USB-CDC disabled on boot (`ARDUINO_USB_MODE=0`, `ARDUINO_USB_CDC_ON_BOOT=0`) for minimum quiescent power draw (~6-8 mA saved)
 - Heltec V4 Receiver (label: ROOF)
     - Receives over LoRa (SX1262 Sub-GHz, batches from SPRINGBANK)
     - Connects directly to campus enterprise Wi-Fi (ANU-Secure WPA2-Enterprise 802.1X PEAP or standard PSK)

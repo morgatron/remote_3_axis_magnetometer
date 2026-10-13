@@ -35,26 +35,17 @@ from typing import Optional, Dict, Any
 
 PROFILES: Dict[str, Dict[str, Any]] = {
     "SPRINGBANK": {
-        "description": "Heltec V4 Sensor + FLC100 (LoRa-only batch transmission)",
+        "description": "Heltec V4 Sensor + FLC100 (LoRa-only batch transmission, USB-CDC Disabled)",
         "board_type": "Heltec WiFi LoRa 32 V4 (ESP32-S3 + SX1262)",
         "pio_env": "heltec_v4_sensor",
         "role": "sensor",
-        "cli_commands": [
-            "ID SPRINGBANK",
-            "MODE LORA",
-            "BATCH 10",
-            "SENSOR FLC100",
-            "DOWNSAMPLE 1000",
-            "START",
-            "SAVE",
-            "STATUS"
-        ],
+        "cli_commands": [],  # USB-CDC disabled on boot; firmware defaults active
         "expected_current": {
-            "idle_sleep": "12 - 15 mA (MCU) + 14 mA (FLC100/Boost/ADC) = ~26 - 29 mA",
+            "idle_sleep": "6 - 8 mA (MCU @ 80MHz, USB-CDC OFF) + 14 mA (FLC100/Boost/ADC) = ~20 - 22 mA",
             "tx_peak": "110 - 130 mA (+22 dBm LoRa burst for ~180 ms)",
-            "average": "28 - 32 mA (with real FLC100) / ~15 - 18 mA (mock data)",
-            "runtime_1000mah": "~30 - 35 hours (~1.3 days)",
-            "runtime_3000mah": "~4 - 4.5 days"
+            "average": "22 - 25 mA (with real FLC100) / ~8 - 10 mA (mock data)",
+            "runtime_1000mah": "~40 - 45 hours (~1.8 days)",
+            "runtime_3000mah": "~5.5 - 6 days"
         }
     },
     "ROOF": {

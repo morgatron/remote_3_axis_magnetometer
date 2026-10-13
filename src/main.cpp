@@ -39,20 +39,20 @@ void setup() {
     lastOledActivityMs = millis();
 #endif
 
-#if (defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ARDUINO_ARCH_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(ARDUINO_ARCH_ESP32C6)
-    Serial.setTxTimeoutMs(0);
-#endif
     Serial.begin(921600);
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+    Serial.setTxTimeoutMs(0);
     // Timeout waiting for Serial so board boots even without open Serial Monitor
     unsigned long startWait = millis();
-    while (!Serial && (millis() - startWait < 3000)) delay(10);
+    while (!Serial && (millis() - startWait < 500)) delay(10);
+#endif
 
     Serial.println("\r\n==================================================");
     Serial.println(" FIRMWARE: Remote 3-Axis Magnetometer Acquisition System");
     Serial.println("==================================================");
 
-    // Wait for internal oscillator and power-on-reset stabilization
-    delay(250);
+    // Wait for internal oscillator, external boost converter, and ADC analog rail stabilization
+    delay(1000);
 
     g_sensorConfig.load();
     sensorManager.begin();

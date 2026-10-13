@@ -98,8 +98,8 @@ public:
     SensorConfig& getConfig() const { return _config; }
 
 private:
-    bool probeFLC100(int retries = 5);
-    bool probeRM3100(int retries = 5);
+    bool probeFLC100(int retries = 10);
+    bool probeRM3100(int retries = 10);
     void attachDrdyInterrupt();
 
     SensorConfig& _config;

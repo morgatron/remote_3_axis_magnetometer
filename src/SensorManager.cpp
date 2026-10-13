@@ -41,10 +41,10 @@ static void adcSamplingTask(void *pvParameters) {
                 mgr->getActiveSensor()->readAndPushSample();
             }
         } else {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(13))) { // ~75 Hz fallback tick
-                if (mgr->getConfig().streaming && mgr->getActiveSensor() != NULL) {
-                    mgr->getActiveSensor()->readAndPushSample();
-                }
+            // Wait for DRDY ISR notification, with a 13ms (~75 Hz) fallback timeout
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(13));
+            if (mgr->getConfig().streaming && mgr->getActiveSensor() != NULL) {
+                mgr->getActiveSensor()->readAndPushSample();
             }
         }
     }
@@ -62,7 +62,7 @@ bool SensorManager::probeFLC100(int retries) {
         if (_sensorFLC100.begin()) {
             return true;
         }
-        delay(150);
+        delay(200);
     }
     return false;
 }
@@ -186,6 +186,10 @@ bool SensorManager::begin() {
 
     // Resume continuous mode with saved rate
     _activeSensor->setContinuousMode(true, _config.rate);
+    s_lastDrdyTimeUs = esp_timer_get_time();
+    if (_activeSensor != nullptr) {
+        _activeSensor->readAndPushSample(); // Clear pending DRDY latch on ASIC
+    }
 
     // Create high-priority task for immediate ISR-notified ADC sampling
 #if CONFIG_FREERTOS_UNICORE
@@ -221,6 +225,16 @@ void SensorManager::checkWatchdog() {
         uint64_t nowUs = esp_timer_get_time();
         if (s_lastDrdyTimeUs > 0 && (nowUs - s_lastDrdyTimeUs > 500000ULL)) {
             recoverSensor();
+        }
+    } else if (_config.sensorType == SENSOR_TYPE_MOCK && (nowWdMs - _lastWdCheckMs >= 3000)) {
+        // If in MOCK fallback, periodically probe if physical hardware has stabilized
+        _lastWdCheckMs = nowWdMs;
+        if (probeFLC100(1)) {
+            Serial.println("[AUTOPROBE] Physical FLC100-ADS131E08 detected! Promoting from MOCK...");
+            switchSensor(SENSOR_TYPE_FLC100);
+        } else if (probeRM3100(1)) {
+            Serial.println("[AUTOPROBE] Physical RM3100 detected! Promoting from MOCK...");
+            switchSensor(SENSOR_TYPE_RM3100);
         }
     }
 }
@@ -265,6 +279,10 @@ bool SensorManager::switchSensor(uint8_t newType) {
     }
 
     _activeSensor->setContinuousMode(true, _config.rate);
+    s_lastDrdyTimeUs = esp_timer_get_time();
+    if (_activeSensor != nullptr) {
+        _activeSensor->readAndPushSample(); // Clear pending DRDY latch on ASIC
+    }
     Serial.println("Sensor initialized and continuous mode started.");
     _config.save();
     return true;

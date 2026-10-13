@@ -333,6 +333,7 @@ void FLC100_ADS131::writeRegister(uint8_t reg, uint8_t val) {
     digitalWrite(_csPin, LOW);
     _spi->transfer(ADS131_CMD_WREG | reg);
     _spi->transfer(0x00); // 1 register (num_regs - 1 = 0)
+    delayMicroseconds(4); // TI t_SDECODE requirement (>= 4 t_CLK cycles, ~2 us)
     _spi->transfer(val);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
@@ -344,6 +345,7 @@ uint8_t FLC100_ADS131::readRegister(uint8_t reg) {
     digitalWrite(_csPin, LOW);
     _spi->transfer(ADS131_CMD_RREG | reg);
     _spi->transfer(0x00); // 1 register (num_regs - 1 = 0)
+    delayMicroseconds(4); // TI t_SDECODE requirement (>= 4 t_CLK cycles, ~2 us)
     uint8_t val = _spi->transfer(0x00);
     digitalWrite(_csPin, HIGH);
     _spi->endTransaction();
