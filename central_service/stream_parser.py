@@ -7,6 +7,7 @@ Used by desktop_app (serial_worker.py, udp_worker.py) and central_service (gatew
 
 import time
 import math
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
@@ -22,63 +23,68 @@ class NodeEpochTracker:
         self.max_live_latency_sec = max_live_latency_sec
         # node_id -> {"epoch": float, "last_ts_sec": float, "last_update": float}
         self._nodes: Dict[str, Dict[str, float]] = {}
+        self._lock = threading.RLock()
 
     def get_sample_utc(self, node_id: str, ts_us: float, arrival_wall_time: Optional[float] = None) -> float:
-        if arrival_wall_time is None:
-            arrival_wall_time = time.time()
-        ts_sec = ts_us / 1_000_000.0
+        with self._lock:
+            if arrival_wall_time is None:
+                arrival_wall_time = time.time()
+            ts_sec = ts_us / 1_000_000.0
 
-        info = self._nodes.get(node_id)
-        if info is None:
-            # First observation of node: establish initial epoch anchor
-            epoch = arrival_wall_time - ts_sec
-            self._nodes[node_id] = {
-                "epoch": epoch,
-                "last_ts_sec": ts_sec,
-                "last_update": arrival_wall_time
-            }
-            return arrival_wall_time
+            info = self._nodes.get(node_id)
+            if info is None:
+                # First observation of node: establish initial epoch anchor
+                epoch = arrival_wall_time - ts_sec
+                self._nodes[node_id] = {
+                    "epoch": epoch,
+                    "last_ts_sec": ts_sec,
+                    "last_update": arrival_wall_time
+                }
+                return arrival_wall_time
 
-        epoch = info["epoch"]
-        last_ts_sec = info["last_ts_sec"]
+            epoch = info["epoch"]
+            last_ts_sec = info["last_ts_sec"]
 
-        # Check for node reboot or hardware timer rollover:
-        # If ts_sec jumps backwards significantly (> 5.0s backwards), node has rebooted.
-        if ts_sec < last_ts_sec - 5.0:
-            epoch = arrival_wall_time - ts_sec
-            info["epoch"] = epoch
-            info["last_ts_sec"] = ts_sec
-            info["last_update"] = arrival_wall_time
-            return arrival_wall_time
+            # Check for node reboot or hardware timer rollover:
+            # If ts_sec jumps backwards significantly (> 5.0s backwards), node has rebooted.
+            if ts_sec < last_ts_sec - 5.0:
+                epoch = arrival_wall_time - ts_sec
+                info["epoch"] = epoch
+                info["last_ts_sec"] = ts_sec
+                info["last_update"] = arrival_wall_time
+                return arrival_wall_time
 
-        # Calculate absolute sample UTC based on current locked epoch
-        sample_utc = epoch + ts_sec
-        latency = arrival_wall_time - sample_utc
+            # Calculate absolute sample UTC based on current locked epoch
+            sample_utc = epoch + ts_sec
+            latency = arrival_wall_time - sample_utc
 
-        # If latency is within normal live stream window (-0.5s to max_live_latency_sec):
-        # Gently adjust the locked epoch using EMA to track host NTP and device crystal drift (~15 ppm)
-        if -0.5 <= latency <= self.max_live_latency_sec:
-            measured_epoch = arrival_wall_time - ts_sec
-            info["epoch"] = (1.0 - self.drift_alpha) * epoch + self.drift_alpha * measured_epoch
-            info["last_update"] = arrival_wall_time
+            # If latency is within normal live stream window (-0.5s to max_live_latency_sec):
+            # Gently adjust the locked epoch using EMA to track host NTP and device crystal drift (~15 ppm)
+            if -0.5 <= latency <= self.max_live_latency_sec:
+                measured_epoch = arrival_wall_time - ts_sec
+                info["epoch"] = (1.0 - self.drift_alpha) * epoch + self.drift_alpha * measured_epoch
+                info["last_update"] = arrival_wall_time
 
-        if ts_sec > info["last_ts_sec"]:
-            info["last_ts_sec"] = ts_sec
+            if ts_sec > info["last_ts_sec"]:
+                info["last_ts_sec"] = ts_sec
 
-        return sample_utc
+            return sample_utc
 
     def get_sample_iso(self, node_id: str, ts_us: float, arrival_wall_time: Optional[float] = None) -> str:
         utc = self.get_sample_utc(node_id, ts_us, arrival_wall_time)
         return datetime.fromtimestamp(utc, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def has_node(self, node_id: str) -> bool:
-        return node_id in self._nodes
+        with self._lock:
+            return node_id in self._nodes
 
     def reset_node(self, node_id: str):
-        self._nodes.pop(node_id, None)
+        with self._lock:
+            self._nodes.pop(node_id, None)
 
     def clear(self):
-        self._nodes.clear()
+        with self._lock:
+            self._nodes.clear()
 
 
 def parse_telemetry_line(

@@ -17,6 +17,7 @@ Features:
 
 import os
 import sys
+import re
 import time
 import math
 import struct
@@ -361,56 +362,198 @@ def termux_usb_listener_thread(fd: int):
         except Exception:
             time.sleep(0.05)
 
-def serial_listener_thread(port, baud):
+def is_sensor_serial_port(port_info) -> bool:
+    """Filters comports() for likely ESP32/microcontroller USB serial CDC or UART devices."""
+    dev = port_info.device.lower()
+    # Exclude standard motherboard/virtual serial ports (e.g. /dev/ttyS0 - /dev/ttyS31)
+    if "/dev/ttys" in dev or dev.startswith("ttys"):
+        return False
+    # Standard Linux/macOS USB serial device nodes
+    if any(pat in dev for pat in ("acm", "usb", "usbmodem", "usbserial")):
+        return True
+    # Windows COM ports or devices with valid USB VID/PID
+    if dev.startswith("com") and (getattr(port_info, "vid", None) is not None or "usb" in (port_info.hwid or "").lower()):
+        return True
+    return False
+
+def parse_serial_ports_config(config_str: str = None) -> list:
+    """
+    Parses SERIAL_PORT configuration string.
+    Returns:
+        list of explicit port paths if specified (e.g. ['/dev/ttyACM0', '/dev/ttyACM1']),
+        or None if dynamic auto-discovery of all devices should be used ('', 'auto', 'all', '*').
+    """
+    if not config_str:
+        return None
+    cleaned = config_str.strip()
+    if cleaned.lower() in ("all", "auto", "*", ""):
+        return None
+    ports = [p.strip() for p in re.split(r'[,;\s]+', cleaned) if p.strip()]
+    return ports if ports else None
+
+def serial_device_worker(port: str, baud: int, stop_event: threading.Event, is_dynamic: bool = False):
+    """
+    Dedicated worker thread for an individual serial port.
+    Reads continuous CSV telemetry from connected microcontroller into send_queue.
+    If is_dynamic is True (auto-discovered port), exits upon disconnection so manager can clean it up.
+    If is_dynamic is False (statically configured port), retries connecting indefinitely until stop_event is set.
+    """
     if not HAS_SERIAL:
-        print("[Gateway Notice] 'pyserial' not available. Serial listener disabled.")
+        print(f"[Gateway Serial:{port}] 'pyserial' not available. Worker aborting.")
         return
 
     rx_count = 0
-    while True:
-        target_port = port
-        if not target_port:
-            # Auto-detect available ESP32 USB CDC / ACM / USB serial ports if supported
-            acm_ports = []
-            if HAS_LIST_PORTS:
-                try:
-                    acm_ports = sorted([p.device for p in serial.tools.list_ports.comports() if 'ACM' in p.device or 'USB' in p.device])
-                except Exception:
-                    acm_ports = []
-            if acm_ports:
-                target_port = acm_ports[0]
-            else:
-                target_port = "/dev/ttyACM0"
+    tag = f"Gateway Serial:{port}"
 
+    while not stop_event.is_set():
+        ser = None
         try:
-            print(f"[Gateway Serial] Opening {target_port} at {baud} baud...")
+            print(f"[{tag}] Opening at {baud} baud...")
             ser = serial.Serial()
-            ser.port = target_port
+            ser.port = port
             ser.baudrate = baud
-            ser.timeout = 1.0
+            ser.timeout = 1.0  # Allow responsive shutdown checking
             ser.dtr = False
             ser.rts = False
             ser.open()
-            print(f"[Gateway Serial Connected] Active on {target_port}")
+            print(f"[Gateway Serial Connected:{port}] Active")
 
             time.sleep(0.5)
             ser.reset_input_buffer()
             # Send STREAM ON trigger to start telemetry if in idle CLI
             ser.write(b"\r\nSTREAM ON\r\n")
 
-            while True:
-                line = ser.readline().decode("utf-8", errors="ignore").strip()
+            while not stop_event.is_set():
+                raw_bytes = ser.readline()
+                if not raw_bytes:
+                    continue
+                line = raw_bytes.decode("utf-8", errors="ignore").strip()
                 if line:
                     sample = parse_csv_line(line, arrival_time=time.time())
                     if sample:
                         rx_count += 1
                         if rx_count % 10 == 1:
-                            print(f"[Gateway Serial RX #{rx_count}] {sample['node_id']} -> |B| = {math.sqrt(sample['x']**2 + sample['y']**2 + sample['z']**2):.1f} nT (RSSI: {sample.get('rssi')} dBm)")
+                            mag = math.sqrt(sample['x']**2 + sample['y']**2 + sample['z']**2)
+                            rssi_str = f" (RSSI: {sample['rssi']} dBm)" if sample.get('rssi') is not None else ""
+                            print(f"[Gateway Serial RX:{port} #{rx_count}] {sample['node_id']} -> |B| = {mag:.1f} nT{rssi_str}")
                         if not send_queue.full():
                             send_queue.put(sample)
         except Exception as e:
-            print(f"[Gateway Serial Disconnected] {target_port}: {e}. Retrying in 2.0s...")
-            time.sleep(2.0)
+            if stop_event.is_set():
+                break
+
+            if is_dynamic:
+                print(f"[Gateway Serial Disconnected:{port}] {e}. Worker exiting.")
+                break
+            else:
+                print(f"[Gateway Serial Disconnected:{port}] {e}. Retrying in 2.0s...")
+                stop_event.wait(2.0)
+        finally:
+            if ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+
+def serial_manager_thread(ports_config=None, baud=921600, stop_event=None):
+    """
+    Manages concurrent serial listener workers across multiple serial devices.
+    Supports:
+    - Explicit multi-port mode (comma/semicolon/space separated list of ports).
+    - Dynamic auto-discovery mode (discovers and spawns workers for all connected USB/CDC serial devices,
+      with automatic cleanup on disconnect and hotplug detection).
+    """
+    if not HAS_SERIAL:
+        print("[Gateway Notice] 'pyserial' not available. Serial manager disabled.")
+        return
+
+    if stop_event is None:
+        stop_event = threading.Event()
+
+    configured_ports = parse_serial_ports_config(ports_config)
+    active_workers = {}  # port -> {"thread": Thread, "stop_event": Event}
+
+    if configured_ports:
+        print(f"[Gateway Serial Manager] Static mode active: monitoring {len(configured_ports)} port(s): {', '.join(configured_ports)}")
+        for port in configured_ports:
+            evt = threading.Event()
+            t = threading.Thread(
+                target=serial_device_worker,
+                args=(port, baud, evt, False),
+                name=f"SerialWorker-{port}",
+                daemon=True
+            )
+            active_workers[port] = {"thread": t, "stop_event": evt}
+            t.start()
+
+        while not stop_event.is_set():
+            stop_event.wait(2.0)
+            for port in configured_ports:
+                entry = active_workers.get(port)
+                if entry and not entry["thread"].is_alive() and not stop_event.is_set():
+                    evt = threading.Event()
+                    t = threading.Thread(
+                        target=serial_device_worker,
+                        args=(port, baud, evt, False),
+                        name=f"SerialWorker-{port}",
+                        daemon=True
+                    )
+                    active_workers[port] = {"thread": t, "stop_event": evt}
+                    t.start()
+    else:
+        print(f"[Gateway Serial Manager] Dynamic auto-discovery active: scanning for all connected USB/CDC serial devices...")
+        first_scan = True
+        while not stop_event.is_set():
+            # 1. Clean up workers whose threads have finished (disconnected devices)
+            dead_ports = [p for p, info in active_workers.items() if not info["thread"].is_alive()]
+            for p in dead_ports:
+                print(f"[Gateway Serial Manager] Cleaned up worker for disconnected port: {p}")
+                del active_workers[p]
+
+            # 2. Discover available candidate ports
+            discovered_ports = []
+            if HAS_LIST_PORTS:
+                try:
+                    for p in serial.tools.list_ports.comports():
+                        if is_sensor_serial_port(p):
+                            discovered_ports.append(p.device)
+                except Exception as e:
+                    print(f"[Gateway Serial Manager Warning] Error scanning ports: {e}")
+            else:
+                for fallback in ("/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyUSB0", "/dev/ttyUSB1"):
+                    if os.path.exists(fallback):
+                        discovered_ports.append(fallback)
+
+            discovered_ports = sorted(list(set(discovered_ports)))
+
+            # 3. Spawn workers for newly discovered ports
+            for port in discovered_ports:
+                if port not in active_workers:
+                    print(f"[Gateway Serial Manager] Detected new serial device: {port} - Spawning listener worker")
+                    evt = threading.Event()
+                    t = threading.Thread(
+                        target=serial_device_worker,
+                        args=(port, baud, evt, True),
+                        name=f"SerialWorker-{port}",
+                        daemon=True
+                    )
+                    active_workers[port] = {"thread": t, "stop_event": evt}
+                    t.start()
+
+            if first_scan:
+                if not active_workers:
+                    print("[Gateway Serial Manager] No USB/CDC serial devices currently connected. Waiting for devices...")
+                first_scan = False
+
+            stop_event.wait(2.5)
+
+    # Stop all workers on manager shutdown
+    for port, info in active_workers.items():
+        info["stop_event"].set()
+
+def serial_listener_thread(port, baud):
+    """Backwards-compatible wrapper: forwards to serial_manager_thread."""
+    serial_manager_thread(port, baud)
 
 
 
@@ -508,11 +651,24 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
+    # Support CLI arguments for serial ports (e.g. `python gateway.py /dev/ttyACM0 /dev/ttyACM1`)
+    cli_serial_ports = None
+    if termux_fd is None and len(sys.argv) > 1:
+        custom_args = [arg for arg in sys.argv[1:] if not arg.startswith("-") and not arg.isdigit()]
+        if custom_args:
+            cli_serial_ports = ",".join(custom_args)
+
+    active_serial_config = cli_serial_ports if cli_serial_ports is not None else SERIAL_PORT
+
     if termux_fd is not None:
         t_termux_usb = threading.Thread(target=termux_usb_listener_thread, args=(termux_fd,), daemon=True)
         t_termux_usb.start()
-    elif (ENABLE_SERIAL or SERIAL_PORT) and HAS_SERIAL:
-        t_ser = threading.Thread(target=serial_listener_thread, args=(SERIAL_PORT, SERIAL_BAUD), daemon=True)
+    elif (ENABLE_SERIAL or active_serial_config) and HAS_SERIAL:
+        t_ser = threading.Thread(
+            target=serial_manager_thread,
+            args=(active_serial_config, SERIAL_BAUD),
+            daemon=True
+        )
         t_ser.start()
 
     # Start BLE Listener

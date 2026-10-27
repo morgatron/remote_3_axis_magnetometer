@@ -51,6 +51,20 @@ To secure the server against unauthorized open-internet data injection:
    python gateway.py
    ```
 
+3. **Multi-Serial / Multi-Device Ingestion**:
+   `gateway.py` supports listening to multiple serial devices concurrently:
+   - **Dynamic Auto-Discovery Mode** (default when `ENABLE_SERIAL=true` and `SERIAL_PORT` is unset, empty, or `"auto"`): Scans USB serial buses (`/dev/ttyACM*`, `/dev/ttyUSB*`, `COM*`), automatically launches dedicated listener threads for every detected sensor, handles hotplugging, and gracefully cleans up disconnected ports.
+   - **Explicit Multi-Port Mode**: Provide a comma/semicolon/space-delimited list of ports via `SERIAL_PORT` or CLI arguments:
+     ```bash
+     # Via environment variable:
+     export SERIAL_PORT="/dev/ttyACM0,/dev/ttyACM1"
+     python gateway.py
+
+     # Or via CLI arguments:
+     python gateway.py /dev/ttyACM0 /dev/ttyACM1
+     ```
+   - **Unified Store-and-Forward**: All incoming serial lines across all ports are decoded, timestamped with monotonic epoch anchors via thread-safe `NodeEpochTracker`, and queued into `send_queue` for batched HTTP dispatching.
+
 ---
 
 ## Web GUI Dashboard Features (`static/index.html`)
